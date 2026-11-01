@@ -317,7 +317,7 @@ class TextureBaker:
     def detail(self, k, name, contrast=0.9):
         """A tiling AC detail texture as a BeamNG detail map: greyscale, neutral at mid grey (Torque adds
         detail - 0.5 to the base colour), so it brings back the close-up texture without shifting the colour."""
-        key = ("detail", name)
+        key = ("detail", name, contrast)
         if key not in self.done:
             im = self._img(k, name)
             out = None
@@ -329,8 +329,9 @@ class TextureBaker:
                 d = np.clip(0.5 + (lum - lum.mean()) * contrast, 0, 1)
                 if float(d.std()) > 0.01:          # a flat texture adds nothing
                     from PIL import Image
+                    suffix = "" if contrast == 0.9 else f"_c{round(contrast * 10)}"
                     out = self._save(Image.fromarray((d * 255).astype(np.uint8), "L").convert("RGB"),
-                                     f"{Path(name).stem}_detail.data.png")
+                                     f"{Path(name).stem}_detail{suffix}.data.png")
             self.done[key] = out
         return self.done[key]
 
@@ -511,8 +512,8 @@ def main(argv=None):
                     help=f"raise road layers that lie on an earlier-drawn surface (patches, lines, decals) by M "
                          f"metres per layer so they don't z-fight (default {LAYER_STEP}; 0 = off)")
     ap.add_argument("--no-ground-layers", action="store_true",
-                    help="draw AC multilayer ground with one blended, low-res texture instead of splitting it by "
-                         "dominant layer (grass, dirt, rock) into sharp tiling textures with hard edges between them")
+                    help="draw AC multilayer ground with one blended detail texture instead of giving each triangle the "
+                         "tiling texture (grass, dirt, rock) of the layer that dominates there")
     args = ap.parse_args(argv)
 
     track = Path(args.track_dir)
@@ -593,6 +594,7 @@ def main(argv=None):
     stats = {}
     lifter = OverlayLifter(step=args.layer_lift)
     splitter = LayerSplitter(baker)
+    layer_scales = {}      # (material, layer) -> detail scales seen, one material each
 
     for stem in todo:
         path = track / f"{stem}.kn5"
@@ -705,21 +707,23 @@ def main(argv=None):
                         plain.append(p_)
                         continue
                     for c_, sub, sc in pieces(p_, p_[4]):   # after lifting: pieces copy the (lifted) positions
-                        (by_layer[c_].append((sub, sc)) if c_ else plain.append(sub))
+                        (by_layer[(c_, sc)].append(sub) if c_ else plain.append(sub))
                 for chunk in merge_chunks(plain):
                     groups.append((name, *chunk))
-                for c_, items in by_layer.items():
-                    lname = f"{name}_layer{c_}"
+                for (c_, sc), items in by_layer.items():
+                    # one material per layer and tiling: the colour comes from the macro map on the mesh's own
+                    # UVs, so meshes whose UVs cover a different number of metres need their own detail scale
+                    scales = layer_scales.setdefault((name, c_), [])
+                    if sc not in scales:
+                        scales.append(sc)
+                    i = scales.index(sc)
+                    lname = f"{name}_layer{c_}" + (f"_{i + 1}" if i else "")
                     if lname not in materials:
                         gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
-                        materials[lname] = layer_material(lname, acmat, c_, k, baker, tex_rel, items[0][1], gt)
+                        materials[lname] = layer_material(lname, acmat, c_, k, baker, tex_rel, sc, gt)
                         if acname in ground_mats:
                             materials[lname]["kn5_ground"] = True
-                        tname = acmat.samplers[f"txDetail{c_}"]
-                        if materials[lname]["Stages"][0]["baseColorMap"].endswith("/" + tname) and \
-                                tname in tex_by_name and tname not in textures_needed:
-                            textures_needed[tname] = (path, tex_by_name[tname])
-                    for chunk in merge_chunks([it[0] for it in items]):
+                    for chunk in merge_chunks(items):
                         groups.append((lname, *chunk))
             origin = np.array([(cx + 0.5) * args.cell, (cy + 0.5) * args.cell, 0.0])
             fname = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
