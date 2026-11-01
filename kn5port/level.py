@@ -168,6 +168,8 @@ def _concat(parts):
 #    detail texture. BeamNG reads both differently (dark/purple roads), so we bake an opaque base colour.
 #  * ksMultilayer*       : the "macro" diffuse is near-white; the real colour comes from four detail layers
 #    blended by txMask. We bake mask-weighted layer colours x macro variation into one colour map.
+#  * detail textures    : AC tiles a small detail texture over the low-res base (txDetail on MultiMap, the
+#    multilayer layers). They become BeamNG detailMaps, baked to greyscale around mid grey.
 #  * alpha-tested / translucent : BeamNG v1.5 materials take alpha from a separate opacity map.
 
 PROFILE = Profile()          # replaced in main()
@@ -212,6 +214,7 @@ class TextureBaker:
         self.tex_dir, self.tex_rel = tex_dir, tex_rel
         self.done = {}
         self._mean_cache = {}
+        self.ml_weights = {}
 
     def _img(self, k, name):
         from PIL import Image
@@ -302,6 +305,26 @@ class TextureBaker:
                                       if im else np.array([0.4, 0.4, 0.35], np.float32))
         return self._mean_cache[name]
 
+    def detail(self, k, name, contrast=0.9):
+        """A tiling AC detail texture as a BeamNG detail map: greyscale, neutral at mid grey (Torque adds
+        detail - 0.5 to the base colour), so it brings back the close-up texture without shifting the colour."""
+        key = ("detail", name)
+        if key not in self.done:
+            im = self._img(k, name)
+            out = None
+            if im is not None:
+                if max(im.size) > 1024:
+                    sc = 1024 / max(im.size)
+                    im = im.resize((max(16, int(im.size[0] * sc)), max(16, int(im.size[1] * sc))))
+                lum = np.asarray(im.convert("L"), dtype=np.float32) / 255.0
+                d = np.clip(0.5 + (lum - lum.mean()) * contrast, 0, 1)
+                if float(d.std()) > 0.01:          # a flat texture adds nothing
+                    from PIL import Image
+                    out = self._save(Image.fromarray((d * 255).astype(np.uint8), "L").convert("RGB"),
+                                     f"{Path(name).stem}_detail.data.png")
+            self.done[key] = out
+        return self.done[key]
+
     def multilayer(self, k, acmat, macro_mean=0.6):
         key = ("ml", acmat.name)
         if key in self.done:
@@ -320,6 +343,7 @@ class TextureBaker:
         w = m / np.maximum(m.sum(-1, keepdims=True), 1e-3)
         cols = np.stack([self.layer_mean(k, s.get(f"txDetail{c}", "")) for c in "RGBA"])  # (4,3)
         col = w @ cols                                                                    # (H,W,3)
+        self.ml_weights[acmat.name] = w.reshape(-1, 4).mean(0)    # how much of the ground each layer covers
         mac = np.asarray(macro.convert("RGB").resize(size), dtype=np.float32) / 255.0
         del macro
         col = col * (mac / macro_mean)          # macro supplies light/dark variation only
@@ -341,12 +365,29 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
         base = baker.multilayer(k, acmat)
         if base:
             stage["baseColorMap"] = base
+            # AC tiles the four detail layers at multR..multA times the macro UV. One material takes one detail
+            # map, so use the layer that covers the most ground for the close-up texture.
+            w = baker.ml_weights.get(acmat.name)
+            if w is not None:
+                c = "RGBA"[int(np.argmax(w))]
+                mult = acmat.props.get(f"mult{c}", (0,))[0]
+                dm = baker.detail(k, s[f"txDetail{c}"]) if mult > 0 and f"txDetail{c}" in s else None
+                if dm:
+                    stage["detailMap"] = dm
+                    stage["detailScale"] = [round(float(mult), 3)] * 2
         stage["roughnessFactor"] = 0.95
     elif "txDiffuse" in s:
         if shader.startswith("ksPerPixelMultiMap") or not (alpha_test or translucent):
             stage["baseColorMap"] = baker.opaque(k, s["txDiffuse"]) or f"{tex_rel}/{s['txDiffuse']}"
         else:
             stage["baseColorMap"] = baker.raw_or_png(k, s["txDiffuse"], tex_rel)
+        mult = acmat.props.get("detailUVMultiplier", (0,))[0]
+        if shader.startswith("ksPerPixelMultiMap") and "txDetail" in s and mult > 0 and not translucent:
+            # AC blends a small tiling detail texture over the base; without it roads look blurry up close
+            dm = baker.detail(k, s["txDetail"])
+            if dm:
+                stage["detailMap"] = dm
+                stage["detailScale"] = [round(float(mult), 3)] * 2
         if alpha_test or translucent:
             op = baker.opacity(k, s["txDiffuse"])
             if op:
