@@ -348,3 +348,12 @@ def test_multilayer_ground_split_into_sharp_layers():
         level.main([str(trk), str(out), "--layer-lift", "0", "--no-ground-layers"])
         mats = json.loads((out / "levels/hill/art/shapes/hill.materials.json").read_text())
         assert not any("_layer" in k for k in mats)
+
+
+def test_inspect_material_table():
+    from kn5port.cli import material_table
+    with tempfile.TemporaryDirectory() as d:
+        make_multilayer_kn5(Path(d) / "hill.kn5")
+        (r,) = material_table(d)
+        assert r["material"] == "hillside" and r["shader"].startswith("ksMultilayer")
+        assert abs(r["area"] - 10000) < 1 and abs(r["m_per_uv"] - 100) < 0.5 and r["mults"]["multR"] == 0.1
