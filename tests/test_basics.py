@@ -277,3 +277,15 @@ def test_multilayer_detail_scale():
     assert detail_scale(80, 900) == 80                      # Kunos: tiles per UV unit
     assert detail_scale(0.1, 2800) == 280                    # object space: 10 m tiles over 2.8 km of UV
     assert detail_scale(0, 100) is None and detail_scale(0.1, None) == 0.1
+
+
+def test_hidden_material_is_transparent():
+    from kn5port.level import hidden_material, TextureBaker
+    with tempfile.TemporaryDirectory() as d:
+        op = TextureBaker(Path(d), "/levels/x/art/textures").invisible()
+        assert (Path(d) / "kn5port_invisible_opacity.data.png").exists()
+        m = hidden_material("x_hidden", "ASPHALT", op)
+        st = m["Stages"][0]
+        assert m["translucent"] and not m["translucentZWrite"] and m["alphaTest"] and not m["castShadows"]
+        assert st["opacityFactor"] == 0 and st["baseColorFactor"][3] == 0 and st["opacityMap"] == op
+        assert m["groundType"] == "ASPHALT"
