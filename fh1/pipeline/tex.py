@@ -64,6 +64,10 @@ def bix(i):
     if not os.path.exists(p): return None
     h=open(p,'rb').read(); mag,w,hh,mips,fw,tot,top=struct.unpack('>4sIIIIII',h[:28])
     return dict(w=w,h=hh,mips=mips,fw=fw,fmt=fw&0xff,top=top,tot=tot,path=p,bpath=f'{X}/{n}_B.bix')
+def blocks(i):
+    # the top mip as plain little-endian DXT blocks, ready for a .dds
+    t=bix(i); bpb={0x52:8,0x53:16,0x54:16,0x71:16}[t['fmt']]; bw=(t['w']+3)//4; bh=(t['h']+3)//4
+    return np.frombuffer(untile(open(t['bpath'],'rb').read(),bw,bh,bpb),'>u2').astype('<u2').tobytes()
 def load(i):
     t=bix(i)
     if not t: return None

@@ -1,12 +1,12 @@
 """Check the built level's shapes: XML, detail nodes, collision geometry against the LOD0 meshes."""
 import glob, json, re, os, collections, sys
 import xml.etree.ElementTree as ET
-L = '../out_lod/levels/fh1_redrock'
+L = sys.argv[1]
 items = [json.loads(l) for l in open(L + '/main/MissionGroup/fh1/items.level.json')]
 print('statics', len(items), collections.Counter(o['collisionType'] for o in items))
 bad = 0; col = det = 0; sizes = collections.Counter(); noshape = 0
 for o in items:
-    p = L + o['shapeName'].split('fh1_redrock', 1)[1]
+    p = L + '/' + o['shapeName'].split('/', 3)[3]
     if not os.path.exists(p):
         noshape += 1
         continue

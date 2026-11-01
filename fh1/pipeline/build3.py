@@ -6,14 +6,18 @@ from pathlib import Path
 from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
-import rmb, tex
+import dds, rmb, tex
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
 from kn5port.level import _fmt, safe
 from kn5port.terrain import pyramid_fill
 
 Image.MAX_IMAGE_PIXELS = None
-LVL = 'fh1_redrock'; N = 2048; SQ = 2.0; CX, CZ = -6000.0, 4250.0; CELL = 250.0; TEXMAX = 1024
+# FH1_CHUNK picks the area: level name, title, heightfield size, grid spacing, centre, map art size
+CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
+          'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
+LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
+CELL = 250.0; TEXMAX = 1024
 # LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
 IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
@@ -74,14 +78,11 @@ class Textures:
         if r is None or r[0] is None:
             self.missing[tid] += 1; self.info[tid] = None
             return None
-        a = r[0]; im = Image.fromarray(a)
-        if max(im.size) > TEXMAX:
-            im = im.resize((min(im.size[0], TEXMAX), min(im.size[1], TEXMAX)), Image.LANCZOS)
-        name = f't{tid:X}'
-        im.convert('RGB').save(self.d / f'{name}.color.png')
+        a = r[0]; name = f'd{tid:X}'     # pre-cooked, so BeamNG loads FH1's sizes. The d prefix can't match PNG-era cached textures
+        dds.save(self.d / f'{name}.color.dds', a, tex.blocks(tid) if t['fmt'] == 0x52 else None, TEXMAX)
         al = a[..., 3]; cut = float((al < 128).mean())
         if cut > 0.002:
-            im.getchannel('A').convert('RGB').save(self.d / f'{name}_o.data.png')
+            dds.save(self.d / f'{name}_o.data.dds', al, limit=TEXMAX)
         rgb = a[..., :3].reshape(-1, 3).mean(0)
         self.info[tid] = dict(name=name, rgb=rgb, cut=cut, src=a)
         return self.info[tid]
@@ -98,10 +99,10 @@ def material(tid, ground=None, alpha=False, translucent=False, two=False):
     use_a = (alpha or translucent) and t['cut'] > 0.002
     key = f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '')
     if key not in MATS:
-        st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.png", 'roughnessFactor': .9, 'metallicFactor': 0}
+        st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
         m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng'}
         if use_a:
-            st['opacityMap'] = f"{rel}/art/textures/{t['name']}_o.data.png"
+            st['opacityMap'] = f"{rel}/art/textures/{t['name']}_o.data.dds"
             if translucent:
                 m['translucent'] = True; m['translucentZWrite'] = False
             else:
@@ -169,13 +170,13 @@ def blend_material(tids, masktid, ground):
     if any(i is None for i in info) or m_ is None:
         return None
     for ch, nm in ((0, 'r'), (1, 'g')):
-        p_ = TX.d / f"{m_['name']}_{nm}.data.png"
+        p_ = TX.d / f"{m_['name']}_{nm}.data.dds"
         if not p_.exists():
-            Image.fromarray(m_['src'][..., ch]).convert('RGB').save(p_)
-    st = [{'baseColorMap': f"{rel}/art/textures/{info[0]['name']}.color.png", 'roughnessFactor': .92, 'metallicFactor': 0}]
+            dds.save(p_, m_['src'][..., ch], limit=TEXMAX)
+    st = [{'baseColorMap': f"{rel}/art/textures/{info[0]['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0}]
     for k_, i_ in enumerate(info[1:]):
-        st.append({'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.png", 'roughnessFactor': .92, 'metallicFactor': 0,
-                   'opacityMap': f"{rel}/art/textures/{m_['name']}_{'rg'[k_]}.data.png", 'opacityMapUseUV': 1})
+        st.append({'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0,
+                   'opacityMap': f"{rel}/art/textures/{m_['name']}_{'rg'[k_]}.data.dds", 'opacityMapUseUV': 1})
     while len(st) < 4:
         st.append({})
     m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng', 'translucentBlendOp': 'None'}
@@ -436,7 +437,7 @@ def groups_of(w, M, total):
     return None
 
 
-EVENT = re.compile(r'festival|multiplayer|street|showcase|activation|crowd|_track_|testfest', re.I)
+EVENT = re.compile(r'festival|multiplayer|street|showcase|activation|crowd|_track_|testfest|_fest_|_pr_barriers|ghostmp', re.I)
 LAYERS_SEEN = collections.Counter()
 
 
@@ -456,10 +457,17 @@ def read_pgeo(n):
     if size == 0 and b'models_proc' in b[0x90:0xc0]:       # placed sets: full transforms, 96 bytes each
         if not 1 <= M <= 16:
             return None
-        q_ = 0xd0 + 0x40 * M; meshes = []
+        # the header's start moves in some files. Model entries are 64 bytes and the first ids follow the last entry's 'tga' tag
+        t_ = b.find(b'tga\0', 0x98, 0xd0 + 0x40 * M + 0x40)
+        h_ = t_ + 4 - 0x40 * M if t_ >= 0 else 0xd0
+        q_ = h_ + 0x40 * M; meshes = []
         for i in range(M):
-            e_ = struct.unpack_from('>6I', b, 0xd0 + 0x40 * i + 32)
-            meshes.append(int(DRAW['t'][struct.unpack_from('>I', b, q_)[0]])); q_ += 4 * max(e_[1] + (e_[3] if e_[3] < 8 else 0), 1)
+            e_ = struct.unpack_from('>6I', b, h_ + 0x40 * i + 32); v_ = struct.unpack_from('>I', b, q_)[0]
+            if v_ >= len(DRAW):
+                stats['proc_bad'] += 1
+                print('proc unreadable', n, M)
+                return None
+            meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(e_[1] + (e_[3] if e_[3] < 8 else 0), 1)
         w = struct.unpack_from('>%dI' % min((len(b) - q_) // 4, 200), b, q_)
         G = []
         for i in range(1, len(w) - 4):            # (k, 0, count, 0, 1) or the older (1, k, count, 0, 1)
@@ -487,18 +495,22 @@ def read_pgeo(n):
     if M < 1 or M > 64 or size < 40 or size % 40 or size >= len(b):
         stats['pgeo_badhdr'] += 1
         return None
-    o = 0x80 + 0x44 * M; start = len(b) - size
+    h_ = 0xd0 if b[0x98:0xa3] == b'models_proc' else 0x80        # named sets carry a longer header
+    o = h_ + 0x44 * M; start = len(b) - size
     w = struct.unpack_from('>%dI' % ((start - o) // 4), b, o)
     G = groups_of(w, M, size // 40)
     if G is None:
         stats['pgeo_groupmismatch'] += 1
         return None
-    W = [struct.unpack_from('>f', b, 0x80 + 0x40 * i + 16)[0] - struct.unpack_from('>f', b, 0x80 + 0x40 * i)[0] for i in range(M)]
+    W = [struct.unpack_from('>f', b, h_ + 0x40 * i + 16)[0] - struct.unpack_from('>f', b, h_ + 0x40 * i)[0] for i in range(M)]
     A = np.frombuffer(b, '>u4', size // 4, start).reshape(-1, 10).astype(np.int64)
-    meshes = []; q_ = 0x80 + 0x40 * M
+    meshes = []; q_ = h_ + 0x40 * M
     for i in range(M):           # models carry one or two LOD ids, as their header entry says
-        e_ = struct.unpack_from('>6I', b, 0x80 + 0x40 * i + 32)
-        meshes.append(int(DRAW['t'][struct.unpack_from('>I', b, q_)[0]])); q_ += 4 * max(e_[1] + (e_[3] if e_[3] < 8 else 0), 1)
+        e_ = struct.unpack_from('>6I', b, h_ + 0x40 * i + 32); v_ = struct.unpack_from('>I', b, q_)[0]
+        if v_ >= len(DRAW):
+            stats['pgeo_unreadable'] += 1
+            return None
+        meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(e_[1] + (e_[3] if e_[3] < 8 else 0), 1)
     return bb, A, meshes, list(zip(G, W))
 
 
@@ -791,7 +803,6 @@ with open(level / 'theTerrain.ter', 'wb') as f:
     f.write(np.uint32(1).tobytes()); e = name.encode(); f.write(bytes([len(e)])); f.write(e)
 r = json.load(open('../reg.json')); src = Image.open('../ui/New_Map_MapGameReady.jpg').convert('RGB')
 box = (X0 / r['sx'] + r['ox'], Z0 / r['sz'] + r['oz'], X1 / r['sx'] + r['ox'], Z1 / r['sz'] + r['oz'])
-BASE = 2048
 base = src.transform((BASE, BASE), Image.EXTENT, box, Image.BICUBIC); base.save(tdir / 't_terrain_base_b.color.png')
 for fn, c_ in {'t_terrain_base_nm.normal.png': (128, 128, 255), 't_terrain_base_ao.data.png': (255, 255, 255), 't_terrain_base_r.data.png': (230, 230, 230), 't_terrain_base_h.data.png': (128, 128, 128)}.items():
     Image.new('RGB', (BASE, BASE), c_).save(tdir / fn, optimize=True)
@@ -886,12 +897,12 @@ obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup'
        spawn, {'name': 'fh1', 'class': 'SimGroup', '__parent': 'MissionGroup'},
        {'name': 'theForest', 'class': 'Forest', '__parent': 'MissionGroup', 'position': [0, 0, 0]},
        {'name': 'theTerrain', 'class': 'TerrainBlock', '__parent': 'MissionGroup', 'position': [-HALF, -HALF, zmin], 'squareSize': SQ, 'maxHeight': maxh,
-        'baseTexSize': 2048, 'materialTextureSet': tset, 'terrainFile': f'{rel}/theTerrain.ter'}]
+        'baseTexSize': BASE, 'materialTextureSet': tset, 'terrainFile': f'{rel}/theTerrain.ter'}]
 (mg / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in obj))
 (mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in items))
 base.resize((1024, 1024)).save(level / f'{LVL}.jpg', quality=90)
 (level / 'info.json').write_text(json.dumps({
-    'title': 'Colorado: Red Rock (FH1 chunk)', 'description': 'Personal conversion of a chunk of Forza Horizon (2012) Colorado from your own copy. Not for redistribution.',
+    'title': TITLE, 'description': 'Personal conversion of a chunk of Forza Horizon (2012) Colorado from your own copy. Not for redistribution.',
     'authors': 'Playground Games / Turn 10 (original); converted locally', 'country': 'United States', 'biome': 'desert',
     'size': [int(2 * HALF), int(2 * HALF)], 'previews': [f'{LVL}.jpg'],
     'spawnPoints': [{'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': f'{LVL}.jpg'}], 'defaultSpawnPointName': 'spawn_redrock'}, indent=2))

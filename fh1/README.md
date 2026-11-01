@@ -1,17 +1,21 @@
 # FH1 Colorado to BeamNG (experiment)
 
-Converts a chunk of Forza Horizon (2012) Colorado into a BeamNG level from your own legally dumped copy. Currently Red Rock:
-a 4 × 4 km square. This folder is separate from kn5port's converter and only imports a few helpers from it.
+Converts Forza Horizon (2012) Colorado into a BeamNG level from your own legally dumped copy: the whole map (16.4 km square, 4 m grid)
+or just Red Rock (4 km, 2 m). This folder is separate from kn5port's converter and only imports a few helpers from it.
 
-**Never commit or share game-derived data.** `fh1/.gitignore` is a whitelist: only `pipeline/*.py`, `pipeline/lzx.c` and this file are tracked.
+**Never commit or share game-derived data.** `fh1/.gitignore` is a whitelist: only `pipeline/*.py`, `pipeline/lzx.c`, `docs/*.md` and this file are tracked.
 Extracted files, captures and generated levels live in `fh1/` and stay local. Converted levels are for personal use only.
 
-## Layout
+## Notes
 
-- `pipeline/`: scripts. Run them from this folder; they read and write `../`.
-- `x/`: extracted `bin.zip` contents.
-- `memobj_all.pkl`, `memrec.pkl`: the live Xenia capture. **These took a real drive to collect, so back them up.**
-- `zonevote.pkl`, `cat2.pkl`, `meshtab.pkl`, `mt.npy` and others: derived. `prepare.py` rebuilds them.
+| File | Read it for |
+|---|---|
+| [docs/open-work.md](docs/open-work.md) | **Start here:** current state, task list, what the user has decided |
+| [docs/formats.md](docs/formats.md) | Every FH1 file format and how well each is proven |
+| [docs/free-roam.md](docs/free-roam.md) | How free-roam objects are chosen, and what's been ruled out |
+| [docs/pipeline.md](docs/pipeline.md) | Scripts, data files, `build3.py` layout, checks, shell pitfalls |
+| [docs/beamng-output.md](docs/beamng-output.md) | Terrain, blending, LODs, collision, plants, performance |
+| [docs/tools-and-re.md](docs/tools-and-re.md) | Live capture, recomp tools, how to test a format theory |
 
 ## Running it
 
@@ -19,66 +23,16 @@ Extracted files, captures and generated levels live in `fh1/` and stay local. Co
 cd fh1/pipeline
 clang -O2 -fno-builtin -ffreestanding -fno-stack-protector -mno-stack-arg-probe -c lzx.c -o lzx.o
 lld-link -dll -noentry -nodefaultlib -export:lzx_decode -out:lzx.dll lzx.o      # MSYS_NO_PATHCONV=1 in Git Bash
-python prepare.py        # about 3 minutes, FH1_DUMP overrides the dump path
-python build3.py         # writes mods/unpacked/fh1_redrock, or pass an output folder
+python prepare.py                     # about 3 minutes, FH1_DUMP overrides the dump path
+FH1_CHUNK=colorado python build3.py   # whole map, 3.2 GB, 7 minutes, 4 GB of RAM. Default chunk is redrock
 ```
 
-Then fully restart BeamNG. Python needs numpy, scipy, numba, pillow.
-
-Other tools: `memscan.py <xenia pid> <passes>` (read-only live capture), `x1.py` and `x2.py` (recomp string index and function viewer),
-`pv.py` and `v2.py` (software renderer to compare UV formulas), `xtr.py` (Xenia GPU trace reader).
-The chunk is set by `CX, CZ, N, SQ` at the top of `build3.py`.
-
-## Formats
-
-**`bin.zip`**: no local headers. Offset is in extra field 0x1123, method 21 is XMem LZX with window 17. Entries repeat per zone, 57k unique names.
-
-**`*.rmb.bin`**: big endian, world space or origin-local. Header holds the mesh count (`hdr[4]`). Each mesh: name, vertex count, stride, vertices, then sections
-(name, 8 ints, 8 floats, index width and count, strips with 0xFFFF restart). Materials follow the last mesh.
-Vertices are position (3 floats), 10:10:10 normal, s16 UV; 16-byte vertices are tree cards (position plus UV).
-UV is `s * scale / 65535` with scale from the section's `fl[6:8]`. No offset: the old offset form only looked right on tiling textures.
-
-**Textures**: `*.bix` plus `*_B.bix`: BIX1 header, mips, top mip, Xenos tiled DXT, byte swapped in 16-bit words.
-
-**`Colorado_00.pvs`** (FPVS): at 0xAC a 28-byte texture table (index to `_0x` id); 173 shader names; a 62,173-record 18-byte draw table (draw id to mesh number, `f` flag);
-14,560 per-mesh records (texture index list, shader list, OBB). A material's slot N is the Nth texture in the mesh's record.
-
-**Coordinates**: meshes are x east, y up, z south, matching the developer map art. `GameObjs.xml`, `CollObjs.xml`, routes and `.pgeo` use the opposite z sign.
-A game matrix with negative determinant already carries that flip.
-
-**`*.pgeo`** (`Models_*`): offset 0x50 is the byte size of the 40-byte instance block at the end of the file. Word 0 is 11:11:10 position inside the file's bounding box,
-then 11:11:10 up and side axes, a half-float size pair, tint. Model records `(flag, k, a, n, lods)` give n instances per model, in order.
-Each model lists 1 or 2 LOD ids, as its header entry says. `models_proc_*` files use 96-byte full transforms, with a 32-byte trailer after each model's block.
-
-**`*.pvsz`** zones (`pipeline/zones.py`): `u32 n`, n ids (bit 31 load or unload, low bits a draw id), `u32 k`, k u16 mesh numbers, a typed 16-byte chain, gameplay nodes,
-then one placement record for every id after the first, in the same order, running exactly to the end of the file:
-3 half-float LOD distances, 3 float position, 9 half-float rotation (carries scale), float (not per-object scale), 12 zero bytes, u8 flag.
-Flag 0 ends the record at 53 bytes. Flag 1 adds u32 ref, u8 n, n list bytes and a 32-byte owner name, for 90 + n bytes.
-Tested on all 1,434 zones with no failures: 2,972 of 2,979 checks agreed with the live capture, with no live data used. Zones are deltas and between them cover every object: 59,597 draw placements at 27,293 positions.
-
-**The free-roam rule** (`build3.py`): keep a record unless it has a list or an owner name.
-No block is world scenery. A block with an empty list and no owner is smashable scenery (signs, fences, bins, snow poles). A list means event-only; the list looks like event ids, not decoded.
-An owner name ties it to a gameplay id such as `FR22_03` or `BF_..._OPEN`.
-
-**Live records** (`memscan.py`): 64-byte big-endian matrix with the draw id at +132, in 224-byte records. Exact positions and ids, for what was loaded while driving.
-
-**Terrain**: `h_blnd*` shaders blend slots 0, 1 and 5 using mask slot 2, read with UV set 2 as `(s + 1) / 2`.
-BeamNG equivalent: `activeLayers` 3, layers 1 and 2 use `opacityMap` with `opacityMapUseUV: 1`.
+The build writes to `mods/unpacked/<level>`, or pass an output folder. Then fully restart BeamNG. Python needs numpy, scipy, numba, pillow.
 
 ## Status
 
-Working: real textures, terrain blending, roads with dirt and asphalt, plants through BeamNG's forest system, buildings, the outpost.
+Working and tested in-game around Red Rock: real textures, terrain blending, dirt and asphalt roads, plants, buildings, the outpost, free-roam object selection, LODs (about 120 fps on a 2070 Super at 1440p).
 
-LODs (`build3.py`): 250 m cells with 3 details from FH1's LOD00/01/02, `Colmesh` collision on the top detail, `_pro` shapes for props that drop out around 1.6 km, plants with LOD00, LOD01 and `bb_autobillboard25` (`FH1_IMPOSTERS=0` keeps LOD01 instead). `lodcheck.py` checks the shapes. Not yet proven in-game.
+The whole map builds and passes file checks, but hasn't been tested in-game.
 
-Known gaps:
-- The rule above is new and may need exceptions: the owner-block list isn't decoded, and some objects without a list look event-like (floodlights, speakers, a few flags and marquees).
-- Terrain beyond the square, a coarser heightfield for bigger chunks, and `Grass_Ungrouped` sets.
-- No normal maps, lightmaps, water or `.fiz` collision. Semi wheels are wrong.
-- `memscan.py` is now only needed to check results.
-
-Ruled out, so don't repeat: draw-table flags as a layer switch. F4 tracing on Canary Nov 2025 writes nothing. `freeroam` string is car setups. `LayoutId` query is controllers. `RacesSpecial.CollObjLayoutId` has only 9 layouts.
-Zone bit 31 is load/unload, not a layer. Live record field +144 is per-model. `game_free_roam_flow.xml` names no objects, and route 170 is just the base entry.
-
-Recomp notes (ReImagined build): generated C++ is in `build/forza-recomp/generated_tu4/default`. `tu/default.xex` is uncompressed, so image = file from the PE offset, base 0x82000000.
-Useful functions: track load `sub_82E28DE0`, `UpdatePVS` `sub_82E2AC38`, game data load `sub_82662520`.
+Missing: normal maps, lightmaps, water, `.fiz` collision, `Grass_Ungrouped` sets, about 3% of plants. Semi wheels are wrong.

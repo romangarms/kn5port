@@ -1,0 +1,68 @@
+# BeamNG output: rendering, terrain, LODs
+
+How FH1 data becomes a level. Constants are at the top of `build3.py`.
+
+## Terrain and ground
+
+FH1's own terrain meshes are the visible ground and the collision. The BeamNG `TerrainBlock` is only a hidden floor and a filler for gaps. The user asked for this after a heightfield version showed terrain where it shouldn't be.
+
+- Heights come from terrain meshes rastered into tiers: LOD0, 1, 2, then far meshes. Roads are rastered separately.
+- Where meshes are shown, the heightfield drops to `minimum_filter(H, 31) - 8 m` so it can't poke through. That window is in grid cells, so it's 62 m on Red Rock and 124 m on Colorado.
+- Near roads the height is capped at road height minus 0.2 m, rising with distance out to 40 m.
+- Far terrain (`PATCH`, `MIDDIST`, `UberLOD`) only shows where nothing better covers it. Triangles are tested whole, by sampling 45 barycentric points. Testing vertices alone left panels across roads.
+- Terrain meshes cover 66% of the Colorado square. The rest is mostly edges and off-map land, showing the BeamNG terrain with map art as its base colour.
+- `theTerrain.ter` is format 9: u32 size, heights, layer map, one material.
+
+## Terrain blending (user confirmed "perfect")
+
+`h_blnd*` shaders blend slots 0, 1 and 5 using the mask in slot 2, read with UV set 2 as `(s + 1) / 2`.
+
+BeamNG equivalent: `activeLayers` 3, with layers 1 and 2 using `opacityMap` and `opacityMapUseUV: 1`. See `blend_material`.
+
+## Surfaces
+
+`h_road*` shaders are roads. `role_ground` sets asphalt or dirt from section names. The user confirmed dirt roads work. Rock uses `ROCK`, barriers and rails `METAL`.
+
+Textures are written as pre-cooked DXT1 `.dds` files by `dds.py`, capped at `TEXMAX = 1024`. A DXT1 top mip keeps FH1's own blocks unchanged. Lower mips, masks and DXT3/5 sources are encoded in `dds.py`. Colorado's PNGs were cooked up to 1024 px by BeamNG for an unknown reason (3.56 GB against 213 MB now), which caused the out-of-VRAM load. Red Rock's PNGs weren't. Keep the `.color.` and `.data.` suffixes: BeamNG picks the colour space from them.
+
+The user has said terrain looks a little low-res. FH1's sources are mostly 128 to 512 px and only 22 reach `TEXMAX`, so raising it won't help. Normal maps aren't used, which is probably part of that.
+
+## Static LODs
+
+- 250 m cells (`CELL`), one shape per cell and category.
+- 3 details from FH1's LOD00, 01 and 02. If a group lacks a level, its coarsest mesh stands in.
+- Switch distances: `LOD_DIST = (300, 800)`. Props vanish at `PROP_FAR = 1600`. `col` shapes never vanish.
+- Detail sizes are computed from each shape's radius and `PX = 1250` (pixels of radius per radius/distance at 1440p), so all cells switch at the same distance. A name like `o0_a71` means detail size 71.
+- Shape tree: `base00 > start01 > o<i>_a<size>`, as in stock shapes.
+
+## Collision
+
+`Colmesh_<i>-1` nodes reuse LOD0 geometry, with a `collision-1` node and `collisionType: Collision Mesh` on the `TSStatic`. `vis` shapes have none. The user drove this on Red Rock with no problems. FH1's `.fiz` collision isn't used.
+
+## Plants
+
+Plants use BeamNG's forest system, not `TSStatic`. Items have `o0_a120`, `o*_a40` and `bb_autobillboard25`: LOD00, LOD01, then an imposter. `FH1_IMPOSTERS=0` keeps LOD01 at distance instead. Stride-16 tree cards are skipped by the world mesh path.
+
+## Scene
+
+`visibleDistance` 6000, `shadowDistance` 1600, `TimeOfDay` fixed, `ScatterSky`, one `SpawnSphere`. The spawn is the first race route checkpoint near Red Rock, moved onto the road height. `info.json` holds the title and spawn point.
+
+## Performance
+
+Tested on a 2070 Super at 1440p, at Red Rock:
+
+| Build | fps |
+|---|---|
+| First real textures | 110 |
+| Full objects, no LODs | 95 |
+| LODs | 120 |
+
+Estimates from the outpost:
+
+| | Static tris | Plant tris |
+|---|---|---|
+| Red Rock, no LODs | 1.47M | 3.75M |
+| Red Rock, LODs | 602k | 138k |
+| Whole map, LODs | 2.48M, of which 2.1M is LOD2 | 282k |
+
+The whole map has no in-game number yet. If it's slow, first shorten far distance: `visibleDistance`, or drop `col` LOD2 past a limit, because that's where the triangles are. The estimate code ends in the `static tris` and `plant tris` lines.
