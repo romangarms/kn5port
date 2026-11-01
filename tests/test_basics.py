@@ -357,3 +357,13 @@ def test_inspect_material_table():
         (r,) = material_table(d)
         assert r["material"] == "hillside" and r["shader"].startswith("ksMultilayer")
         assert abs(r["area"] - 10000) < 1 and abs(r["m_per_uv"] - 100) < 0.5 and r["mults"]["multR"] == 0.1
+
+
+def test_broad_macro_map_is_not_a_road():
+    # California Highway's hillside multilayer materials use "Sec5_CAH_Broad.dds": "bROAD" must not make them
+    # road-like, or they lose the layer split and detail maps (and stay meshes in terrain mode)
+    from kn5port.profile import ROAD_LIKE
+    for s in ("longgrass_sec5_1b Sec5_CAH_Broad.dds", "slopegrass_sec6_1outb sec67_cah_broad.dds"):
+        assert not ROAD_LIKE.search(s), s
+    for s in ("road_new plainroad_01_cah_bds.dds", "1ROAD_03", "b1road_oldstyle", "sec67outerroad", "ROAD"):
+        assert ROAD_LIKE.search(s), s

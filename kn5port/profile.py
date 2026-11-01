@@ -212,7 +212,8 @@ def phys_key(name, surfaces):
     return best or m.group(2).upper()
 
 
-ROAD_LIKE = re.compile(r"ROAD|ASPH|ASLPH|PHALT|TARMAC|KERB|CURB|PAINT|LINE|CONCRETE|CEMENT|\bPIT|_PIT|BRIDGE", re.I)
+# "(?<!B)ROAD": "broad" is not a road (California Highway's hillside macro maps are "Sec5_CAH_Broad.dds")
+ROAD_LIKE = re.compile(r"(?<!B)ROAD|ASPH|ASLPH|PHALT|TARMAC|KERB|CURB|PAINT|LINE|CONCRETE|CEMENT|\bPIT|_PIT|BRIDGE", re.I)
 
 
 def material_uses(kn5, surfaces, profile):
