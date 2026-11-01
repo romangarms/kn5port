@@ -50,9 +50,15 @@ A game matrix with negative determinant already carries that flip.
 then 11:11:10 up and side axes, a half-float size pair, tint. Model records `(flag, k, a, n, lods)` give n instances per model, in order.
 Each model lists 1 or 2 LOD ids, as its header entry says. `models_proc_*` files use 96-byte full transforms, with a 32-byte trailer after each model's block.
 
-**`*.pvsz`** zones: `u32 n`, n ids (bit 31 is load or unload, low bits a draw id), `u32 k`, k u16 mesh numbers, a typed 16-byte chain (type 0 outhouses, 2 smashables, 3 armco, 9 static models),
-gameplay nodes, then roughly 90-byte placement records (3 u16, position, 3×3 half-float rotation) in list order. Zones are deltas, and between them they cover every object.
-Only entries with draw flag 0x800 have records. World-space meshes sit at the origin.
+**`*.pvsz`** zones (`pipeline/zones.py`): `u32 n`, n ids (bit 31 load or unload, low bits a draw id), `u32 k`, k u16 mesh numbers, a typed 16-byte chain, gameplay nodes,
+then one placement record for every id after the first, in the same order, running exactly to the end of the file:
+3 half-float LOD distances, 3 float position, 9 half-float rotation (carries scale), float (not per-object scale), 12 zero bytes, u8 flag.
+Flag 0 ends the record at 53 bytes. Flag 1 adds u32 ref, u8 n, n list bytes and a 32-byte owner name, for 90 + n bytes.
+Tested on all 1,434 zones with no failures: 2,972 of 2,979 checks agreed with the live capture, with no live data used. Zones are deltas and between them cover every object: 59,597 draw placements at 27,293 positions.
+
+**The free-roam rule** (`build3.py`): keep a record unless it has a list or an owner name.
+No block is world scenery. A block with an empty list and no owner is smashable scenery (signs, fences, bins, snow poles). A list means event-only; the list looks like event ids, not decoded.
+An owner name ties it to a gameplay id such as `FR22_03` or `BF_..._OPEN`.
 
 **Live records** (`memscan.py`): 64-byte big-endian matrix with the draw id at +132, in 224-byte records. Exact positions and ids, for what was loaded while driving.
 
@@ -63,13 +69,16 @@ BeamNG equivalent: `activeLayers` 3, layers 1 and 2 use `opacityMap` with `opaci
 
 Working: real textures, terrain blending, roads with dirt and asphalt, plants through BeamNG's forest system, buildings, the outpost.
 
-Known gaps:
-- Mesh naming from zones is 70% unaided and 98.6% with a vote share of 0.7 or more, so `zonevote.pkl` is only safe at high share. An exact record walker should fix this, and it unlocks the whole map without driving.
-- No free-roam switch found. The rule so far: skip `festival`, `multiplayer`, `street` etc. sets, skip objects exactly on a `GameObjs` position, then the `KEEP` and `NOTKEEP` name lists in `build3.py`.
-- No normal maps, lightmaps, water or `.fiz` collision. Semi wheels are wrong. `Grass_Ungrouped` sets aren't placed.
+LODs (`build3.py`): 250 m cells with 3 details from FH1's LOD00/01/02, `Colmesh` collision on the top detail, `_pro` shapes for props that drop out around 1.6 km, plants with LOD00, LOD01 and `bb_autobillboard25` (`FH1_IMPOSTERS=0` keeps LOD01 instead). `lodcheck.py` checks the shapes. Not yet proven in-game.
 
-Ruled out, so don't repeat: F4 tracing on Canary Nov 2025 writes nothing. `freeroam` string is car setups. `LayoutId` query is controllers. `RacesSpecial.CollObjLayoutId` has only 9 layouts.
-Zone bit 31 is load/unload, not a layer. Record field +144 is per-model. `game_free_roam_flow.xml` names no objects, and route 170 is just the base entry.
+Known gaps:
+- The rule above is new and may need exceptions: the owner-block list isn't decoded, and some objects without a list look event-like (floodlights, speakers, a few flags and marquees).
+- Terrain beyond the square, a coarser heightfield for bigger chunks, and `Grass_Ungrouped` sets.
+- No normal maps, lightmaps, water or `.fiz` collision. Semi wheels are wrong.
+- `memscan.py` is now only needed to check results.
+
+Ruled out, so don't repeat: draw-table flags as a layer switch. F4 tracing on Canary Nov 2025 writes nothing. `freeroam` string is car setups. `LayoutId` query is controllers. `RacesSpecial.CollObjLayoutId` has only 9 layouts.
+Zone bit 31 is load/unload, not a layer. Live record field +144 is per-model. `game_free_roam_flow.xml` names no objects, and route 170 is just the base entry.
 
 Recomp notes (ReImagined build): generated C++ is in `build/forza-recomp/generated_tu4/default`. `tu/default.xex` is uncompressed, so image = file from the PE offset, base 0x82000000.
 Useful functions: track load `sub_82E28DE0`, `UpdatePVS` `sub_82E2AC38`, game data load `sub_82662520`.

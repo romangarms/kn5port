@@ -13,7 +13,10 @@ from kn5port.level import _fmt, safe
 from kn5port.terrain import pyramid_fill
 
 Image.MAX_IMAGE_PIXELS = None
-LVL = 'fh1_redrock'; N = 2048; SQ = 2.0; CX, CZ = -6000.0, 4250.0; CELL = 500.0; TEXMAX = 1024
+LVL = 'fh1_redrock'; N = 2048; SQ = 2.0; CX, CZ = -6000.0, 4250.0; CELL = 250.0; TEXMAX = 1024
+# LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
+LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
+IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
 HALF = N * SQ / 2; X0, X1, Z0, Z1 = CX - HALF, CX + HALF, CZ - HALF, CZ + HALF
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(beamng.find_mods()) / 'unpacked' / LVL
 level = root / 'levels' / LVL; rel = f'/levels/{LVL}'
@@ -113,7 +116,13 @@ def material(tid, ground=None, alpha=False, translucent=False, two=False):
 
 def write_dae(path, groups, origin):
     """kn5port's writer plus a second UV set: groups are (material, pos, normal, uv, idx, uv2)."""
-    mats = sorted({g[0] for g in groups}); out = []; w = out.append
+    return write_lod(path, [((g[0], (0,)),) + tuple(g[1:]) for g in groups], origin, (1,), False)
+
+
+def write_lod(path, groups, origin, sizes, collide, extra=()):
+    """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2).
+    A trailing number on those node names is the detail size. Level 0 geometry is reused as Colmesh_<i>-1."""
+    mats = sorted({g[0][0] for g in groups}); out = []; w = out.append
     w('<?xml version="1.0" encoding="utf-8"?>\n<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n')
     w('<asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>\n<library_effects>\n')
     for m in mats:
@@ -121,9 +130,10 @@ def write_dae(path, groups, origin):
     w('</library_effects>\n<library_materials>\n')
     for m in mats:
         w(f'<material id="{m}" name="{m}"><instance_effect url="#{m}-fx"/></material>\n')
-    w('</library_materials>\n<library_geometries>\n'); nodes = []
+    w('</library_materials>\n<library_geometries>\n'); nodes = []; col = False
+    ident = '<matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>'
     for gi, g_ in enumerate(groups):
-        mat, pos, nrm, uv, idx = g_[:5]; uv1 = g_[5] if len(g_) > 5 and g_[5] is not None else uv
+        (mat, levels), pos, nrm, uv, idx = g_[:5]; uv1 = g_[5] if len(g_) > 5 and g_[5] is not None else uv
         g = f'g{gi}'; n = len(pos); local = pos - origin
         w(f'<geometry id="{g}" name="{g}"><mesh>\n')
         for sid, arr, fmt, params in ((f'{g}-p', local, '%.4f', 'XYZ'), (f'{g}-n', nrm, '%.3f', 'XYZ'),
@@ -135,11 +145,19 @@ def write_dae(path, groups, origin):
         w(f'<triangles material="{mat}" count="{len(idx) // 3}"><input semantic="VERTEX" source="#{g}-v" offset="0"/><input semantic="NORMAL" source="#{g}-n" offset="0"/>'
           f'<input semantic="TEXCOORD" source="#{g}-t" offset="0" set="0"/><input semantic="TEXCOORD" source="#{g}-u" offset="0" set="1"/><p>')
         w(' '.join(map(str, idx.tolist()))); w('</p></triangles>\n</mesh></geometry>\n')
-        nodes.append(f'<node id="n{gi}" name="{safe(mat)}_c{gi}_mesh"><instance_geometry url="#{g}"><bind_material><technique_common>'
-                     f'<instance_material symbol="{mat}" target="#{mat}"/></technique_common></bind_material></instance_geometry></node>\n')
-    w('</library_geometries>\n<library_visual_scenes><visual_scene id="Scene" name="Scene">\n'); out.extend(nodes)
-    w('</visual_scene></library_visual_scenes>\n<scene><instance_visual_scene url="#Scene"/></scene>\n</COLLADA>\n')
+        inst = f'<instance_geometry url="#{g}"><bind_material><technique_common><instance_material symbol="{mat}" target="#{mat}"/></technique_common></bind_material></instance_geometry>'
+        for lv in levels:
+            if lv < len(sizes):
+                nm_ = f'o{gi}_a{sizes[lv]}'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
+        if collide and 0 in levels:
+            col = True; nm_ = f'Colmesh_{gi}-1'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
+    w('</library_geometries>\n<library_visual_scenes><visual_scene id="Scene" name="Scene">\n')
+    w(f'<node id="base00" name="base00" type="NODE">{ident}<node id="start01" name="start01" type="NODE">{ident}\n'); out.extend(nodes); w('</node>\n')
+    for e_ in (list(extra) + (['collision-1'] if col else [])):
+        w(f'<node id="{e_}" name="{e_}" type="NODE">{ident}</node>\n')
+    w('</node></visual_scene></library_visual_scenes>\n<scene><instance_visual_scene url="#Scene"/></scene>\n</COLLADA>\n')
     path.parent.mkdir(parents=True, exist_ok=True); path.write_text(''.join(out), encoding='utf-8')
+    return col
 
 
 def blend_material(tids, masktid, ground):
@@ -221,6 +239,9 @@ def togrid(p):
 cells = defaultdict(lambda: defaultdict(list)); stats = collections.Counter(); surf = collections.Counter(); start_ = t0 = time.time()
 
 
+LV = (0,)
+
+
 def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
     if not len(T):
         return
@@ -233,16 +254,16 @@ def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
     key = np.floor((c[:, :2] + HALF) / CELL).astype(int); k = key[:, 0] * 1000 + key[:, 1]
     for u in np.unique(k):
         sel = T[k == u]; idx, inv = np.unique(sel, return_inverse=True)
-        cells[(int(u), cat)][mat].append((b[idx], nb[idx], uv[idx], inv.reshape(-1, 3).astype(np.int64), uv1[idx] if uv1 is not None else uv[idx]))
+        cells[(int(u), cat)][(mat, LV)].append((b[idx], nb[idx], uv[idx], inv.reshape(-1, 3).astype(np.int64), uv1[idx] if uv1 is not None else uv[idx]))
     stats[cat] += len(T)
 
 
 # ---- world meshes
 sel = [c for c in F if c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 and c['mn'][2] < Z1
        and max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 and not NOUSE.search(c['name'])]
-best = defaultdict(lambda: 99)
+best = defaultdict(lambda: 99); AV = defaultdict(set)
 for c in sel:
-    k = re.sub(r'_LOD\d+', '', c['name']); best[k] = min(best[k], lod(c['name']))
+    k = re.sub(r'_LOD\d+', '', c['name']); best[k] = min(best[k], lod(c['name'])); AV[k].add(lod(c['name']))
 print(len(sel), 'meshes in box')
 Hs = [np.full((N, N), np.nan, 'f8') for _ in range(4)]; Road = np.full((N, N), np.nan, 'f8'); Cov = np.full((N, N), np.nan, 'f8'); Rock = np.full((N, N), np.nan, 'f8')
 byfile = defaultdict(list)
@@ -271,9 +292,13 @@ for f, cs in byfile.items():
                 if 'TERR_CUBE' not in n and l <= best[re.sub(r'_LOD\d+', '', n)]:
                     FARQ.append((0 if 'PATCH' in n.upper() else 1 if 'MIDDIST' in n.upper() else 2, no, M, m, p, nr, r0, r1, g))
                 continue
-        if l > best[re.sub(r'_LOD\d+', '', n)]:
+        have_ = sorted(AV[re.sub(r'_LOD\d+', '', n)]); rel_ = have_.index(l)
+        if rel_ > 2:
             stats['lod_dropped'] += 1
             continue
+        # a group's coarsest mesh also stands in for any lower LODs it lacks
+        LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 else (rel_,)
+        near_ = rel_ == 0
         for s in m['secs']:
             T = rmb.tris(s['ib'], m['nv'])
             if not len(T) or s['ints'][2] >= len(M):
@@ -289,7 +314,8 @@ for f, cs in byfile.items():
                 stats['sec_notex'] += 1
                 continue
             if isterr:
-                raster(Cov, g[T])
+                if near_:
+                    raster(Cov, g[T])
                 layers = []
                 ids = MT[no][0]
                 for q in (0, 1, 5):
@@ -316,18 +342,22 @@ for f, cs in byfile.items():
             if decal:
                 add('vis', material(tid, translucent=True), p, nr, uv, T, lift=.02); surf['decal'] += len(T)
             elif road:
-                raster(Road, g[T])
+                if near_:
+                    raster(Road, g[T])
                 rgb = info['rgb']; brown = rgb[0] - rgb[2] > 14
                 gnd = 'DIRT' if brown else 'ASPHALT'
                 add('col', material(tid, gnd), p, nr, uv, T); surf[f'road:{gnd}'] += len(T)
             elif re.search(r'cable|tether', n, re.I):
                 add('vis', material(tid, alpha=opac), p, nr, uv, T); surf['cable'] += len(T)
             elif re.search(r'armco|barrier|fence|rail', n, re.I):
-                add('col', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T)
+                add('pro', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T)
             elif re.search(r'rock|wall|cliff', n, re.I) or 'vblnd' in fx:
-                add('col', material(tid, 'ROCK', alpha=opac), p, nr, uv, T); surf['rock'] += len(T); raster(Rock, g[T])
+                add('col', material(tid, 'ROCK', alpha=opac), p, nr, uv, T); surf['rock'] += len(T)
+                if near_:
+                    raster(Rock, g[T])
             else:
-                add('col', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
+                add('pro', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
+LV = (0, 1, 2)
 blocked = ni.binary_dilation(np.isfinite(Road) | np.isfinite(Rock), iterations=4)
 shown = np.isfinite(Cov)
 BARY = np.array([[a_, b_, 8 - a_ - b_] for a_ in range(9) for b_ in range(9 - a_)], 'f8') / 8
@@ -496,14 +526,24 @@ def game_rot(Rg):
 defs = {}; rows = defaultdict(list); S_ = np.diag([1., 1., -1.]); B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]])
 
 
-def model_item(no):
-    """export one mesh file as a forest shape; returns (item name, height, width) or None"""
-    if no in defs:
-        return defs[no]
-    defs[no] = None
+NAME_ = {}
+for c in F:
+    NAME_.setdefault(int(c['f'].split('.')[1]), c['name'])
+
+
+def lod_sibling(no):
+    """the mesh file with the next LOD of this model"""
+    m = re.search(r'_LOD(\d+)', NAME_.get(no, ''))
+    if not m:
+        return None
+    want = NAME_[no].replace(m.group(0), '_LOD' + str(int(m.group(1)) + 1).zfill(len(m.group(1))), 1)
+    return next((q for q in range(no + 1, no + 4) if NAME_.get(q) == want), None)
+
+
+def model_groups(no):
     fs = f'coloradoout.{no:05d}.rmb.bin'
     if not os.path.exists('../x/' + fs):
-        return None
+        return [], None, None, ''
     b = open('../x/' + fs, 'rb').read(); P = rmb.parse(b); M = materials(b, P); groups = []; lo = np.full(3, np.inf); hi = -lo; label = ''
     ids = MT[no][0]
     for m in P['meshes']:
@@ -540,13 +580,27 @@ def model_item(no):
             idx, inv = np.unique(T, return_inverse=True)
             groups.append((mt, pb[idx], nb[idx], uv[idx], inv.astype(np.int64)))
             lo = np.minimum(lo, pb.min(0)); hi = np.maximum(hi, pb.max(0))
+    return groups, lo, hi, label
+
+
+def model_item(no):
+    """export one mesh file as a forest shape; returns (item name, height, width) or None"""
+    if no in defs:
+        return defs[no]
+    defs[no] = None
+    groups, lo, hi, label = model_groups(no)
     if not groups:
         return None
+    sib = lod_sibling(no); low = model_groups(sib)[0] if sib is not None else []
+    stats['model_with_lod1' if low else 'model_single_lod'] += 1
     item = re.sub(r'[^A-Za-z0-9_]', '_', label) + f'_{no}'
-    write_dae(adir / f'{item}.dae', groups, np.zeros(3))
+    lv0 = (0,) if low else (0, 1)
+    shape = [((g[0], lv0),) + tuple(g[1:]) for g in groups] + [((g[0], (1,)),) + tuple(g[1:]) for g in low]
+    write_lod(adir / f'{item}.dae', shape, np.zeros(3), (120, 40 if IMPOSTERS else 1), False, ['bb_autobillboard25'] if IMPOSTERS else [])
     d = dict(tmpl); d.update({'name': item, 'internalName': item, 'shapeFile': f'{rel}/art/forest/models/{item}.dae', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0, 'windScale': 0})
     d.pop('persistentId', None)
-    defs[no] = dict(item=item, h=float(hi[2] - lo[2]), w=float(hi[0] - lo[0]), d=d, groups=groups)
+    tri = (sum(len(g[4]) // 3 for g in groups), sum(len(g[4]) // 3 for g in (low or groups)))
+    defs[no] = dict(item=item, h=float(hi[2] - lo[2]), w=float(hi[0] - lo[0]), d=d, groups=groups, low=low, tri=tri)
     return defs[no]
 
 
@@ -613,7 +667,7 @@ for c in F:
     if lod(c['name']) == 0:
         byname.setdefault(norm(c['name']), set()).add(int(c['f'].split('.')[1]))
 seen = set(); miss = collections.Counter()
-for r_ in re.findall(pc, col):
+for r_ in []:        # smashables now come from the zone records, with exact mesh ids
     nm = r_[0]; v = list(map(float, r_[1:]))
     if 'FEST' in nm.upper():
         stats['collobjs_event'] += 1
@@ -642,50 +696,33 @@ for item, r_ in rows.items():
         if o.pop('size', None):
             o['scale'] = round(float(np.clip(o['scale'] / m_, .4, 2.5)), 3) if o['scale'] > 0 else 1.0
 PLANT_RE = re.compile(r'tree|bush|shrub|pinion|sage|grass|cactus|weed|fern', re.I)
-LIVE = pickle.load(open('../memobj_all.pkl', 'rb')) if os.path.exists('../memobj_all.pkl') else {}
-if os.path.exists('../zonevote.pkl'):      # positions the drive missed, only where the zones agree strongly on the mesh
-    have = {(round(v[0], 1), round(v[2], 1)) for v in LIVE.values()}; zadd = 0
-    for p_, (top, share, votes, t_, (zx, zy, zz, zM)) in pickle.load(open('../zonevote.pkl', 'rb')).items():
-        if p_ not in have and share >= .7 and votes >= 4:
-            LIVE[(t_, round(zx), round(zz))] = (zx, zy, zz, zM); zadd += 1
-    print('zone-only objects added', zadd)
+# every static object comes from the zone files (zones.py). Free roam shows records with no owner block, plus smashable scenery,
+# whose block has an empty list and no owner. A block with a list or an owner ties the object to those events.
 names_ = {}
 for c in F:
     names_.setdefault(int(c['f'].split('.')[1]), c['name'])
-ONROAD_OK = re.compile(r'gantry|truck|semi|rv_|van|ambulance|trailer|broadcast|crane|vehicle|pole|sign|banner|bin|grandstand|advert', re.I); roadskip = collections.Counter()
-KEEP = re.compile(r'REDROCKS|RedRock|Redrock|HorizonOutpost|Telegraph|Pylon|LampPost|StreetLight|SpotLight|Sign|Bin[A-Z_]|BinE|Recycling|Phone|Gate|Bench|Table|'
-                  r'Outhouse|Restroom|FenceF|PROC_cars|Vehicles_|RV_|Machinery|Barnfind|Visitor|Viewpoint|Snowpole|Interstate|SHACK|Barn|BLDG|Binocular|Silo|ArmcoArrow|House', re.I)
-NOTKEEP = re.compile(r'^(FEST_(?!HorizonOutpost)|OBJ_FEST|O_FEST|CO_FEST)|Vehicles_|RV_|PROC_cars|Grandstand|Screen|Advert|Tent_|Crane|Broadcast|Countdown|Flag_|Tyre|PortaPotty|Hoarding', re.I)
-dropped = collections.Counter()
-placed = defaultdict(list); skip = collections.Counter(); kept = collections.Counter(); uniq = {}
-from scipy.spatial import cKDTree
-_go = re.findall(r'GameplayID="[^"]+">\s*<Pos x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"', open(RT0 + 'GameObjs.xml', errors='replace').read())
-GOT = cKDTree(np.array(_go, 'f8'))      # objects sitting exactly on a gameplay node belong to that event, not the world
-for (t, kx, kz), v in LIVE.items():
-    nm_ = names_.get(t, '')
-    if GOT.query(v[:3])[0] < 1.0 and 'HorizonOutpost' not in nm_:
-        skip['on gameplay node'] += 1
+skip = collections.Counter(); kept = collections.Counter(); uniq = {}
+for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
+    if r_['lst'] or r_['name']:
+        skip['event only'] += 1
         continue
-    if not nm_ or NOUSE.search(nm_) or PLANT_RE.search(nm_):
-        continue
-    x, y, z = v[0], v[1], -v[2]
+    t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
     if not (X0 < x < X1 and Z0 < z < Z1):
         continue
-    if not re.search(r'HorizonOutpost|Observatory', nm_) and (NOTKEEP.search(nm_) or not KEEP.search(nm_)):
-        skip['not free-roam'] += 1; dropped[re.sub(r'\d+', '#', re.sub(r'_LOD.*$', '', nm_))[:30]] += 1
+    if not nm_ or NOUSE.search(nm_) or PLANT_RE.search(nm_) or re.match(r'S_|C_|.*Debri', nm_) or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
+        skip['not placed here'] += 1
         continue
     base = re.sub(r'_LOD\d+.*$', '', nm_)
-    uniq.setdefault((base, round(x), round(z)), (t, nm_, x, y, z, v[3]))
+    k_ = (base, round(x, 1), round(z, 1))
+    if k_ not in uniq or lod(nm_) < lod(uniq[k_][1]):
+        uniq[k_] = (t, nm_, x, y, z, r_['rot'].tolist())
+print('free-roam objects', len(uniq), dict(skip))
 for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
     l_ = lod(nm_); t0 = t
     for d_ in range(1, l_ + 1):                  # use the LOD0 sibling when the game had a lower one loaded
         if re.sub(r'_LOD\d+.*$', '', names_.get(t - d_, '')) == base and lod(names_[t - d_]) == 0:
             t0 = t - d_
             break
-    ri = int((x - X0) / SQ); rj = int((Z1 - z) / SQ)
-    if 0 <= ri < N and 0 <= rj < N and np.isfinite(Road[rj, ri]) and not ONROAD_OK.search(nm_):
-        skip['on road'] += 1; roadskip[re.sub(r'\d+', '#', nm_)[:30]] += 1
-        continue
     it = model_item(t0)
     if it is None:
         skip['no mesh'] += 1
@@ -696,8 +733,6 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
         skip['mirrored'] += 1
     rows[it['item']].append(dict(ctxid=0, pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=[round(float(q), 5) for q in Rm.ravel()], scale=round(float(np.clip(sc, .2, 5)), 3), type=it['item']))
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
-print('dropped', dropped.most_common(70))
-print('road-skipped', roadskip.most_common(16))
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
 PLANT = re.compile(r'tree|bush|shrub|pinion|sage|grass|cactus|weed|fern', re.I)
 solid = 0; SOLIDS = collections.Counter()
@@ -707,14 +742,14 @@ for no, it in list(defs.items()):
     for o in rows.pop(it['item']):
         SOLIDS[it['item']] += 1
         Rm = np.array(o['rotationMatrix']).reshape(3, 3) * o['scale']; pos = np.array(o['pos'])
-        for mat, pb, nb, uv, t in it['groups']:
+        for lvl_, (mat, pb, nb, uv, t) in [(((0,) if it['low'] else (0, 1, 2)), g) for g in it['groups']] + [((1, 2), g) for g in it['low']]:
             P = pb @ Rm.T + pos; N_ = nb @ Rm.T; N_ = N_ / np.maximum(np.linalg.norm(N_, axis=1, keepdims=True), 1e-9)
             c = P.mean(0)
             if (np.abs(c[:2]) >= HALF - 4).any():
                 continue
             key = np.floor((c[:2] + HALF) / CELL).astype(int); u = int(key[0]) * 1000 + int(key[1])
-            cells[(u, 'col')][mat].append((P, N_, uv, t.reshape(-1, 3), uv))
-            stats['col'] += len(t) // 3
+            cells[(u, 'pro')][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv))
+            stats['pro'] += len(t) // 3
         solid += 1
 print('solid placed objects', solid, 'plant instances', sum(len(v) for v in rows.values()), 'plant items', len(rows))
 for item, r in rows.items():
@@ -775,7 +810,7 @@ tm[f'{name}_{LVL}'] = v
 # ---- shapes, materials, scene
 sdir = level / 'art' / 'shapes'; sdir.mkdir(parents=True, exist_ok=True)
 (sdir / f'{LVL}.materials.json').write_text(json.dumps(MATS, indent=2))
-items = []
+items = []; METRIC = []
 for (u, cat), mm in cells.items():
     groups = []
     for mat, parts in mm.items():
@@ -783,11 +818,45 @@ for (u, cat), mm in cells.items():
         for a_, bb_, cc, t, d_ in parts:
             ps.append(a_); ns.append(bb_); uv.append(cc); ix.append((t + o).ravel()); u2.append(d_); o += len(a_)
         groups.append((mat, np.concatenate(ps), np.concatenate(ns), np.concatenate(uv), np.concatenate(ix), np.concatenate(u2)))
-    org = np.round(np.concatenate([g[1] for g in groups]).mean(0))
-    fn = f'c{u}_{cat}'; write_dae(sdir / 'fh1' / f'{fn}.dae', groups, org)
-    ct = 'Visible Mesh Final' if cat == 'col' else 'None'
+    allp = np.concatenate([g[1] for g in groups]); org = np.round((allp.min(0) + allp.max(0)) / 2)
+    R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
+    # detail sizes follow from this shape's radius, so every cell switches at the same distance
+    s0 = max(int(R_ / LOD_DIST[0] * PX), 3); s1 = max(min(int(R_ / LOD_DIST[1] * PX), s0 - 1), 2)
+    s2 = 1 if cat == 'col' else max(min(int(R_ / PROP_FAR * PX), s1 - 1), 1)
+    if s2 >= s1:
+        s1 = s2 + 1; s0 = max(s0, s1 + 1)
+    fn = f'c{u}_{cat}'
+    col = write_lod(sdir / 'fh1' / f'{fn}.dae', groups, org, (s0, s1, s2), cat != 'vis')
+    ct = 'Collision Mesh' if col else 'None'
     items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
                   'position': [float(x) for x in org], 'collisionType': ct, 'decalType': ct})
+    METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
+cam = g2b(np.array([[-5681., 350., 5301.]]))[0]; drawn = [0, 0, 0, 0]; before = 0
+for org, R_, cat, tr in METRIC:
+    d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[0] else 1 if d_ < LOD_DIST[1] else 2
+    if cat != 'col' and d_ > PROP_FAR:
+        lv = 3
+    before += tr[0]
+    if lv < 3:
+        drawn[lv] += tr[lv]
+print('static tris, all cells at LOD0', before, 'estimated drawn from the outpost: lod0', drawn[0], 'lod1', drawn[1], 'lod2', drawn[2], 'total', sum(drawn))
+fb = fa = 0; fc = collections.Counter()
+for v in defs.values():
+    if not v or v['item'] not in rows:
+        continue
+    r_ = max(v['h'], v['w'], 1) / 2
+    for o in rows[v['item']]:
+        d_ = float(np.linalg.norm(np.array(o['pos']) - cam)); px = r_ * o['scale'] / max(d_, 1) * PX
+        if d_ > 6000:
+            continue
+        fb += v['tri'][0]
+        if px >= 120:
+            fa += v['tri'][0]; fc['lod0'] += 1
+        elif px >= 40:
+            fa += v['tri'][1]; fc['lod1'] += 1
+        else:
+            fa += 2; fc['imposter'] += 1
+print('plant tris before', fb, 'after', fa, dict(fc))
 pickle.dump(dict(world=sorted(int(c['f'].split('.')[1]) for c in sel), placed=sorted(k for k, v in defs.items() if v)), open('../used.pkl', 'wb'))
 print('solid types', collections.Counter(re.sub(r'_?\d+$', '', k) for k in SOLIDS).most_common(30))
 print('shapes', len(items), 'materials', len(MATS), 'textures', sum(1 for v in TX.info.values() if v), 'missing textures', len(TX.missing))

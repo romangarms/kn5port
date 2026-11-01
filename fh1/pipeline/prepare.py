@@ -41,6 +41,5 @@ if __name__ == '__main__':
     run('u2.py')             # developer map art -> ui/
     run('roads.py')          # road raster for map registration
     run('reg3.py')           # map art to world fit -> reg.json
-    run('zall.py')           # all zone placements
-    run('zv.py')             # zone voting -> zonevote.pkl
+    run('zones.py')          # every static placement -> zonerec.pkl
     print('done. Next: python build3.py')

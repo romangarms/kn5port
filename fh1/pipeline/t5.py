@@ -1,5 +1,5 @@
 import json,glob,os,numpy as np,pickle,math,sys
-L='../out3/levels/fh1_redrock'
+L='../out_z/levels/fh1_redrock'
 H=None
 b=open(L+'/theTerrain.ter','rb').read(); n=np.frombuffer(b[1:5],'<u4')[0]; q=np.frombuffer(b,'<u2',n*n,5).reshape(n,n)
 mg=[json.loads(l) for l in open(L+'/main/MissionGroup/items.level.json')]; tb=next(o for o in mg if o['class']=='TerrainBlock'); sp=next(o for o in mg if o['class']=='SpawnSphere')
