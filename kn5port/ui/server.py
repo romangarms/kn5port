@@ -486,6 +486,8 @@ def make_handler(app, port_ref):
                             args += ["--show-hidden"]
                         if o.get("separate_layers") is False:
                             args += ["--layer-lift", "0"]
+                        if o.get("ground_layers") is False:
+                            args += ["--no-ground-layers"]
                         if o.get("palette") and re.fullmatch(r"[A-Za-z0-9_\-]+", str(o["palette"])):
                             args += ["--palette", o["palette"]]
                         j = Job(d.name, args)

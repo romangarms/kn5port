@@ -337,6 +337,9 @@ function optionsHtml(t) {
         ${toggle("o_layers", o.separate_layers !== false, "Separate stacked road layers",
           "Patches, lines and dirt decals laid exactly on the road are raised 2 cm per layer.",
           ["Stops road markings and patches from flickering"], ["Turn off if road markings look like they float"])}
+        ${toggle("o_groundlayers", o.ground_layers !== false, "Sharp layered ground",
+          "Ground that AC blends from several tiling textures (grass, dirt, rock) gets the real texture of whichever layer dominates, when kept as meshes.",
+          ["Sharp grass and dirt up close instead of a blurry stretched image"], ["Hard edges where AC blends softly"])}
       </div>
     </details>
   </div>`;
@@ -433,6 +436,7 @@ function wireDetail(t) {
   $("#o_edgefill")?.addEventListener("change", (e) => { state.opts.edge_fill = e.target.checked; });
   $("#o_hidden")?.addEventListener("change", (e) => { state.opts.hide_hidden = e.target.checked; });
   $("#o_layers")?.addEventListener("change", (e) => { state.opts.separate_layers = e.target.checked; });
+  $("#o_groundlayers")?.addEventListener("change", (e) => { state.opts.ground_layers = e.target.checked; });
   $("#o_adv")?.addEventListener("toggle", (e) => { state.advOpen = e.target.open; });
   $("#o_palette")?.addEventListener("click", (e) => {
     const b = e.target.closest(".pal"); if (!b) return;
@@ -465,7 +469,7 @@ async function convert(id) {
       terrain: o.terrain || "auto", forest: treesMode() === "beamng", keep_ac_trees: treesMode() === "ac",
       tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35, palette: paletteLevel(),
       edge_fill: o.edge_fill !== false, hide_hidden: o.hide_hidden !== false,
-      separate_layers: o.separate_layers !== false } });
+      separate_layers: o.separate_layers !== false, ground_layers: o.ground_layers !== false } });
     state.job.lines = state.job.lines || [];
     renderDetail(); poll();
   } catch (e) { alert(e.message); }
