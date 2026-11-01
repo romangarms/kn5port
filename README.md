@@ -1,3 +1,5 @@
+<p align="center"><img src="packaging/kn5port.png" alt="kn5port icon" width="128"></p>
+
 # kn5port
 
 Convert Assetto Corsa tracks **that you own** into BeamNG.drive levels, on your own computer.
@@ -40,6 +42,12 @@ pip install .[app]
 ## Use
 
 ### App
+
+![Picking a track: previews, convertibility status and what kn5port finds in it](docs/screenshots/track.png)
+
+![A finished conversion with the validation results](docs/screenshots/converted.png)
+
+<sub>The tracks in these screenshots are made-up demo data (`python packaging/screenshots.py` regenerates them).</sub>
 
 Run `kn5port.exe` (or `kn5port-app` from source). It:
 
