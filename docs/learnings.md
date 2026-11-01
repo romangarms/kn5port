@@ -115,9 +115,11 @@ unusual alpha use. Read DDS headers (FourCC and bit count) before assuming a for
 ## Debugging checklist
 
 1. `kn5port inspect <track>`: how meshes are classified (physics, ground, vegetation, hidden…).
-2. `kn5port validate <level> --ac-track <track>`: missing textures and folders, texture sizes, and the
+2. `kn5port inspect <track> --materials`: the largest materials by area with shader, mesh/hidden counts, metres per
+   UV unit, tiling props and textures. Start here for blurry, stretched or oddly coloured surfaces.
+3. `kn5port validate <level> --ac-track <track>`: missing textures and folders, texture sizes, and the
    drive check (road under every AI line point, no terrain above it).
-3. Generated materials keep `ac_shader` and `ac_material`, and are tagged `kn5_ground`, `kn5_hidden` or
+4. Generated materials keep `ac_shader` and `ac_material`, and are tagged `kn5_ground`, `kn5_hidden` or
    `kn5_water`. Grep `art/shapes/<level>.materials.json` to trace an in-game material back to AC.
-4. Check KN5 mesh flags (`visible`, `renderable`, `transparent`, LOD in/out). They explain a lot about rips.
-5. Restart BeamNG fully.
+5. Check KN5 mesh flags (`visible`, `renderable`, `transparent`, LOD in/out). They explain a lot about rips.
+6. Restart BeamNG fully.

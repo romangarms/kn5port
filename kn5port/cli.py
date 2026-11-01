@@ -76,7 +76,47 @@ def inspect_track(track, profile=None, beamng_path=None, mods_path=None):
     }
 
 
+def material_table(track, top=40):
+    """Per (kn5, material) surface statistics, largest area first: what to look at when a surface renders
+    blurry, stretched or wrong. Returns a list of dicts (also printed by `inspect --materials`)."""
+    import numpy as np
+    from collections import defaultdict
+    rows = defaultdict(lambda: {"meshes": 0, "hidden": 0, "tris": 0, "area": 0.0, "uv_area": 0.0})
+    for f in sorted(Path(track).glob("*.kn5")):
+        try:
+            k = KN5(str(f))
+        except KN5Error:
+            continue
+        with k:
+            for m in k.meshes():
+                if m.lod_in > 0 or not len(m.indices):
+                    continue
+                t = m.indices.reshape(-1, 3)
+                p = m.positions.astype(np.float64)
+                uv = m.uvs.astype(np.float64) * m.material.uv_mult
+                r = rows[(f.name, m.material.name)]
+                r.update(shader=m.material.shader, samplers=dict(m.material.samplers),
+                         mults={n: round(v[0], 4) for n, v in m.material.props.items() if "mult" in n.lower()})
+                r["meshes"] += 1; r["hidden"] += int(m.hidden); r["tris"] += len(t)
+                r["area"] += float(np.linalg.norm(np.cross(p[t[:, 1]] - p[t[:, 0]], p[t[:, 2]] - p[t[:, 0]]), axis=1).sum() / 2)
+                e1, e2 = uv[t[:, 1]] - uv[t[:, 0]], uv[t[:, 2]] - uv[t[:, 0]]
+                r["uv_area"] += float(np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum() / 2)
+    out = []
+    for (kn5, mat), r in rows.items():
+        r = dict(r, kn5=kn5, material=mat)
+        r["m_per_uv"] = round((r["area"] / r["uv_area"]) ** 0.5, 2) if r["uv_area"] > 0 else None
+        out.append(r)
+    out.sort(key=lambda r: -r["area"])
+    return out[:top]
+
+
 def cmd_inspect(a):
+    if a.materials:
+        for r in material_table(a.track, a.materials):
+            print(f"{r['area'] / 1e4:9.2f} ha  {r['kn5']:<28} {r['material']:<32} {r['shader']:<28} "
+                  f"meshes {r['meshes']} (hidden {r['hidden']})  tris {r['tris']}  m/uv {r['m_per_uv']}")
+            print(f"{'':13}mults {r['mults']}  samplers {r['samplers']}")
+        return
     r = inspect_track(a.track, a.profile, a.beamng, a.mods)
     print(f"track: {r['track']}  (profile: {r['profile']})")
     print(f"surfaces.ini keys: {', '.join(f'{k}->{v}' for k, v in r['surfaces'].items()) or 'none'}")
@@ -165,6 +205,8 @@ def main(argv=None):
 
     p = sub.add_parser("inspect", help="show what kn5port detects in a track, without converting")
     p.add_argument("track"); p.add_argument("--profile"); p.add_argument("--beamng"); p.add_argument("--mods")
+    p.add_argument("--materials", type=int, nargs="?", const=40, default=0, metavar="N",
+                   help="instead: list the N largest materials by surface area (shader, tiling, textures; default 40)")
     p.set_defaults(func=cmd_inspect)
 
     p = sub.add_parser("convert", help="convert a track into a BeamNG level (unpacked mod)")
