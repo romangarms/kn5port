@@ -46,9 +46,10 @@ Run `kn5port.exe` (or `kn5port-app` from source). It:
 - finds Assetto Corsa and BeamNG through Steam, on any drive (Steam's location comes from the registry, then
   every library in `libraryfolders.vdf`), and your BeamNG mods folder in `%LOCALAPPDATA%\BeamNG`; anything it
   can't find, you pick once with a folder browser
-- lists your tracks with their previews and checks every model file in the background: **✓ convertible**,
-  **! partly protected** (protected files are skipped) or **🔒 protected** (can't be converted). Results are
-  cached, so later launches are instant
+- lists your tracks with their previews and checks every model file in the background (structure, texture
+  signatures and sampled mesh data): **✓ ready**, **! partial** (unreadable files are skipped) or **🔒 protected**
+  (can't be converted). Results are cached, so later launches are instant
+- right-click a track to open its Assetto Corsa folder, or the converted BeamNG level / mod folder
 - marks tracks already converted into your mods folder
 - converts with one button, with options for terrain, vegetation, tree density and terrain shading, and shows
   live progress, the validation results and a button to open the level folder
@@ -71,6 +72,7 @@ Useful options:
 | option | |
 |---|---|
 | `--terrain off` | keep AC's ground as meshes instead of building a terrain (faster, no GroundCover) |
+| `--palette italy` | borrow trees, terrain materials and grass from another stock BeamNG map (see below) |
 | `--tree-density 0.5` | thin trees and shrubs for performance |
 | `--ao 0.2`, `--near-gain 1.3` | lighter terrain shading / brighter near-road ground |
 | `--no-forest` / `--keep-ac-trees` | skip tree replacement / keep AC's own tree meshes |
@@ -85,6 +87,15 @@ On Windows: `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `
 Pushing a tag like `v0.2.0` makes GitHub Actions run the tests, build the exe and attach it to a release
 ([`.github/workflows/release.yml`](.github/workflows/release.yml)). The exe contains only kn5port and its
 Python libraries, never game content.
+
+## Palettes
+
+Trees, terrain materials and grass come from a stock BeamNG map of your choice (West Coast USA by default).
+kn5port analyses the map from your own install: its forest items are sorted into conifers, broadleaf trees,
+palms, shrubs and grass by name, measured, and weighted by how often the map uses them; its terrain materials
+are matched to roles (forest floor, grass, dry grass, dirt, gravel, rock, sand). Each AC tree then gets the
+item closest to its own height. So Italy gives cypresses, pines, oaks and olives; East Coast USA Douglas firs
+and aspens; Jungle Rock Island palms and tropical trees; Utah junipers. West Coast USA uses a hand-tuned mapping.
 
 ## Track profiles
 
