@@ -296,6 +296,12 @@ def shoot(page):
     page.wait_for_timeout(1500)
     page.screenshot(path=str(OUT / "track.png"))
     page.click(".pal")                                  # the demo palette (the default is West Coast USA)
+    page.click("#o_adv summary")                        # show the road fixes too
+    page.set_viewport_size({"width": 1360, "height": 3000})   # tall enough that the whole section is on screen
+    page.wait_for_timeout(300)
+    page.locator("section", has_text="Options").screenshot(path=str(OUT / "options.png"))
+    page.set_viewport_size({"width": 1360, "height": 880})
+    page.wait_for_timeout(300)
     page.click("#go")
     page.wait_for_selector(".box.result", timeout=300_000)
     page.wait_for_timeout(800)

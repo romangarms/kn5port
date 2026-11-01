@@ -45,6 +45,8 @@ pip install .[app]
 
 ![Picking a track: previews, convertibility status and what kn5port finds in it](docs/screenshots/track.png)
 
+![Conversion options, each with its benefits and trade-offs](docs/screenshots/options.png)
+
 ![A finished conversion with the validation results](docs/screenshots/converted.png)
 
 <sub>The tracks in these screenshots are made-up demo data (`python packaging/screenshots.py` regenerates them).</sub>
@@ -59,8 +61,9 @@ Run `kn5port.exe` (or `kn5port-app` from source). It:
   (can't be converted). Results are cached, so later launches are instant
 - right-click a track to open its Assetto Corsa folder, or the converted BeamNG level / mod folder
 - marks tracks already converted into your mods folder
-- converts with one button, with options for terrain, vegetation, tree density and terrain shading, and shows
-  live progress, the validation results and a button to open the level folder
+- converts with one button, with options for the scenery style (which BeamNG map to borrow trees, ground and
+  grass from), ground (BeamNG terrain or AC's own), trees (BeamNG vegetation, AC's trees or none), tree density,
+  terrain shading and road fixes, each listing its benefits and trade-offs; then shows live progress, the validation results and a button to open the level folder
 
 `kn5port ui` serves the same interface in your browser instead (only on `127.0.0.1`, with a per-session
 access token).
