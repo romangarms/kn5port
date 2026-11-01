@@ -119,7 +119,8 @@ see how a track is being interpreted before converting.
 
 ## How it works
 
-See [docs/how-it-works.md](docs/how-it-works.md).
+See [docs/how-it-works.md](docs/how-it-works.md), and [docs/learnings.md](docs/learnings.md) for what broke
+along the way, how it was fixed and what's still open.
 
 ## License
 
