@@ -237,6 +237,46 @@ class KN5:
             return
         yield from self._node(r, np.identity(4, dtype=np.float64), "", include_meshes)
 
+    def mesh_names(self):
+        """(mesh name, Material) for every mesh, without building geometry (fast)."""
+        return [(n.name, n.material) for n in self._walk_names()]
+
+    def _walk_names(self):
+        r = self._reader
+        r.pos = self._node_start
+        out = []
+        if r.pos >= len(self._mm):
+            return out
+
+        class _N:
+            __slots__ = ("name", "material")
+
+        def node():
+            cls = r.i32(); name = r.string(); children = r.i32(); r.u8()
+            if cls == 1:
+                r.floats(16)
+            elif cls in (2, 3):
+                r.u8(); r.u8(); r.u8()
+                if cls == 3:
+                    for _ in range(r.i32()):
+                        r.string(); r.floats(16)
+                nv = r.i32()
+                r.skip(nv * (SKIN_VERT_DTYPE.itemsize if cls == 3 else VERT_DTYPE.itemsize))
+                ni = r.i32(); r.skip(ni * 2)
+                mid = r.i32(); r.i32(); r.f32(); r.f32()
+                if cls == 2:
+                    r.floats(4); r.u8()
+                o = _N(); o.name = name
+                o.material = self.materials[mid] if 0 <= mid < len(self.materials) else \
+                    Material(-1, "__missing__", "", 0, False, 0)
+                out.append(o)
+            else:
+                raise KN5Error(f"unknown node class {cls}")
+            for _ in range(children):
+                node()
+        node()
+        return out
+
     def meshes(self):
         return (n for n in self.walk() if isinstance(n, Mesh))
 

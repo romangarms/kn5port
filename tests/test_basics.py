@@ -154,3 +154,16 @@ def test_physics_surface_keys():
         assert phys_key("1PIT_lane", s) == "1PIT"
         assert phys_key("1WALL_barrier", s) == "WALL"          # undefined: a wall in AC
         assert phys_key("tree_card_01", s) is None
+
+
+def test_terrain_colour_roles_lean_green():
+    from kn5port.terrain import classify_colour
+    RI = {"forest": 0, "grass": 1, "dry_grass": 2, "dirt": 3, "gravel": 4, "rock": 5, "sand": 6}
+    c = np.array([[94, 104, 62], [98, 80, 62], [160, 142, 102], [128, 128, 124], [235, 235, 233]], np.float32) / 255
+    # grass, forest floor (dark brown), dry grass (warm tan), grey -> grass, bright bare -> rock
+    assert classify_colour(c, RI).tolist() == [1, 0, 2, 1, 5]
+
+
+def test_texture_sizes_round_to_power_of_two():
+    from kn5port.level import TextureBaker
+    assert [TextureBaker.pow2(v) for v in (4, 255, 1536, 2048, 6000)] == [16, 256, 2048, 2048, 4096]

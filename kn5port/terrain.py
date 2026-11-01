@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image
 
 from .kn5 import KN5, KN5Error
-from .profile import Profile, read_surfaces, mostly_flat, phys_key
+from .profile import Profile, read_surfaces, mostly_flat, phys_key, material_uses, is_natural_ground
 
 DONOR = "west_coast_usa"
 # terrain layers in .ter order; AC mask channel -> layer
@@ -37,6 +37,7 @@ LAYERS = ["Forest", "grass", "dirt_grass", "dirt", "gravel", "Rock_cliff", "Beac
 MASK_TO_LAYER = {0: 0, 1: 1, 2: 2, 3: 3}        # AC multilayer mask R, G, B, A -> layer index
 BASE_TEX = 4096                                  # terrain-wide base texture size (texture set baseTexSize)
 CARVE_DEPTH = 0.2                               # metres below road surfaces
+WATER_DEPTH = 0.6                               # metres below water surfaces
 NS = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
 PHYS_RE = re.compile(r"^(\d+)([A-Z]+)")
 FAR_RE = re.compile(r"FAR|TERRAIN|GROUND|HILL|MOUNTAIN", re.I)   # replaced from the profile in main()
@@ -44,23 +45,19 @@ PROFILE = Profile()
 SURFACES = {}
 
 
-def classify_ground(mesh, file_is_horizon):
-    """'horizon' | 'near' | 'far' | None for one AC mesh."""
+def classify_ground(mesh, file_is_horizon, uses):
+    """'horizon' | 'near' | 'far' | None for one AC mesh (which meshes are ground: profile.is_natural_ground)."""
     if file_is_horizon or PROFILE.rx("horizon_re").search(mesh.name):
         return "horizon"
+    if not is_natural_ground(mesh, SURFACES, PROFILE, uses):
+        return None
+    p = mesh.positions
+    big = len(p) and max(np.ptp(p[:, 0]), np.ptp(p[:, 2])) > 3000
     if mesh.material.shader.startswith("ksMultilayer"):
-        p = mesh.positions
-        # a multilayer mesh kilometres across is a background landscape, not near-road ground
-        if len(p) and max(np.ptp(p[:, 0]), np.ptp(p[:, 2])) > 3000:
-            return "far"
+        return "far" if big else "near"      # a multilayer mesh kilometres across is a background landscape
+    if phys_key(mesh.name, SURFACES):
         return "near"
-    key = phys_key(mesh.name, SURFACES)
-    if key:
-        gt = PROFILE.ground_type(key, SURFACES.get(key))
-        return "near" if gt in PROFILE.natural_ground_types and mostly_flat(mesh) else None
-    if FAR_RE.search(mesh.name):
-        return "far"
-    return None
+    return "far"
 
 
 def ac_to_bng(p):
@@ -285,6 +282,37 @@ def tex_img(k, name):
     return np.asarray(im.convert("RGBA"), np.uint8)
 
 
+def classify_colour(c, RI):
+    """Terrain role per colour (N,3 in 0..1), leaning green: green or colourless mid-tones -> grass (dark ->
+    forest floor), warm tan -> dry grass, very bright and colourless -> rock. Bare dirt is left to the verge."""
+    c = np.asarray(c, np.float32)
+    r, g, b = c[:, 0], c[:, 1], c[:, 2]
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    sat = c.max(1) - c.min(1)
+    green = (g > r * 1.03) & (g > b * 1.15)
+    out = np.full(len(c), RI["dry_grass"], np.uint8)
+    out[sat < 0.08] = RI["grass"]                         # greys: green grass rather than bare ground
+    out[(lum > 0.62) & (sat < 0.04)] = RI["rock"]
+    out[(lum < 0.36) & (r > b * 1.3)] = RI["forest"]
+    out[lum < 0.22] = RI["forest"]
+    out[green] = RI["grass"]
+    out[green & (lum < 0.26)] = RI["forest"]
+    return out
+
+
+_LAYER_MEANS = {}
+
+
+def layer_mean(k, name):
+    """Average colour (0..1) of a detail texture; a greenish default when it's missing or unreadable."""
+    key = (k.path, name)
+    if key not in _LAYER_MEANS:
+        img = tex_img(k, name) if name else None
+        _LAYER_MEANS[key] = (img[:, :, :3].reshape(-1, 3).mean(0) / 255.0) if img is not None else \
+            np.array([0.30, 0.34, 0.22])
+    return _LAYER_MEANS[key]
+
+
 def sample(img, u, v):
     h, w = img.shape[:2]
     x = np.clip((u % 1.0) * w, 0, w - 1).astype(np.int64)
@@ -351,6 +379,8 @@ def main(argv=None):
     layer_of = {"horizon": "horizon", "far_lod": "far", "far": "far", "near_lod": "near", "near": "near"}
     HL = {k_: np.full((n, n), np.nan, np.float32) for k_ in ("horizon", "far", "near")}
     sand_mats = set()
+    water_tris = []
+    water_re = PROFILE.rx("water_re")
     groups = {kd: [] for kd in order}
     for f in sorted(track.glob("*.kn5")):
         is_horizon = bool(PROFILE.rx("horizon_re").search(f.stem))
@@ -360,10 +390,16 @@ def main(argv=None):
             print(f"  ! skipping {f.name}: {e}")
             continue
         with k:
+            uses = material_uses(k, SURFACES, PROFILE)
             for m in k.meshes():
                 if not len(m.indices):
                     continue
-                kind = classify_ground(m, is_horizon)
+                if not PHYS_RE.match(m.name) and water_re.search(m.name + " " + m.material.name) and \
+                        mostly_flat(m, 0.9):
+                    pw = ac_to_bng(m.positions.astype(np.float64)) - off
+                    water_tris.append(pw[m.indices.reshape(-1, 3)])
+                    continue
+                kind = classify_ground(m, is_horizon, uses)
                 if kind is None:
                     continue
                 if kind == "near" and not m.material.shader.startswith("ksMultilayer"):
@@ -525,6 +561,23 @@ def main(argv=None):
             nb |= np.roll(np.roll(no_cover, dy, 0), dx, 1)
         no_cover = nb
 
+    # ---- 2a. water: AC lake beds are often coarse and poke through the water surface; keep the terrain at
+    # least WATER_DEPTH under every water mesh (and grow no grass there, see layers below)
+    under_water = np.zeros((n, n), bool)
+    if water_tris:
+        WT = np.concatenate(water_tris)
+        W = np.full((n, n), np.inf, np.float32)
+        grid.raster(WT, WT[:, :, 2:3], [W], reduce="min")
+        Wd = W.copy()                                   # one cell of margin around the shoreline
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            Wd = np.minimum(Wd, np.roll(np.roll(W, dy, 0), dx, 1))
+        under_water = np.isfinite(Wd)
+        lowered = (H > Wd - WATER_DEPTH) & under_water
+        H = np.where(under_water, np.minimum(H, Wd - WATER_DEPTH), H)
+        print(f"water: {len(WT):,} triangles, {under_water.sum():,} terrain points kept under water "
+              f"({lowered.sum():,} lowered)")
+        del W, Wd, WT
+
     # ---- 2b. skirts: AC hangs sloped curtains off its road edges into the ground; a 5 m terrain can't follow
     # a shoulder edge closely, so curtains are generated along the outer edges of the driving surfaces,
     # down to just below the terrain wherever the terrain falls away from the edge.
@@ -537,57 +590,82 @@ def main(argv=None):
     # ---- 3. layers + base colour from AC textures
     ts = time.time()
     layer = np.full((n, n), RI["forest"], np.uint8)
-    color = np.zeros((n, n, 3), np.float32) + [0.35, 0.32, 0.25]
+    color = np.zeros((n, n, 3), np.float32) + [0.30, 0.34, 0.22]   # greenish where no source
     near_px = np.zeros((n, n), bool)
     by_kn5 = {}
+    color_f = color.reshape(-1, 3)          # flat views: sources are processed in chunks of points to keep
+    layer_f = layer.reshape(-1)             # memory bounded on large terrains
+    near_f = near_px.reshape(-1)
+    U_f, V_f, M_f = U.reshape(-1), V.reshape(-1), M.reshape(-1)
+    CHUNK = 1_500_000
     for mid, (fp, matname, kind) in enumerate(sources):
-        sel = M == mid
-        if not sel.any():
+        idx = np.flatnonzero(M_f == mid)
+        if not len(idx):
             continue
         if fp not in by_kn5:
             by_kn5[fp] = KN5(fp)
         k = by_kn5[fp]
         mat = next(mm for mm in k.materials if mm.name == matname)
-        u, v = U[sel], V[sel]
-        if kind == "horizon":
-            img = tex_img(k, mat.samplers.get("txDiffuse", ""))
-            if img is not None:
-                c = sample(img, u, v)[:, :3]
-                color[sel] = c
-                layer[sel] = np.where(c[:, 1] > c[:, 0] * 1.02, RI["forest"], RI["dry_grass"]).astype(np.uint8)
-        elif kind == "near" and "txMask" not in mat.samplers:
+        if kind == "near" and "txMask" not in mat.samplers:
             # ordinary textured ground (e.g. a circuit's grass runoff): the texture tiles every few metres,
             # so use its average colour instead of point samples
             img = tex_img(k, mat.samplers.get("txDiffuse", ""))
-            c = (img[:, :, :3].reshape(-1, 3).mean(0) / 255.0) if img is not None else np.array([0.3, 0.33, 0.2])
-            color[sel] = c
-            near_px |= sel
-            if (fp, matname) in sand_mats:
-                layer[sel] = RI["sand"]
-            else:
-                green = c[1] > c[0] * 1.02
-                layer[sel] = RI["forest"] if (green and c.mean() < 0.22) else (RI["grass"] if green else RI["dry_grass"])
-        elif kind == "near" and "txMask" in mat.samplers:
-            mask = tex_img(k, mat.samplers["txMask"])
-            w = sample(mask, u, v)                                     # RGBA weights
-            layer[sel] = np.vectorize(MASK_TO_LAYER.get)(np.argmax(w, 1)).astype(np.uint8)
-            baked = level / "art" / "textures" / f"{re.sub(r'[^A-Za-z0-9_]', '_', matname).lower()}_baked.color.png"
-            if baked.exists():
-                img = np.asarray(Image.open(baked).convert("RGBA"), np.uint8)
-            else:
-                img = tex_img(k, mat.samplers.get("txDiffuse", ""))
-            if img is not None:
-                color[sel] = sample(img, u, v)[:, :3]
-                near_px |= sel
+            c = (img[:, :, :3].reshape(-1, 3).mean(0) / 255.0) if img is not None else np.array([0.30, 0.34, 0.22])
+            color_f[idx] = c
+            near_f[idx] = True
+            layer_f[idx] = RI["sand"] if (fp, matname) in sand_mats else classify_colour(c[None, :], RI)[0]
+            continue
+        ml = "txMask" in mat.samplers
+        img = tex_img(k, mat.samplers.get("txDiffuse", ""))
+        mask = tex_img(k, mat.samplers["txMask"]) if ml else None
+        cols = np.stack([layer_mean(k, mat.samplers.get(f"txDetail{c_}", "")) for c_ in "RGBA"]).astype(np.float32) \
+            if ml else None
+        mm = (img[:, :, :3].reshape(-1, 3).mean(0) / 255.0) if img is not None else None
+        # AC multilayer comes in two styles: a flat near-white base texture with the colour in the four
+        # mask-blended detail layers (e.g. Skyline), or a real colour map as the base texture with the detail
+        # layers only shading it (e.g. FM-style conversions). Use whichever carries the colour.
+        white_base = mm is not None and mm.mean() > 0.47 and np.ptp(mm) < 0.06
+        if ml and mask is not None:      # the material's average layer mix, to normalise the shading
+            wm = mask.reshape(-1, 4).astype(np.float64).mean(0)
+            mix_avg = float((wm / max(wm.sum(), 1e-3)) @ cols.mean(1))
         else:
-            img = tex_img(k, mat.samplers.get("txDiffuse", ""))
-            if img is not None:
-                c = sample(img, u, v)[:, :3]
-                color[sel] = c
-                green = c[:, 1] > c[:, 0] * 1.02
-                dark = c.mean(1) < 0.30
-                layer[sel] = np.where(green & dark, RI["forest"],
-                                      np.where(green, RI["grass"], RI["dry_grass"])).astype(np.uint8)
+            mix_avg = float(cols.mean()) if ml else 1.0
+        for s0 in range(0, len(idx), CHUNK):
+            ii = idx[s0:s0 + CHUNK]
+            u, v = U_f[ii], V_f[ii]
+            if ml:
+                if mask is not None:
+                    w = sample(mask, u, v)
+                    w /= np.maximum(w.sum(1, keepdims=True), 1e-3)
+                    mix = w @ cols
+                else:
+                    mix = np.full((len(ii), 3), 0.5, np.float32)
+                if img is None:
+                    col = mix
+                elif white_base:
+                    col = mix * (sample(img, u, v)[:, :3] / max(float(mm.mean()), 0.05))
+                else:
+                    col = sample(img, u, v)[:, :3] * (mix.mean(1, keepdims=True) / max(mix_avg, 0.05))
+            elif img is not None:
+                col = sample(img, u, v)[:, :3]
+            else:
+                continue
+            col = np.clip(col, 0, 1)
+            color_f[ii] = col
+            layer_f[ii] = classify_colour(col, RI)
+            if kind == "near":
+                near_f[ii] = True
+    report = []
+    hit = M_f >= 0
+    if hit.any():
+        cnt = np.bincount(M_f[hit], minlength=len(sources))
+        sums = np.stack([np.bincount(M_f[hit], weights=color_f[hit, c_], minlength=len(sources)) for c_ in range(3)], 1)
+        for mid_, (fp_, mn_, kd_) in enumerate(sources):
+            if cnt[mid_]:
+                report.append((int(cnt[mid_]), mn_, kd_, sums[mid_] / cnt[mid_]))
+    report.sort(key=lambda r_: -r_[0])
+    print("ground sources: " + "; ".join(f"{mn_} ({kd_}) {cnt / M.size * 100:.0f}% rgb "
+                                        f"{(c_ * 255).round().astype(int).tolist()}" for cnt, mn_, kd_, c_ in report[:6]))
     for k in by_kn5.values():
         k.close()
     # AC's near-road ground is much darker than its distant terrain (in AC, GrassFX and its lighting hide that).
@@ -605,7 +683,7 @@ def main(argv=None):
     hidden = no_cover | road
     for ch in range(3):
         color[:, :, ch] = np.where(hidden, pyramid_fill(np.where(hidden, np.nan, color[:, :, ch])), color[:, :, ch])
-    layer[no_cover] = RI["verge"]
+    layer[no_cover | under_water] = RI["verge"]
     layer[road] = RI["verge"]
     print(f"layers + colours in {time.time() - ts:.0f}s: " +
           ", ".join(f"{LAYERS[i]} {np.mean(layer == i) * 100:.1f}%" for i in range(len(LAYERS))))
@@ -711,6 +789,39 @@ def main(argv=None):
         (mg_dir / "groundcover" / "items.level.json").write_text("".join(json.dumps(o) + "\n" for o in gc_objs))
         print(f"groundcover: {len(gc_objs)} layers ({', '.join(o['name'] for o in gc_objs)}), "
               f"{len(donor_gc_mats)} materials")
+
+    # ---- 6b. skirt shapes + material (a dirt-like surface of the track itself)
+    mats_all = {}
+    for mf in level.rglob("*.materials.json"):
+        if "skirts" in mf.parts or "terrains" in mf.parts:
+            continue
+        try:
+            mats_all.update(json.loads(mf.read_text()))
+        except ValueError:
+            pass
+
+    def skirt_rank(item):
+        k_, v = item
+        if not isinstance(v, dict) or not v.get("Stages") or not v["Stages"][0].get("baseColorMap"):
+            return 9
+        name = (v.get("ac_material") or k_).upper()
+        if "DIRT" in name or "SOIL" in name or "EARTH" in name:
+            return 0
+        gt = v.get("groundType")
+        return {"DIRT": 1, "GRAVEL": 2, "SAND": 3, "GRASS": 4}.get(gt, 5 if v.get("kn5_ground") else 9)
+    ranked = sorted(mats_all.items(), key=skirt_rank)
+    skirt_src = ranked[0][0] if ranked and skirt_rank(ranked[0]) < 9 else None
+    skirt_mat = f"{lvl}_kn5_skirt"
+    sm = dict(mats_all.get(skirt_src, {"Stages": [{"baseColorFactor": [0.32, 0.29, 0.24, 1]}, {}, {}, {}]}))
+    sm.update({"name": skirt_mat, "mapTo": skirt_mat, "doubleSided": True})
+    for drop in ("groundType", "kn5_ground", "alphaTest", "translucent"):
+        sm.pop(drop, None)
+    (level / "art" / "shapes" / "skirts").mkdir(parents=True, exist_ok=True)
+    (level / "art" / "shapes" / "skirts" / "skirts.materials.json").write_text(json.dumps({skirt_mat: sm}, indent=2))
+    skirt_items = write_skirts(level, lvl, skirt_quads, material=skirt_mat)
+    (mg_dir / "road_skirts").mkdir(parents=True, exist_ok=True)
+    (mg_dir / "road_skirts" / "items.level.json").write_text("".join(json.dumps(o) + "\n" for o in skirt_items))
+    print(f"skirt shapes: {len(skirt_items)} (material from {skirt_src})")
 
     # ---- 7. TerrainBlock (+ group) in the scene
     mgf = mg_dir / "items.level.json"

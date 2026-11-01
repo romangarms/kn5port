@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from .kn5 import KN5, KN5Error, Dummy, Mesh
-from .profile import Profile, read_surfaces, mostly_flat, phys_key
+from .profile import Profile, read_surfaces, mostly_flat, phys_key, material_uses, is_natural_ground
 
 MAX_VERTS_PER_CHUNK = 65000
 
@@ -186,15 +186,12 @@ def is_horizon_kn5(stem):
     return bool(PROFILE.rx("horizon_re").search(stem))
 
 
+USES = {}                # material -> ground types of its physics meshes, for the kn5 being converted
+
+
 def is_ac_ground(mesh):
-    """Natural ground the BeamNG terrain replaces: multilayer-shaded tiles, physics meshes with a natural
-    surface (grass, sand), and visual-only meshes named like terrain."""
-    if mesh.material.shader.startswith("ksMultilayer"):
-        return True
-    surf = surface_of(mesh)
-    if surf:
-        return ground_type_of(surf) in PROFILE.natural_ground_types and mostly_flat(mesh)
-    return bool(PROFILE.rx("ground_name_re").search(mesh.name))
+    """Natural ground the BeamNG terrain replaces (rules: profile.is_natural_ground)."""
+    return is_natural_ground(mesh, SURFACES, PROFILE, USES)
 
 
 def is_vegetation(mesh):
@@ -229,8 +226,17 @@ class TextureBaker:
             print(f"    ! could not decode {name}: {e}")
             return None
 
+    @staticmethod
+    def pow2(v):
+        """Nearest power of two (BeamNG imports only power-of-two textures, at least 16 px)."""
+        return int(min(4096, max(16, 2 ** round(math.log2(max(v, 1))))))
+
     def _save(self, im, name):
         self.tex_dir.mkdir(parents=True, exist_ok=True)
+        size = (self.pow2(im.size[0]), self.pow2(im.size[1]))
+        if size != im.size:
+            from PIL import Image
+            im = im.resize(size, Image.LANCZOS)
         im.save(self.tex_dir / name, optimize=False)
         return f"{self.tex_rel}/{name}"
 
@@ -249,16 +255,34 @@ class TextureBaker:
             self.done[key] = self._save(im, f"{Path(name).stem}.{kind}.png") if im else None
         return self.done[key]
 
+    DDS_OK = {b"DXT1", b"DXT3", b"DXT5", b"ATI1", b"ATI2", b"BC4U", b"BC4S", b"BC5U", b"BC5S", b"DX10"}
+
     def raw_ok(self, k, name):
-        """BeamNG refuses block-compressed DDS whose sides aren't powers of two."""
+        """Can BeamNG use this texture exactly as stored? It imports DDS (DXT/BC-compressed or plain RGB, not
+        luminance/alpha-only formats), PNG and JPEG, always power-of-two sized and at least 16 px."""
         t = next((t for t in k.textures if t.name == name), None)
         if t is None:
             return False
-        head = k.texture_bytes(t)[:128] if t.size < 256 else bytes(k._mm[t.offset:t.offset + 128])
-        if head[:4] != b"DDS ":
-            return True
-        h, w = int.from_bytes(head[12:16], "little"), int.from_bytes(head[16:20], "little")
-        return (w & (w - 1)) == 0 and (h & (h - 1)) == 0
+        head = bytes(k._mm[t.offset:t.offset + min(t.size, 128)])
+        good = lambda v: v >= 16 and (v & (v - 1)) == 0
+        if head[:4] == b"DDS ":
+            if len(head) < 128:
+                return False
+            h, w = int.from_bytes(head[12:16], "little"), int.from_bytes(head[16:20], "little")
+            pf_flags, fourcc = int.from_bytes(head[80:84], "little"), head[84:88]
+            bits = int.from_bytes(head[88:92], "little")
+            # compressed (FourCC) formats, or uncompressed 32-bit RGB(A); BeamNG rejects 24-bit RGB DDS
+            fmt_ok = fourcc in self.DDS_OK if pf_flags & 0x4 else bool(pf_flags & 0x40) and bits == 32
+            return fmt_ok and good(w) and good(h)
+        if head[:4] == b"\x89PNG" or head[:3] == b"\xff\xd8\xff":
+            try:
+                from PIL import Image
+                import io
+                with Image.open(io.BytesIO(k.texture_bytes(t))) as im:
+                    return good(im.size[0]) and good(im.size[1])
+            except Exception:
+                return False
+        return False          # TIFF, TGA, BMP...: converted to PNG
 
     def raw_or_png(self, k, name, tex_rel, kind="color"):
         return f"{tex_rel}/{name}" if self.raw_ok(k, name) else (self.rgba_png(k, name, kind) or f"{tex_rel}/{name}")
@@ -461,6 +485,8 @@ def main(argv=None):
         ts = time.time()
         k = KN5(str(path))
         tex_by_name = {t.name: t for t in k.textures}
+        global USES
+        USES = material_uses(k, SURFACES, PROFILE)
         cells = defaultdict(lambda: defaultdict(list))  # (cx, cy, kind) -> matname -> [parts]
         mat_surfaces = defaultdict(set)
         ground_mats = set()

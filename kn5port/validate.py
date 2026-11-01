@@ -164,6 +164,41 @@ def main(argv=None):
                 with _I.open(fp) as im:
                     if im.size != want:
                         errors.append(f"terrain material {m.get('internalName')}: {fp.name} is {im.size}, texture set wants {want}")
+    # textures BeamNG would refuse to import: power-of-two sides of at least 16 px; DDS compressed or 32-bit
+    checked = set()
+    for name, m in mats.items():
+        if not isinstance(m, dict):
+            continue
+        for st in (m.get("Stages") or [m]):
+            for kk, p in st.items():
+                if not (isinstance(p, str) and p.startswith(lvl_rel + "/") and p not in checked):
+                    continue
+                checked.add(p)
+                fp = level / p[len(lvl_rel) + 1:]
+                if not fp.exists() or m.get("class") == "TerrainMaterialTextureSet":
+                    continue
+                try:
+                    if fp.suffix.lower() == ".dds":
+                        b = fp.read_bytes()[:128]
+                        h, w = int.from_bytes(b[12:16], "little"), int.from_bytes(b[16:20], "little")
+                        fl, bits = int.from_bytes(b[80:84], "little"), int.from_bytes(b[88:92], "little")
+                        fmt_bad = not (fl & 0x4) and bits != 32
+                    else:
+                        from PIL import Image as _I2
+                        with _I2.open(fp) as im:
+                            w, h = im.size
+                        fmt_bad = False
+                    p2 = lambda x: x >= 16 and not (x & (x - 1))
+                    if not (p2(w) and p2(h)) or fmt_bad:
+                        errors.append(f"texture BeamNG won't import: {fp.name} ({w}x{h}{', unsupported DDS format' if fmt_bad else ''})")
+                except Exception:
+                    pass
+
+    # every group the scene declares must have its folder (BeamNG: "Unable to deserialize ... Path not found")
+    for o in read_items(level):
+        if o.get("class") == "SimGroup" and o.get("__parent") == "MissionGroup":
+            if not (level / "main" / "MissionGroup" / o["name"] / "items.level.json").exists():
+                errors.append(f"scene group '{o['name']}' is declared but its items.level.json is missing")
     tnames = {m.get("internalName") for m in mats.values() if isinstance(m, dict) and m.get("class") == "TerrainMaterial"}
     for o in read_items(level):
         if o.get("class") == "GroundCover":

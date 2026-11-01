@@ -31,6 +31,8 @@ class Profile:
     # --- ground meshes -----------------------------------------------------------------------------------------
     # visual-only meshes that are terrain (get GRASS collision in mesh mode, become terrain in terrain mode)
     ground_name_re: str = r"FAR|TERRAIN|GROUND|HILL|MOUNTAIN|LANDSCAPE|VALLEY"
+    # visual meshes that are water surfaces (the terrain is kept below them)
+    water_re: str = r"WATER|LAKE|\bSEA\b|_SEA|POND|RIVER|OCEAN|RESERVOIR"
     # kn5 files / meshes that are a distant backdrop (lowest-priority terrain source, never converted as meshes)
     horizon_re: str = r"HORIZON|BACKDROP|SKYBOX|PANORAMA"
 
@@ -208,3 +210,36 @@ def phys_key(name, surfaces):
         if (rest.startswith(ku) or up.startswith(ku)) and (best is None or len(k) > len(best)):
             best = k
     return best or m.group(2).upper()
+
+
+ROAD_LIKE = re.compile(r"ROAD|ASPH|ASLPH|PHALT|TARMAC|KERB|CURB|PAINT|LINE|CONCRETE|CEMENT|\bPIT|_PIT|BRIDGE", re.I)
+
+
+def material_uses(kn5, surfaces, profile):
+    """material name -> set of BeamNG ground types of the physics meshes that use it (one cheap pass)."""
+    uses = {}
+    for name, mat in kn5.mesh_names():
+        key = phys_key(name, surfaces)
+        if key:
+            uses.setdefault(mat.name, set()).add(profile.ground_type(key, surfaces.get(key)))
+    return uses
+
+
+def is_natural_ground(mesh, surfaces, profile, uses):
+    """Ground the BeamNG terrain should replace (see the docs: physics surface first, then shared materials,
+    then shader / names). Road-looking materials always stay meshes."""
+    mat = mesh.material
+    # judge by the material and its main texture only (masks/details are often shared, e.g. "asph-mask5")
+    roadish = bool(ROAD_LIKE.search(mat.name + " " + mat.samplers.get("txDiffuse", "")))
+    natural = set(profile.natural_ground_types)
+    multilayer = mat.shader.startswith("ksMultilayer")
+    key = phys_key(mesh.name, surfaces)
+    if key:
+        gt = profile.ground_type(key, surfaces.get(key))
+        return gt in natural and not roadish and (multilayer or mostly_flat(mesh))
+    gts = uses.get(mat.name)
+    if gts:
+        return gts <= natural and not roadish
+    if multilayer:
+        return not roadish
+    return bool(profile.rx("ground_name_re").search(mesh.name))
