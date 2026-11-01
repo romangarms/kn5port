@@ -38,6 +38,7 @@ import numpy as np
 
 from .kn5 import KN5, KN5Error, Dummy, Mesh
 from .overlay import OverlayLifter, STEP as LAYER_STEP
+from .layers import LayerSplitter, pieces, layer_material
 from .profile import Profile, read_surfaces, mostly_flat, phys_key, material_uses, is_natural_ground, ROAD_LIKE
 
 MAX_VERTS_PER_CHUNK = 65000
@@ -509,6 +510,9 @@ def main(argv=None):
     ap.add_argument("--layer-lift", type=float, default=LAYER_STEP, metavar="M",
                     help=f"raise road layers that lie on an earlier-drawn surface (patches, lines, decals) by M "
                          f"metres per layer so they don't z-fight (default {LAYER_STEP}; 0 = off)")
+    ap.add_argument("--no-ground-layers", action="store_true",
+                    help="draw AC multilayer ground with one blended, low-res texture instead of splitting it by "
+                         "dominant layer (grass, dirt, rock) into sharp tiling textures with hard edges between them")
     args = ap.parse_args(argv)
 
     track = Path(args.track_dir)
@@ -588,6 +592,7 @@ def main(argv=None):
     statics = defaultdict(list)   # group -> list of TSStatic dicts
     stats = {}
     lifter = OverlayLifter(step=args.layer_lift)
+    splitter = LayerSplitter(baker)
 
     for stem in todo:
         path = track / f"{stem}.kn5"
@@ -652,7 +657,12 @@ def main(argv=None):
             e1, e2 = uvs[t3[:, 1]] - uvs[t3[:, 0]], uvs[t3[:, 2]] - uvs[t3[:, 0]]
             auv = np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum()
             uv_density[m.material.name] += np.array([a3, auv])
-            cells[cell][(m.material.name, surf, hidden)].append((pos32, nrm.astype(np.float32), uvs, idx32))
+            split = None
+            mt = m.material
+            if not hidden and not args.no_ground_layers and mt.shader.startswith("ksMultilayer") and \
+                    not ROAD_LIKE.search(f"{mt.name} {mt.samplers.get('txDiffuse', '')}"):
+                split = splitter.split(k, mt, pos, uvs, idx)   # sharp per-layer textures (layers.py)
+            cells[cell][(m.material.name, surf, hidden)].append((pos32, nrm.astype(np.float32), uvs, idx32, split))
             kept += 1
 
         lifted0 = lifter.stats["meshes"]
@@ -689,8 +699,28 @@ def main(argv=None):
                     for tname in acmat.samplers.values():
                         if tname in used and tname in tex_by_name and tname not in textures_needed:
                             textures_needed[tname] = (path, tex_by_name[tname])
-                for chunk in merge_chunks(parts):
+                plain, by_layer = [], defaultdict(list)
+                for p_ in parts:
+                    if p_[4] is None:
+                        plain.append(p_)
+                        continue
+                    for c_, sub, sc in pieces(p_, p_[4]):   # after lifting: pieces copy the (lifted) positions
+                        (by_layer[c_].append((sub, sc)) if c_ else plain.append(sub))
+                for chunk in merge_chunks(plain):
                     groups.append((name, *chunk))
+                for c_, items in by_layer.items():
+                    lname = f"{name}_layer{c_}"
+                    if lname not in materials:
+                        gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
+                        materials[lname] = layer_material(lname, acmat, c_, k, baker, tex_rel, items[0][1], gt)
+                        if acname in ground_mats:
+                            materials[lname]["kn5_ground"] = True
+                        tname = acmat.samplers[f"txDetail{c_}"]
+                        if materials[lname]["Stages"][0]["baseColorMap"].endswith("/" + tname) and \
+                                tname in tex_by_name and tname not in textures_needed:
+                            textures_needed[tname] = (path, tex_by_name[tname])
+                    for chunk in merge_chunks([it[0] for it in items]):
+                        groups.append((lname, *chunk))
             origin = np.array([(cx + 0.5) * args.cell, (cy + 0.5) * args.cell, 0.0])
             fname = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
             dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"

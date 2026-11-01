@@ -289,3 +289,62 @@ def test_hidden_material_is_transparent():
         assert m["translucent"] and not m["translucentZWrite"] and m["alphaTest"] and not m["castShadows"]
         assert st["opacityFactor"] == 0 and st["baseColorFactor"][3] == 0 and st["opacityMap"] == op
         assert m["groundType"] == "ASPHALT"
+
+
+def _png(rgba):
+    import io
+    from PIL import Image
+    b = io.BytesIO(); Image.fromarray(np.asarray(rgba, np.uint8)).save(b, "PNG"); return b.getvalue()
+
+
+def make_multilayer_kn5(path, n=8, size=100.0):
+    """One 100 m ground mesh with a ksMultilayer material: mask red on the left half, green on the right."""
+    mask = np.zeros((16, 16, 4), np.uint8); mask[..., 3] = 255
+    mask[:, :8, 0] = 255; mask[:, 8:, 1] = 255
+    macro = np.full((16, 16, 4), 200, np.uint8); macro[::2, :, :3] = 150
+    grass = np.zeros((16, 16, 4), np.uint8); grass[..., 1] = 120; grass[::3, :, 1] = 90; grass[..., 3] = 255
+    dirt = np.zeros((16, 16, 4), np.uint8); dirt[..., 0] = 110; dirt[::3, :, 0] = 80; dirt[..., 3] = 255
+    texs = {"mask.png": _png(mask), "macro.png": _png(macro), "dirt.png": _png(dirt), "grass.png": _png(grass)}
+    out = b"sc6969" + struct.pack("<ii", 6, 0) + struct.pack("<i", len(texs))
+    for name, data in texs.items():
+        out += struct.pack("<i", 1) + _s(name) + struct.pack("<i", len(data)) + data
+    samplers = {"txDiffuse": "macro.png", "txMask": "mask.png", "txDetailR": "dirt.png", "txDetailG": "grass.png"}
+    props = {"multR": 0.1, "multG": 0.2, "multB": 0.0, "multA": 0.0}
+    out += struct.pack("<i", 1) + _s("hillside") + _s("ksMultilayer_fresnel_nm") + bytes([0, 0]) + struct.pack("<i", 0)
+    out += struct.pack("<i", len(props)) + b"".join(_s(k) + struct.pack("<10f", v, *[0] * 9) for k, v in props.items())
+    out += struct.pack("<i", len(samplers)) + b"".join(_s(k) + struct.pack("<i", i) + _s(v)
+                                                       for i, (k, v) in enumerate(samplers.items()))
+    out += struct.pack("<i", 1) + _s("root") + struct.pack("<i", 1) + bytes([1]) + struct.pack("<16f", *np.identity(4).ravel())
+    verts, idx = [], []
+    for j in range(n + 1):
+        for i in range(n + 1):
+            u, v = i / n, j / n
+            verts.append(struct.pack("<11f", u * size, 0, v * size, 0, 1, 0, u, v, 1, 0, 0))
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            idx += [a, a + n + 2, a + 1, a, a + n + 1, a + n + 2]
+    out += struct.pack("<i", 2) + _s("1GRASS_hill") + struct.pack("<i", 0) + bytes([1]) + bytes([1, 1, 0])
+    out += struct.pack("<i", len(verts)) + b"".join(verts)
+    out += struct.pack("<i", len(idx)) + struct.pack(f"<{len(idx)}H", *idx)
+    out += struct.pack("<ii", 0, 0) + struct.pack("<2f", 0, 0) + struct.pack("<4f", 50, 0, 50, 80) + bytes([1])
+    Path(path).write_bytes(out)
+
+
+def test_multilayer_ground_split_into_sharp_layers():
+    import json, re
+    from kn5port import level
+    with tempfile.TemporaryDirectory() as d:
+        trk, out = Path(d) / "hill", Path(d) / "mod"
+        trk.mkdir(); make_multilayer_kn5(trk / "hill.kn5")
+        level.main([str(trk), str(out), "--layer-lift", "0"])
+        mats = json.loads((out / "levels/hill/art/shapes/hill.materials.json").read_text())
+        r, g = mats["hill_hillside_layerR"], mats["hill_hillside_layerG"]
+        assert r["Stages"][0]["baseColorMap"].endswith("dirt_rgb.color.png") and r["groundType"] == "GRASS"
+        assert abs(r["ac_tile_repeats_per_uv"] - 10) < 0.5 and abs(g["ac_tile_repeats_per_uv"] - 20) < 1   # 10 m / 5 m tiles
+        assert abs(r["Stages"][0]["detailScale"][0] - 0.1) < 0.01            # macro maps back onto the mesh
+        dae = next((out / "levels/hill/art/shapes/hill").glob("*.dae")).read_text()
+        assert "hill_hillside_layerR" in dae and "hill_hillside_layerG" in dae
+        level.main([str(trk), str(out), "--layer-lift", "0", "--no-ground-layers"])
+        mats = json.loads((out / "levels/hill/art/shapes/hill.materials.json").read_text())
+        assert not any("_layer" in k for k in mats)
