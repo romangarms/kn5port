@@ -413,6 +413,10 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
         "materialTag0": "beamng", "materialTag1": "kn5_port",
         "ac_shader": shader, "ac_material": acmat.name,
     }
+    uvp = {n: round(float(acmat.props[n][0]), 4) for n in ("diffuseMult", "normalMult", "detailUVMultiplier",
+           "multR", "multG", "multB", "multA", "magicMult") if n in acmat.props}
+    if uvp:
+        mat["ac_uv"] = uvp          # AC's UV tiling props, for tracing blurry or mis-tiled textures
     if mat_water:
         mat["kn5_water"] = True
     if alpha_test:
@@ -563,6 +567,7 @@ def main(argv=None):
         USES = material_uses(k, SURFACES, PROFILE)
         cells = defaultdict(lambda: defaultdict(list))  # (cx, cy, kind) -> matname -> [parts]
         mat_surfaces = defaultdict(set)
+        uv_density = defaultdict(lambda: np.zeros(2))   # material -> (3D area, UV area): metres per UV unit
         ground_mats = set()
         kept = dropped_lod = dropped_crop = dropped_veg = dropped_ground = dropped_hidden = 0
 
@@ -608,7 +613,13 @@ def main(argv=None):
             pos32, idx32 = pos.astype(np.float32), idx.astype(np.uint32)
             if not hidden:     # drawn: may be a layer on top of an earlier surface (lifted in place below)
                 lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1)
-            cells[cell][(m.material.name, surf, hidden)].append((pos32, nrm.astype(np.float32), m.uvs, idx32))
+            uvs = m.uvs * m.material.uv_mult if m.material.uv_mult != 1.0 else m.uvs
+            t3 = idx.reshape(-1, 3)
+            a3 = np.linalg.norm(np.cross(pos[t3[:, 1]] - pos[t3[:, 0]], pos[t3[:, 2]] - pos[t3[:, 0]]), axis=1).sum()
+            e1, e2 = uvs[t3[:, 1]] - uvs[t3[:, 0]], uvs[t3[:, 2]] - uvs[t3[:, 0]]
+            auv = np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum()
+            uv_density[m.material.name] += np.array([a3, auv])
+            cells[cell][(m.material.name, surf, hidden)].append((pos32, nrm.astype(np.float32), uvs, idx32))
             kept += 1
 
         lifted0 = lifter.stats["meshes"]
@@ -637,6 +648,9 @@ def main(argv=None):
                     materials[name] = bng_material(name, acmat, k, baker, tex_rel, gt)
                     if acname in ground_mats:
                         materials[name]["kn5_ground"] = True   # natural ground (the terrain ignores it)
+                    a3, auv = uv_density.get(acname, (0, 0))
+                    if auv > 0:   # how many metres one texture repeat covers (diagnostics)
+                        materials[name]["ac_m_per_uv"] = round(float(np.sqrt(a3 / auv)), 3)
                     used = {Path(v).name for v in materials[name]["Stages"][0].values() if isinstance(v, str)}
                     for tname in acmat.samplers.values():
                         if tname in used and tname in tex_by_name and tname not in textures_needed:

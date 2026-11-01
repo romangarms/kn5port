@@ -262,3 +262,11 @@ def test_detail_map_is_neutral_grey():
         assert abs(out.mean() - 0.5) < 0.02 and out.std() > 0.05
         b._img = lambda k, name: Image.new("RGBA", (32, 32), (90, 90, 90, 255))
         assert b.detail(None, "flat.dds") is None
+
+
+def test_uvmult_shader_tiling():
+    from kn5port.kn5 import Material
+    m = Material(0, "grass", "ksPerPixelNM_UVMult", 0, False, 0, {"diffuseMult": (40.0, (), (), ())})
+    assert m.uv_mult == 40.0
+    assert Material(0, "road", "ksPerPixel", 0, False, 0, {"diffuseMult": (40.0, (), (), ())}).uv_mult == 1.0
+    assert Material(0, "x", "ksPerPixelNM_UVMult", 0, False, 0).uv_mult == 1.0

@@ -51,6 +51,16 @@ class Material:
     props: dict = field(default_factory=dict)      # name -> (float, vec2, vec3, vec4)
     samplers: dict = field(default_factory=dict)   # sampler name (txDiffuse...) -> texture name
 
+    @property
+    def uv_mult(self):
+        """UV tiling the shader applies to the stored UVs: the *_UVMult shaders sample their textures at
+        uv * diffuseMult (game rips use them for grass, rock, gravel and road), everything else at uv."""
+        if "UVMult" in self.shader:
+            v = self.props.get("diffuseMult", (1.0,))[0]
+            if 0 < v < 10000:
+                return float(v)
+        return 1.0
+
 
 @dataclass
 class Mesh:

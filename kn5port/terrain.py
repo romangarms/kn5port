@@ -420,7 +420,7 @@ def main(argv=None):
                 mid = sources.index(key)
                 p = ac_to_bng(m.positions.astype(np.float64)) - off
                 t = m.indices.reshape(-1, 3)
-                at = np.concatenate([p[:, 2:3], m.uvs, np.full((len(p), 1), mid + 1)], 1)  # 0 = no hit
+                at = np.concatenate([p[:, 2:3], m.uvs * m.material.uv_mult, np.full((len(p), 1), mid + 1)], 1)  # 0 = no hit
                 lod = "_lod" if m.lod_in > 0 and kind != "horizon" else ""
                 groups[kind + lod].append((p[t].astype(np.float32), at[t].astype(np.float32)))
     for kind in order:
