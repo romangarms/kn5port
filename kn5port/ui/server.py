@@ -148,7 +148,7 @@ def scan_tracks(settings, scanner=None):
         ui = read_ui(main_ui) if main_ui.exists() else (read_ui(uis[0]) if uis else {})
         prev = next((p for p in [d / "ui" / "preview.png"] + [u.parent / "preview.png" for u in uis] if p.exists()),
                     None)
-        name = ui.get("name") or d.name
+        name = str(ui.get("name") or "").strip() or d.name
         if uis and " - " in name:
             name = name.split(" - ")[0]
         level = safe_name(d.name)
@@ -161,6 +161,8 @@ def scan_tracks(settings, scanner=None):
             "preview": bool(prev), "converted": bool(converted), "level": level,
             "check": (scanner.status.get(d.name) if scanner else None) or {"state": "checking"},
         })
+    # Sort by the name shown in the app, not the folder name (folders are often prefixed, e.g. "ks_", "rt_").
+    out.sort(key=lambda t: (t["name"].casefold(), t["id"].casefold()))
     return out
 
 

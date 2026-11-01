@@ -167,3 +167,17 @@ def test_terrain_colour_roles_lean_green():
 def test_texture_sizes_round_to_power_of_two():
     from kn5port.level import TextureBaker
     assert [TextureBaker.pow2(v) for v in (4, 255, 1536, 2048, 6000)] == [16, 256, 2048, 2048, 4096]
+
+
+def test_track_list_sorted_by_display_name():
+    import json
+    from kn5port.ui.server import scan_tracks
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for folder, name in [("ks_zandvoort", "Zandvoort"), ("aaa_monza", "monza"), ("rt_brands", "Brands Hatch")]:
+            d = root / folder
+            (d / "ui").mkdir(parents=True)
+            (d / "track.kn5").write_bytes(b"")
+            (d / "ui" / "ui_track.json").write_text(json.dumps({"name": name}))
+        names = [t["name"] for t in scan_tracks({"tracks": str(root)})]
+        assert names == ["Brands Hatch", "monza", "Zandvoort"]
