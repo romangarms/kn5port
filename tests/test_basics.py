@@ -340,9 +340,11 @@ def test_multilayer_ground_split_into_sharp_layers():
         level.main([str(trk), str(out), "--layer-lift", "0"])
         mats = json.loads((out / "levels/hill/art/shapes/hill.materials.json").read_text())
         r, g = mats["hill_hillside_layerR"], mats["hill_hillside_layerG"]
-        assert r["Stages"][0]["baseColorMap"].endswith("dirt_rgb.color.png") and r["groundType"] == "GRASS"
+        # colour from AC's macro map on the mesh's UVs, sharpness from the layer's own texture as a tiled detail map
+        assert r["Stages"][0]["baseColorMap"].endswith("macro_rgb.color.png") and r["groundType"] == "GRASS"
+        assert "dirt_detail" in r["Stages"][0]["detailMap"] and "grass_detail" in g["Stages"][0]["detailMap"]
         assert abs(r["ac_tile_repeats_per_uv"] - 10) < 0.5 and abs(g["ac_tile_repeats_per_uv"] - 20) < 1   # 10 m / 5 m tiles
-        assert abs(r["Stages"][0]["detailScale"][0] - 0.1) < 0.01            # macro maps back onto the mesh
+        assert abs(r["Stages"][0]["detailScale"][0] - 10) < 0.5
         dae = next((out / "levels/hill/art/shapes/hill").glob("*.dae")).read_text()
         assert "hill_hillside_layerR" in dae and "hill_hillside_layerG" in dae
         level.main([str(trk), str(out), "--layer-lift", "0", "--no-ground-layers"])

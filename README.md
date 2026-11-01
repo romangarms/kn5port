@@ -90,7 +90,7 @@ Useful options:
 | `--no-edge-fill` | don't raise the terrain to the road edges or hang curtains under them (if they show as walls/ramps) |
 | `--show-hidden` | also draw meshes AC hides; off by default because physics-only road copies on ripped (e.g. Forza) tracks flicker against the visual road |
 | `--layer-lift 0.02` | metres to raise each road layer (patch, line, dirt decal) that lies exactly on an earlier-drawn surface, so stacked layers don't flicker; `0` turns it off |
-| `--no-ground-layers` | keep AC's blended (multilayer) ground as one low-res texture instead of splitting it into sharp grass/dirt/rock textures with hard edges between them |
+| `--no-ground-layers` | give AC's blended (multilayer) ground one detail texture per material instead of the grass/dirt/rock texture of whichever layer dominates under each triangle |
 | `--profile my.json` | per-track overrides (see below) |
 | `--beamng`, `--mods`, `--out` | paths, if auto-detection fails |
 
