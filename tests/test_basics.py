@@ -137,3 +137,20 @@ def test_sample_tris_numpy2():
     T = np.array([[[0, 0, 0], [4, 0, 0], [0, 4, 0]]], dtype=np.float64)
     pts = sample_tris(T, 1.0)
     assert pts.shape[1] == 2 and len(pts) > 10
+
+
+def test_physics_surface_keys():
+    """AC's built-in surfaces count even when a track only defines extras; unknown keys still collide."""
+    from kn5port.profile import read_surfaces, phys_key
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d) / "assettocorsa" / "content" / "tracks" / "x"
+        (t / "layout" / "data").mkdir(parents=True)
+        (t / "layout" / "data" / "surfaces.ini").write_text("[SURFACE_0]\nKEY=OFF\nIS_VALID_TRACK=0\n"
+                                                            "[SURFACE_1]\nKEY=1PIT\nIS_VALID_TRACK=1\n")
+        s = read_surfaces(t)
+        assert {"ROAD", "GRASS", "KERB", "SAND", "OFF", "1PIT"} <= set(s)
+        assert phys_key("1GRASS_hill_03", s) == "GRASS"
+        assert phys_key("1OFF_verge", s) == "OFF"
+        assert phys_key("1PIT_lane", s) == "1PIT"
+        assert phys_key("1WALL_barrier", s) == "WALL"          # undefined: a wall in AC
+        assert phys_key("tree_card_01", s) is None

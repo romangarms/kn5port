@@ -186,14 +186,14 @@ class KN5:
         return bytes(self._mm[tex.offset:tex.offset + tex.size])
 
     # -- integrity -------------------------------------------------------
-    IMAGE_MAGIC = (b"DDS ", b"\x89PNG", b"\xff\xd8\xff", b"BM")
+    IMAGE_MAGIC = (b"DDS ", b"\x89PNG", b"\xff\xd8\xff", b"BM", b"II*\x00", b"MM\x00*")
 
     def verify(self, sample_every=10, max_verts=2048):
         """Check that the payload, not just the structure, is plain data: textures carry real image signatures
         and sampled meshes hold plausible geometry (finite, plausible-scale positions, unit normals, indices in
         range). Protection schemes that keep the file structure but scramble the data fail here.
         Returns None if the file looks fine, otherwise a short reason."""
-        bad_tex = [t.name for t in self.textures if t.size >= 4 and
+        bad_tex = [t.name for t in self.textures if t.size >= 4 and not t.name.lower().endswith(".tga") and
                    not bytes(self._mm[t.offset:t.offset + 4]).startswith(self.IMAGE_MAGIC)]
         if bad_tex and len(bad_tex) > len(self.textures) // 10:       # tolerate a stray odd file
             return f"{len(bad_tex)} of {len(self.textures)} textures are not plain images"

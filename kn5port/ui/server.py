@@ -58,7 +58,7 @@ def safe_name(name):
 
 # ---- convertibility scan ----------------------------------------------------------------------------------
 
-CHECK_VERSION = 2            # bump when check_kn5 changes, so cached results are redone
+CHECK_VERSION = 3            # bump when check_kn5 changes, so cached results are redone
 
 
 def check_kn5(path):

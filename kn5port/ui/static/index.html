@@ -307,7 +307,7 @@ function renderDetail() {
   const blocked = cs === "protected";
   const why = (t.check?.reasons || []).map((r) => `<div class="muted" style="margin-top:4px">${esc(r)}</div>`).join("");
   const alert = cs === "protected" ? `<div class="alert bad">This track's files are protected or unreadable, so it can't be converted. kn5port doesn't get around protection.${why}</div>`
-    : cs === "partial" ? `<div class="alert warn">${t.check.bad} of ${t.check.ok + t.check.bad} model files are protected or unreadable and will be skipped; the rest converts normally.${why}</div>` : "";
+    : cs === "partial" ? `<div class="alert warn">${t.check.bad} of ${t.check.ok + t.check.bad} model files look protected or unusual. kn5port converts everything it can read and skips only files it can't open.${why}</div>` : "";
   $("#detail").innerHTML = `
     <div class="hero" ${t.preview ? `style="background-image:url('${preview(t.id)}')"` : ""}></div>
     <div class="body">

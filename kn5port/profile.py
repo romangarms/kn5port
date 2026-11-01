@@ -139,10 +139,25 @@ class Profile:
         return asdict(self)
 
 
+# AC's own system/data/surfaces.ini (used when the install's copy can't be read)
+AC_DEFAULT_SURFACES = {
+    "ROAD": {"KEY": "ROAD", "IS_VALID_TRACK": "1"}, "GRASS": {"KEY": "GRASS", "IS_VALID_TRACK": "0"},
+    "KERB": {"KEY": "KERB", "IS_VALID_TRACK": "1"}, "SAND": {"KEY": "SAND", "IS_VALID_TRACK": "0"},
+}
+
+
 def read_surfaces(track_dir):
-    """All [SURFACE_n] blocks from every surfaces.ini in the track: KEY -> properties."""
-    out = {}
-    for ini in Path(track_dir).rglob("surfaces.ini"):
+    """Physics surface definitions available to the track: AC's built-in ones (system/data/surfaces.ini of the
+    install the track lives in), then the track's own surfaces.ini files. KEY -> properties."""
+    out = dict(AC_DEFAULT_SURFACES)
+    track_dir = Path(track_dir)
+    files = []
+    if len(track_dir.parents) >= 3:
+        files.append(track_dir.parents[2] / "system" / "data" / "surfaces.ini")      # assettocorsa/system
+    files += sorted(track_dir.rglob("surfaces.ini"))
+    for ini in files:
+        if not ini.exists():
+            continue
         cur = None
         for line in ini.read_text(errors="replace").splitlines():
             line = line.split(";")[0].strip()
@@ -171,3 +186,25 @@ def mostly_flat(mesh, threshold=0.8):
         return False
     up = np.abs(n[:, 1]) / np.maximum(area, 1e-12)          # AC is Y-up
     return float((up * area).sum() / area.sum()) >= threshold
+
+
+PHYS_NAME = re.compile(r"^(\d+)([A-Za-z]+)")
+
+
+def phys_key(name, surfaces):
+    """AC physics surface key of a mesh name, or None for a visual mesh.
+
+    AC treats every mesh named <digits><KEY>... as a physics object. KEY is matched against the defined surfaces
+    (longest match, with or without the digits, since some tracks define keys like '1PIT'); a key that isn't
+    defined anywhere still collides in AC, as a wall, so it is returned as-is."""
+    m = PHYS_NAME.match(name)
+    if not m:
+        return None
+    up = name.upper()
+    rest = up[len(m.group(1)):]
+    best = None
+    for k in surfaces:
+        ku = k.upper()
+        if (rest.startswith(ku) or up.startswith(ku)) and (best is None or len(k) > len(best)):
+            best = k
+    return best or m.group(2).upper()

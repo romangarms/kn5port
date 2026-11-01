@@ -81,6 +81,7 @@ def drive_check(level, track, samples=3000):
         return max(s1, s2)        # whichever way BeamNG splits the cell
 
     out = []
+    drive_check.misses = {}
     for ai in sorted(Path(track).glob("**/ai/fast_lane.ai")):
         b = ai.read_bytes()
         n_pts = struct.unpack_from("<4i", b, 0)[1]
@@ -89,16 +90,25 @@ def drive_check(level, track, samples=3000):
         q = np.stack([pts[:, 0], -pts[:, 2], pts[:, 1]], 1) - off
         q = q[:: max(1, len(q) // samples)]
         cov = above = 0
+        misses = []
         for x, y, z in q:
             s = surface(x, y, z)
-            if s is not None and abs(s - z) < 0.5:
+            on_terrain = False
+            if Ht is not None and (s is None or not -0.5 < z - s < 1.0):
+                tm = terrain_max(x, y)
+                on_terrain = tm is not None and -0.5 < z - tm < 1.0     # verge / runoff the AI line cuts over
+            # AC records AI lines a little above the surface (more over crests): road up to 1 m below counts
+            if (s is not None and -0.5 < z - s < 1.0) or on_terrain:
                 cov += 1
+            else:
+                misses.append((x, y, z, s))
             if Ht is not None:
                 tm = terrain_max(x, y)
                 if tm is not None and tm > z + 0.02:
                     above += 1
         lay = ai.parent.parent.name if ai.parent.parent != Path(track) else "(main)"
         out.append((lay, len(q), cov / len(q), above / len(q)))
+        drive_check.misses[lay] = misses
     return out
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import __version__, beamng
 from .kn5 import KN5, KN5Error
-from .profile import Profile, read_surfaces, mostly_flat
+from .profile import Profile, read_surfaces, mostly_flat, phys_key
 
 NOTICE = ("kn5port converts content you own for personal use. Check the track's license (some forbid conversions), "
           "and never share converted levels.")
@@ -43,11 +43,11 @@ def inspect_track(track, profile=None, beamng_path=None, mods_path=None):
                 if m.lod_in > 0:
                     continue
                 mt = m.material
-                pm = phys.match(m.name)
+                key = phys_key(m.name, surfaces)
                 if hor:
                     totals["horizon"] += 1
-                elif pm:
-                    gt = prof.ground_type(pm.group(2), surfaces.get(pm.group(2)))
+                elif key:
+                    gt = prof.ground_type(key, surfaces.get(key))
                     nat = gt in prof.natural_ground_types and (mt.shader.startswith("ksMultilayer") or mostly_flat(m))
                     totals["natural ground" if nat else f"physics {gt.lower()}"] += 1
                 elif mt.shader.startswith("ksMultilayer"):

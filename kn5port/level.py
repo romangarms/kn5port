@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from .kn5 import KN5, KN5Error, Dummy, Mesh
-from .profile import Profile, read_surfaces, mostly_flat
+from .profile import Profile, read_surfaces, mostly_flat, phys_key
 
 MAX_VERTS_PER_CHUNK = 65000
 
@@ -175,10 +175,7 @@ SURFACES = {}
 
 def surface_of(mesh):
     """AC physics surface key of a mesh (from its 1ROAD_/1GRASS_-style name prefix), or None."""
-    m = PHYS_RE.match(mesh.name)
-    if m and (not SURFACES or m.group(2) in SURFACES):
-        return m.group(2)
-    return None
+    return phys_key(mesh.name, SURFACES)
 
 
 def ground_type_of(key):
@@ -290,12 +287,16 @@ class TextureBaker:
         if mask is None or macro is None:
             self.done[key] = None
             return None
+        if max(mask.size) > 4096:              # bound memory: the bake never needs more than 4096 px
+            sc = 4096 / max(mask.size)
+            mask = mask.resize((int(mask.size[0] * sc), int(mask.size[1] * sc)))
         size = mask.size
         m = np.asarray(mask, dtype=np.float32) / 255.0
         w = m / np.maximum(m.sum(-1, keepdims=True), 1e-3)
         cols = np.stack([self.layer_mean(k, s.get(f"txDetail{c}", "")) for c in "RGBA"])  # (4,3)
         col = w @ cols                                                                    # (H,W,3)
         mac = np.asarray(macro.convert("RGB").resize(size), dtype=np.float32) / 255.0
+        del macro
         col = col * (mac / macro_mean)          # macro supplies light/dark variation only
         out = np.clip(col * 255, 0, 255).astype(np.uint8)
         from PIL import Image

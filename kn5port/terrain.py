@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image
 
 from .kn5 import KN5, KN5Error
-from .profile import Profile, read_surfaces, mostly_flat
+from .profile import Profile, read_surfaces, mostly_flat, phys_key
 
 DONOR = "west_coast_usa"
 # terrain layers in .ter order; AC mask channel -> layer
@@ -49,10 +49,14 @@ def classify_ground(mesh, file_is_horizon):
     if file_is_horizon or PROFILE.rx("horizon_re").search(mesh.name):
         return "horizon"
     if mesh.material.shader.startswith("ksMultilayer"):
+        p = mesh.positions
+        # a multilayer mesh kilometres across is a background landscape, not near-road ground
+        if len(p) and max(np.ptp(p[:, 0]), np.ptp(p[:, 2])) > 3000:
+            return "far"
         return "near"
-    pm = PHYS_RE.match(mesh.name)
-    if pm and (not SURFACES or pm.group(2) in SURFACES):
-        gt = PROFILE.ground_type(pm.group(2), SURFACES.get(pm.group(2)))
+    key = phys_key(mesh.name, SURFACES)
+    if key:
+        gt = PROFILE.ground_type(key, SURFACES.get(key))
         return "near" if gt in PROFILE.natural_ground_types and mostly_flat(mesh) else None
     if FAR_RE.search(mesh.name):
         return "far"
@@ -262,20 +266,30 @@ def load_col_tris(level):
     return t[keep], up[keep] > 0.9   # flat = driving surfaces (road, shoulders, lots)
 
 
+MAX_TEX = 4096      # textures are only sampled; larger ones are downscaled first (keeps memory bounded)
+
+
 def tex_img(k, name):
+    """Texture as a uint8 RGBA array (at most MAX_TEX per side). sample() returns 0..1 floats."""
     t = next((t for t in k.textures if t.name == name), None)
     if t is None:
         return None
-    im = Image.open(io.BytesIO(k.texture_bytes(t)))
-    im.load()
-    return np.asarray(im.convert("RGBA"), np.float32) / 255.0
+    try:
+        im = Image.open(io.BytesIO(k.texture_bytes(t)))
+        im.load()
+    except Exception:
+        return None
+    if max(im.size) > MAX_TEX:
+        s = MAX_TEX / max(im.size)
+        im = im.resize((max(1, int(im.size[0] * s)), max(1, int(im.size[1] * s))), Image.BILINEAR)
+    return np.asarray(im.convert("RGBA"), np.uint8)
 
 
 def sample(img, u, v):
     h, w = img.shape[:2]
     x = np.clip((u % 1.0) * w, 0, w - 1).astype(np.int64)
     y = np.clip((v % 1.0) * h, 0, h - 1).astype(np.int64)
-    return img[y, x]
+    return img[y, x].astype(np.float32) / 255.0
 
 
 def main(argv=None):
@@ -353,8 +367,8 @@ def main(argv=None):
                 if kind is None:
                     continue
                 if kind == "near" and not m.material.shader.startswith("ksMultilayer"):
-                    pm = PHYS_RE.match(m.name)
-                    if pm and PROFILE.ground_type(pm.group(2), SURFACES.get(pm.group(2))) == "SAND":
+                    key = phys_key(m.name, SURFACES)
+                    if key and PROFILE.ground_type(key, SURFACES.get(key)) == "SAND":
                         sand_mats.add((str(f), m.material.name))
                 key = (str(f), m.material.name, kind)
                 if key not in sources:
@@ -494,9 +508,13 @@ def main(argv=None):
         # damped: half steps settle onto the tightest fit instead of overshooting; finish exactly
         Hf -= dec * (0.5 if it < 150 else 1.05)
     H = Hf.reshape(n, n).astype(np.float32)
-    print(f"fitted to {len(col):,} mesh triangles ({flat.sum():,} driving surface, {len(S):,} constraint points, "
+    n_constraints = len(S)
+    print(f"fitted to {len(col):,} mesh triangles ({flat.sum():,} driving surface, {n_constraints:,} constraint points, "
           f"{it + 1} passes, worst remaining {worst:.3f} m): {(H > before + 0.01).sum():,} points raised, "
           f"{(H < before - 0.01).sum():,} lowered in {time.time() - ts:.0f}s")
+    del S, gx, gy, ix, iy, fx, fy, lim, A_, B_, C_, D_, up_, lo_, split1, split2, Hf, dec, before
+    import gc
+    gc.collect()
     road = np.isfinite(C_flat)
     # no groundcover under or right beside the driving surfaces: every corner of every cell they touch, plus
     # one more ring of cells, gets a layer that no GroundCover type uses
@@ -512,6 +530,8 @@ def main(argv=None):
     # down to just below the terrain wherever the terrain falls away from the edge.
     ts = time.time()
     skirt_quads = build_skirts(ft, H, x0, y0, sq, n)
+    del S_top, C_flat, T_top, col, ft
+    gc.collect()
     print(f"skirts: {len(skirt_quads):,} edge segments with a gap under them, in {time.time() - ts:.0f}s")
 
     # ---- 3. layers + base colour from AC textures
@@ -539,7 +559,7 @@ def main(argv=None):
             # ordinary textured ground (e.g. a circuit's grass runoff): the texture tiles every few metres,
             # so use its average colour instead of point samples
             img = tex_img(k, mat.samplers.get("txDiffuse", ""))
-            c = img[:, :, :3].reshape(-1, 3).mean(0) if img is not None else np.array([0.3, 0.33, 0.2])
+            c = (img[:, :, :3].reshape(-1, 3).mean(0) / 255.0) if img is not None else np.array([0.3, 0.33, 0.2])
             color[sel] = c
             near_px |= sel
             if (fp, matname) in sand_mats:
@@ -553,7 +573,7 @@ def main(argv=None):
             layer[sel] = np.vectorize(MASK_TO_LAYER.get)(np.argmax(w, 1)).astype(np.uint8)
             baked = level / "art" / "textures" / f"{re.sub(r'[^A-Za-z0-9_]', '_', matname).lower()}_baked.color.png"
             if baked.exists():
-                img = np.asarray(Image.open(baked).convert("RGBA"), np.float32) / 255
+                img = np.asarray(Image.open(baked).convert("RGBA"), np.uint8)
             else:
                 img = tex_img(k, mat.samplers.get("txDiffuse", ""))
             if img is not None:
