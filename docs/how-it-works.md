@@ -36,6 +36,12 @@ flipped for Collada.
 
 ## BeamNG gotchas
 
+* KN5 meshes carry `visible` and `renderable` flags; AC draws neither kind. Game-rip tracks (Forza ports especially)
+  ship a hidden physics copy of the road exactly on the visual one. Drawn in BeamNG they z-fight (flicker), so hidden
+  physics meshes get an invisible, alpha-discarded material that still collides; hidden visual meshes are dropped.
+* AC water is a tiling diffuse + normal map made glossy by a strong specular. At BeamNG's PBR roughness each tile of
+  the normal map shows as a matte square, so water materials get no normal map and a very low roughness.
+
 - **Texture colour space comes from the file name:** `*.color.png` is sRGB, `*.data.png` linear,
   `*.normal.png` a normal map. Without a suffix colours wash out.
 - **v1.5 materials take alpha from `opacityMap`**, not from the base colour's alpha channel.

@@ -44,7 +44,9 @@ def inspect_track(track, profile=None, beamng_path=None, mods_path=None):
                     continue
                 mt = m.material
                 key = phys_key(m.name, surfaces)
-                if hor:
+                if m.hidden:
+                    totals["hidden (physics-only)" if phys_key(m.name, surfaces) else "hidden"] += 1
+                elif hor:
                     totals["horizon"] += 1
                 elif key:
                     gt = prof.ground_type(key, surfaces.get(key))
@@ -117,6 +119,8 @@ def cmd_convert(a):
             args += ["--terrain-square", str(a.square)]
     if a.keep_ac_trees:
         args += ["--keep-ac-trees"]
+    if a.show_hidden:
+        args += ["--show-hidden"]
     level.main(args)
     if a.terrain != "off":
         print("\n== 2/4 terrain")
@@ -127,6 +131,10 @@ def cmd_convert(a):
             args += ["--near-gain", str(a.near_gain)]
         if a.palette:
             args += ["--donor", a.palette]
+        if a.no_edge_fill:
+            args += ["--no-edge-fill"]
+        if a.show_hidden:
+            args += ["--show-hidden"]
         terrain.main(args)
     if not a.no_forest and not a.keep_ac_trees:
         print("\n== 3/4 trees and grass")
@@ -171,6 +179,10 @@ def main(argv=None):
     p.add_argument("--palette", help="stock BeamNG level whose trees, terrain materials and grass to use "
                                      "(e.g. west_coast_usa, east_coast_usa, italy, utah; default west_coast_usa)")
     p.add_argument("--keep-ac-trees", action="store_true", help="keep AC's tree meshes as they are")
+    p.add_argument("--no-edge-fill", action="store_true", help="don't raise the terrain to the road edges or hang "
+                   "curtains off them (turn off if they look wrong on a track)")
+    p.add_argument("--show-hidden", action="store_true", help="also draw meshes AC hides, e.g. physics-only road "
+                   "copies (off by default: on game-rip tracks they z-fight/flicker with the visual road)")
     p.set_defaults(func=cmd_convert)
 
     p = sub.add_parser("validate", help="check a converted level for broken references")

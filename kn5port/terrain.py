@@ -45,6 +45,9 @@ PROFILE = Profile()
 SURFACES = {}
 
 
+SHOW_HIDDEN = False
+
+
 def classify_ground(mesh, file_is_horizon, uses):
     """'horizon' | 'near' | 'far' | None for one AC mesh (which meshes are ground: profile.is_natural_ground)."""
     if file_is_horizon or PROFILE.rx("horizon_re").search(mesh.name):
@@ -326,6 +329,10 @@ def main(argv=None):
     ap.add_argument("level_dir")
     ap.add_argument("--beamng", required=True, help="BeamNG.drive install folder, or its content\\levels folder")
     ap.add_argument("--no-groundcover", action="store_true")
+    ap.add_argument("--no-edge-fill", action="store_true", help="don't raise the terrain to meet the road edges or "
+                    "hang curtains off them down to the terrain (these hide road/terrain gaps, but can show as "
+                    "walls or ramps on tracks with odd road-edge geometry)")
+    ap.add_argument("--show-hidden", action="store_true", help="use meshes AC hides as terrain colour sources")
     ap.add_argument("--donor", default=None, help="stock BeamNG level whose terrain materials and grass to use")
     ap.add_argument("--profile", default=None, help="track profile JSON (see kn5port/profile.py)")
     ap.add_argument("--near-gain", type=float, default=0, help="brightness multiplier for the near-road ground "
@@ -335,7 +342,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     t0 = time.time()
     track, level = Path(a.track_dir), Path(a.level_dir)
-    global PROFILE, SURFACES, FAR_RE, LAYERS, MASK_TO_LAYER, CARVE_DEPTH
+    global PROFILE, SURFACES, FAR_RE, LAYERS, MASK_TO_LAYER, CARVE_DEPTH, SHOW_HIDDEN
+    SHOW_HIDDEN = a.show_hidden
     PROFILE = Profile.load(a.profile, track)
     SURFACES = read_surfaces(track)
     FAR_RE = PROFILE.rx("ground_name_re")
@@ -392,8 +400,8 @@ def main(argv=None):
         with k:
             uses = material_uses(k, SURFACES, PROFILE)
             for m in k.meshes():
-                if not len(m.indices):
-                    continue
+                if not len(m.indices) or (m.hidden and not SHOW_HIDDEN):
+                    continue           # AC doesn't draw it, so it isn't a colour source (blank physics copies)
                 if not PHYS_RE.match(m.name) and water_re.search(m.name + " " + m.material.name) and \
                         mostly_flat(m, 0.9):
                     pw = ac_to_bng(m.positions.astype(np.float64)) - off
@@ -499,7 +507,7 @@ def main(argv=None):
     # corners of every cell a mesh touches start as high as that mesh, so the terrain rises to meet shoulder
     # edges and skirts instead of falling away under them; the fit below lowers them only where needed
     T_top = splat(col, "max")
-    ring = np.isfinite(T_top) & ~under
+    ring = np.isfinite(T_top) & ~under & (not a.no_edge_fill)
     H = np.where(ring, np.maximum(H, T_top - CARVE_DEPTH), H)
     H = np.where(np.isfinite(C_flat), np.minimum(H, C_flat - CARVE_DEPTH), H)
 
@@ -582,7 +590,7 @@ def main(argv=None):
     # a shoulder edge closely, so curtains are generated along the outer edges of the driving surfaces,
     # down to just below the terrain wherever the terrain falls away from the edge.
     ts = time.time()
-    skirt_quads = build_skirts(ft, H, x0, y0, sq, n)
+    skirt_quads = [] if a.no_edge_fill else build_skirts(ft, H, x0, y0, sq, n)
     del S_top, C_flat, T_top, col, ft
     gc.collect()
     print(f"skirts: {len(skirt_quads):,} edge segments with a gap under them, in {time.time() - ts:.0f}s")

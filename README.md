@@ -76,6 +76,8 @@ Useful options:
 | `--tree-density 0.5` | thin trees and shrubs for performance |
 | `--ao 0.2`, `--near-gain 1.3` | lighter terrain shading / brighter near-road ground |
 | `--no-forest` / `--keep-ac-trees` | skip tree replacement / keep AC's own tree meshes |
+| `--no-edge-fill` | don't raise the terrain to the road edges or hang curtains under them (if they show as walls/ramps) |
+| `--show-hidden` | also draw meshes AC hides; off by default because physics-only road copies on ripped (e.g. Forza) tracks flicker against the visual road |
 | `--profile my.json` | per-track overrides (see below) |
 | `--beamng`, `--mods`, `--out` | paths, if auto-detection fails |
 

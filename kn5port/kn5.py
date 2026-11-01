@@ -66,6 +66,12 @@ class Mesh:
     lod_in: float
     lod_out: float
     skinned: bool = False
+    renderable: bool = True  # AC skips drawing meshes with this flag (or `visible`) cleared
+
+    @property
+    def hidden(self):
+        """Not drawn by AC: physics-only or switched-off meshes (they still collide if they're physics)."""
+        return not (self.visible and self.renderable)
 
 
 @dataclass
@@ -307,12 +313,12 @@ class KN5:
             r.i32()                      # layer
             lod_in, lod_out = r.f32(), r.f32()
             r.floats(4)                  # bounding sphere
-            r.u8()                       # renderable
+            renderable = bool(r.u8())
             if self._verify is not None:
                 self._verify_mesh(name, verts, idx, mat_id)
             if include_meshes:
                 yield self._make_mesh(name, path, mat_id, verts, idx, world, visible, transparent,
-                                      lod_in, lod_out, False)
+                                      lod_in, lod_out, False, renderable)
         elif cls == 3:  # skinned mesh (rare on tracks); exported in bind pose
             r.u8(); visible = bool(r.u8()); transparent = bool(r.u8())
             for _ in range(r.i32()):
@@ -333,7 +339,8 @@ class KN5:
         for _ in range(children):
             yield from self._node(r, world, path, include_meshes)
 
-    def _make_mesh(self, name, path, mat_id, verts, idx, world, visible, transparent, lod_in, lod_out, skinned):
+    def _make_mesh(self, name, path, mat_id, verts, idx, world, visible, transparent, lod_in, lod_out, skinned,
+                   renderable=True):
         pos = verts["pos"].astype(np.float64)
         nrm = verts["nrm"].astype(np.float64)
         if not np.allclose(world, np.identity(4)):
@@ -346,7 +353,7 @@ class KN5:
             Material(-1, "__missing__", "", 0, False, 0)
         return Mesh(name, path, mat, pos.astype(np.float32), nrm.astype(np.float32),
                     np.array(verts["uv"], dtype=np.float32), idx.astype(np.uint32),
-                    visible, transparent, lod_in, lod_out, skinned)
+                    visible, transparent, lod_in, lod_out, skinned, renderable)
 
     def close(self):
         self._mm.close()

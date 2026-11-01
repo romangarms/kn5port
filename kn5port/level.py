@@ -351,6 +351,17 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
                 stage["opacityMap"] = op
     if "txNormal" in s:
         stage["normalMap"] = baker.raw_or_png(k, s["txNormal"], tex_rel, "normal")
+    if not ground_type and not (alpha_test or translucent) and \
+            PROFILE.rx("water_re").search(f"{acmat.name} {s.get('txDiffuse', '')}"):
+        # AC water is a tiling diffuse + normal map made glossy by a strong specular; BeamNG's PBR at the
+        # default roughness shows every tile of that normal map as a matte square. Smooth, unbumped water
+        # (the sky and shore reflections give it the look) matches AC far better.
+        stage.pop("normalMap", None)
+        stage.update({"roughnessFactor": 0.04, "metallicFactor": 0.0})
+        stage.pop("useAnisotropic", None)
+        mat_water = True
+    else:
+        mat_water = False
     if acmat.props.get("ksEmissive", (0,))[0] > 0:
         stage["emissiveFactor"] = [acmat.props["ksEmissive"][0]] * 3
     mat = {
@@ -359,6 +370,8 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
         "materialTag0": "beamng", "materialTag1": "kn5_port",
         "ac_shader": shader, "ac_material": acmat.name,
     }
+    if mat_water:
+        mat["kn5_water"] = True
     if alpha_test:
         ref = acmat.props.get("ksAlphaRef", (0.5,))[0]
         mat["alphaTest"] = True
@@ -371,6 +384,18 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
             stage["baseColorFactor"] = [0, 0, 0, 1]
     if shader == "ksTree" or alpha_test:
         mat["doubleSided"] = True
+    if ground_type:
+        mat["groundType"] = ground_type
+    return mat
+
+
+def hidden_material(name, ground_type=None):
+    """Invisible material for physics meshes AC doesn't draw: every pixel is alpha-discarded (no shadow either),
+    but the shape still collides with its ground type."""
+    mat = {"name": name, "mapTo": name, "class": "Material", "version": 1.5,
+           "Stages": [{"baseColorFactor": [1, 1, 1, 0], "opacityFactor": 0.0}, {}, {}, {}],
+           "alphaTest": True, "alphaRef": 255, "castShadows": False,
+           "materialTag0": "beamng", "materialTag1": "kn5_port", "kn5_hidden": True}
     if ground_type:
         mat["groundType"] = ground_type
     return mat
@@ -397,6 +422,8 @@ def main(argv=None):
                     help="leave the AC ground to a BeamNG terrain of SIZE x SIZE samples (built by kn5port (terrain step)); "
                          "e.g. 4096. AC ground meshes inside the terrain are dropped")
     ap.add_argument("--terrain-square", type=float, default=0, help="metres per terrain sample (default: auto)")
+    ap.add_argument("--show-hidden", action="store_true",
+                    help="also draw meshes AC hides (physics-only road copies; these z-fight with the visual road)")
     ap.add_argument("--keep-ac-trees", action="store_true",
                     help="keep AC's tree/groundcover meshes instead of leaving them to kn5port (forest step)")
     args = ap.parse_args(argv)
@@ -490,7 +517,7 @@ def main(argv=None):
         cells = defaultdict(lambda: defaultdict(list))  # (cx, cy, kind) -> matname -> [parts]
         mat_surfaces = defaultdict(set)
         ground_mats = set()
-        kept = dropped_lod = dropped_crop = dropped_veg = dropped_ground = 0
+        kept = dropped_lod = dropped_crop = dropped_veg = dropped_ground = dropped_hidden = 0
 
         for m in k.meshes():
             if not len(m.indices) or m.name.startswith("AC_"):
@@ -521,12 +548,17 @@ def main(argv=None):
             surf = surface_of(m)
             if surf is None and not args.no_extra_collision and PROFILE.rx("ground_name_re").search(m.name):
                 surf = "_EXTRA"
+            # meshes AC never draws: physics-only copies of the road (common on Forza/other game rips, where
+            # they sit exactly on the visual road and would z-fight with it) collide invisibly; others go
+            hidden = m.hidden and not args.show_hidden
+            if hidden and not surf:
+                dropped_hidden += 1; continue
             kind = "col" if surf else "vis"
             if surf:
                 mat_surfaces[m.material.name].add(surf)
             c = pos.mean(0)
             cell = (int(math.floor(c[0] / args.cell)), int(math.floor(c[1] / args.cell)), kind)
-            cells[cell][(m.material.name, surf)].append(
+            cells[cell][(m.material.name, surf, hidden)].append(
                 (pos.astype(np.float32), nrm.astype(np.float32), m.uvs, idx.astype(np.uint32)))
             kept += 1
 
@@ -539,10 +571,15 @@ def main(argv=None):
 
         for (cx, cy, kind), bymat in cells.items():
             groups = []
-            for (acname, surf), parts in bymat.items():
+            for (acname, surf, hidden), parts in bymat.items():
                 name = bng_name(acname, surf)
                 acmat = next(mm for mm in k.materials if mm.name == acname) if acname != "__missing__" else None
-                if acmat is not None and name not in materials:
+                if hidden:
+                    gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
+                    name = f"{level}_kn5_hidden_{safe(gt or 'none').lower()}"
+                    if name not in materials:
+                        materials[name] = hidden_material(name, gt)
+                elif acmat is not None and name not in materials:
                     gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
                     materials[name] = bng_material(name, acmat, k, baker, tex_rel, gt)
                     if acname in ground_mats:
@@ -568,7 +605,8 @@ def main(argv=None):
         stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop,
                            shapes=len(cells), seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "
-              f"(dropped {dropped_lod} LOD, {dropped_crop} outside crop, {dropped_veg} vegetation, {dropped_ground} terrain-replaced) in {stats[stem]['seconds']}s")
+              f"(dropped {dropped_lod} LOD, {dropped_crop} outside crop, {dropped_veg} vegetation, "
+              f"{dropped_ground} terrain-replaced, {dropped_hidden} hidden) in {stats[stem]['seconds']}s")
         # copy textures for this kn5 now, then close
         tex_dir = out_level / "art" / "textures"
         tex_dir.mkdir(parents=True, exist_ok=True)

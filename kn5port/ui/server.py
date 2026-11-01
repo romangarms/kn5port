@@ -476,6 +476,10 @@ def make_handler(app, port_ref):
                                 args += [flag, str(float(o[key]))]
                         if o.get("forest") is False:
                             args += ["--no-forest"]
+                        if o.get("edge_fill") is False:
+                            args += ["--no-edge-fill"]
+                        if o.get("hide_hidden") is False:
+                            args += ["--show-hidden"]
                         if o.get("palette") and re.fullmatch(r"[A-Za-z0-9_\-]+", str(o["palette"])):
                             args += ["--palette", o["palette"]]
                         j = Job(d.name, args)
