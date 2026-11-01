@@ -1,0 +1,8 @@
+# Whitelist: nothing in fh1/ is tracked unless named here, so game data can't be committed by accident.
+*
+!.gitignore
+!README.md
+!pipeline/
+pipeline/*
+!pipeline/*.py
+!pipeline/lzx.c
