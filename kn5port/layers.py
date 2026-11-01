@@ -1,11 +1,12 @@
 """Sharp ground for AC's multilayer shader: split each ground mesh by the layer that dominates under each triangle.
 
 AC's ksMultilayer* shaders blend four tiling detail textures (txDetailR/G/B/A: grass, dirt, rock...) by a mask
-(txMask) over a large macro map (txDiffuse). A BeamNG mesh material shows one colour texture, so the default bake
-(`TextureBaker.multilayer`) squeezes all of that into one image over the whole mesh: on big ground meshes that's
-half a metre or more per pixel. Here every triangle instead takes the layer with the highest mask weight at its
-centre and is drawn with that layer's real texture, tiled at AC's own scale. The macro map's large-scale light and
-dark variation comes back as a neutral-grey detail map. The cost is hard edges where AC blends softly.
+(txMask) and multiplies them over a large macro map (txDiffuse) that carries the ground's colour. A BeamNG mesh
+material has one colour map and one detail map. Here every triangle takes the layer with the highest mask weight at
+its centre: the macro map stays the colour (AC's own colours, blending softly across the hillside) and that layer's
+texture becomes a neutral-grey detail map tiled at AC's own scale, so grass, dirt and rock are sharp up close. Using
+the layer texture itself as the colour was tried first: the layers are much darker than the macro map (this track's
+grass averages 0.23 against a 0.48 macro), which turned hillsides near-black with hard-edged blotches.
 """
 import numpy as np
 
@@ -80,8 +81,8 @@ class LayerSplitter:
 
 
 def pieces(part, split):
-    """Split one (pos, nrm, uv, idx) part into per-layer parts with UVs scaled to each layer's tiling.
-    Yields (layer letter or None, (pos, nrm, uv, idx), uv scale)."""
+    """Split one (pos, nrm, uv, idx) part into per-layer parts (UVs unchanged: the macro colour map uses them).
+    Yields (layer letter or None, (pos, nrm, uv, idx), the layer's detail repeats per UV unit)."""
     pos, nrm, uv, idx = part[:4]
     lay, scales = split
     t = idx.reshape(-1, 3)
@@ -93,20 +94,24 @@ def pieces(part, split):
             yield None, (pos, nrm, uv, sel.reshape(-1)), None
             continue
         used, inv = np.unique(sel.reshape(-1), return_inverse=True)
-        yield c, (pos[used], nrm[used], (uv[used] * sc).astype(np.float32), inv.astype(np.uint32)), sc
+        yield c, (pos[used], nrm[used], uv[used], inv.astype(np.uint32)), round(float(sc), 3)
+
+
+# AC multiplies a layer over the macro map, so a layer's relative variation (std / mean, ~0.35 for grass) shows up
+# around the macro colour (~0.5): roughly twice the layer's own absolute contrast
+LAYER_DETAIL_CONTRAST = 1.6
 
 
 def layer_material(name, acmat, c, k, baker, tex_rel, uv_scale, ground_type=None):
-    """The layer's own tiling texture as base colour; the macro map's variation as a detail map that maps back
-    onto the original UVs (detailScale = 1 / the UV scale applied to the geometry)."""
+    """The macro map as base colour on the mesh's own UVs, the layer's tiling texture as the detail map."""
     s = acmat.samplers
-    tex = s[f"txDetail{c}"]
-    stage = {"roughnessFactor": 0.95, "metallicFactor": 0.0, "useAnisotropic": True,
-             "baseColorMap": baker.opaque(k, tex) or f"{tex_rel}/{tex}"}
-    macro = baker.detail(k, s["txDiffuse"]) if "txDiffuse" in s and uv_scale else None
-    if macro:
-        stage["detailMap"] = macro
-        stage["detailScale"] = [round(1.0 / uv_scale, 6)] * 2
+    stage = {"roughnessFactor": 0.95, "metallicFactor": 0.0, "useAnisotropic": True}
+    base = baker.opaque(k, s["txDiffuse"]) if "txDiffuse" in s else None
+    stage["baseColorMap"] = base or baker.opaque(k, s[f"txDetail{c}"]) or f"{tex_rel}/{s[f'txDetail{c}']}"
+    dm = baker.detail(k, s[f"txDetail{c}"], LAYER_DETAIL_CONTRAST) if base else None
+    if dm:
+        stage["detailMap"] = dm
+        stage["detailScale"] = [round(float(uv_scale), 3)] * 2
     mat = {"name": name, "mapTo": name, "class": "Material", "version": 1.5,
            "Stages": [stage, {}, {}, {}], "materialTag0": "beamng", "materialTag1": "kn5_port",
            "ac_shader": acmat.shader, "ac_material": acmat.name, "ac_layer": c,

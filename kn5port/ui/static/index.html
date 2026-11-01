@@ -338,8 +338,8 @@ function optionsHtml(t) {
           "Patches, lines and dirt decals laid exactly on the road are raised 2 cm per layer.",
           ["Stops road markings and patches from flickering"], ["Turn off if road markings look like they float"])}
         ${toggle("o_groundlayers", o.ground_layers !== false, "Sharp layered ground",
-          "Ground that AC blends from several tiling textures (grass, dirt, rock) gets the real texture of whichever layer dominates, when kept as meshes.",
-          ["Sharp grass and dirt up close instead of a blurry stretched image"], ["Hard edges where AC blends softly"])}
+          "Ground that AC blends from several tiling textures (grass, dirt, rock) keeps AC's colours and gets the fine texture of whichever layer dominates, when kept as meshes.",
+          ["Sharp grass, dirt and rock up close instead of a blurry stretched image"], ["The fine texture switches abruptly where AC blends two layers"])}
       </div>
     </details>
   </div>`;
