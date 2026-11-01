@@ -211,6 +211,7 @@ function renderGrid() {
   $("#scanline").innerHTML = state.scanning || checking ? `<span class="spin"></span>Checking which tracks can be converted… ${state.tracks.length - checking}/${state.tracks.length}`
     : `<span class="legend"><span><span class="st ok">✓</span>convertible</span><span><span class="st partial">!</span>partly readable</span><span><span class="st protected">🔒</span>protected</span></span>`;
   const list = state.tracks.filter((t) => fpass(t) && (!q || [t.name, t.id, t.author, t.country, t.city].join(" ").toLowerCase().includes(q)));
+  const keepScroll = $("#grid").scrollTop;
   $("#count").textContent = `${list.length} of ${state.tracks.length}`;
   if (!state.tracks.length) {
     $("#grid").innerHTML = `<div class="muted" style="grid-column:1/-1">No tracks found. Set your Assetto Corsa tracks folder under <b>Folders</b>.</div>`;
@@ -222,6 +223,7 @@ function renderGrid() {
         ${t.converted ? '<span class="badge">converted</span>' : ""}</div>
       <div class="meta"><div class="t"><div class="n">${esc(t.name)}</div><div class="a">${esc(t.author || t.id)}</div></div><span class="st ${stOf(t)[0]}">${stOf(t)[1]}</span></div>
     </button>`).join("");
+  $("#grid").scrollTop = keepScroll;
 }
 
 function optionsHtml() {
@@ -290,7 +292,8 @@ function jobHtml(j) {
       <div class="actions" style="margin-top:8px">${j.status !== "failed" && j.status !== "cancelled" ? '<button class="secondary" id="openLevel">Open level folder</button>' : ""}
       <span class="muted">${j.elapsed}s · level "${esc(t.level || "")}"</span></div></div>`;
   }
-  return `<div class="steps">${stepsHtml}</div><div class="log" id="log">${esc(j.lines.join("\n"))}</div>${res}`;
+  const logText = j.lines.length ? j.lines.join("\n") : (j.status === "running" ? "Starting…" : "");
+  return `<div class="steps">${stepsHtml}</div><div class="log" id="log">${esc(logText)}</div>${res}`;
 }
 
 function renderDetail() {
@@ -338,7 +341,11 @@ function wireDetail(t) {
 }
 
 async function select(id) {
-  state.sel = id; renderGrid(); renderDetail();
+  if (state.sel === id) return;
+  state.sel = id;
+  document.querySelectorAll("#grid .card").forEach((c) => c.classList.toggle("sel", c.dataset.id === id));
+  renderDetail();
+  $("#detail").scrollTop = 0;
   if (!state.inspect[id]) {
     try { state.inspect[id] = await api(`/api/track/${encodeURIComponent(id)}/inspect`); }
     catch (e) { state.inspect[id] = { error: e.message }; }
@@ -366,6 +373,7 @@ async function poll() {
       const log = $("#log");
       if (log && u.lines.length && j.status === "running") {
         const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+        if (log.textContent === "Starting…") log.textContent = "";
         log.textContent += (log.textContent ? "\n" : "") + u.lines.join("\n");
         if (stick) log.scrollTop = log.scrollHeight;
         document.querySelectorAll(".step").forEach((el, i) => {

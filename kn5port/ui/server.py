@@ -4,6 +4,7 @@ Every API call must carry the per-session token (header ``X-Token`` or ``?t=``) 
 so other websites open in your browser can't drive it. Conversions run as ``python -m kn5port convert``
 subprocesses whose output is streamed to the page.
 """
+import io
 import json
 import mimetypes
 import os
@@ -177,64 +178,121 @@ def track_dir(settings, tid):
 
 # ---- jobs -------------------------------------------------------------------------------------------------
 
+class _OutputRouter(io.TextIOBase):
+    """Replacement for sys.stdout/stderr: text written by a conversion thread goes to that job's log,
+    everything else to the original stream (which is None in a windowed exe, so it's dropped)."""
+
+    def __init__(self, original):
+        self.original = original
+        self.sinks = {}
+
+    def writable(self):
+        return True
+
+    def write(self, text):
+        sink = self.sinks.get(threading.get_ident())
+        if sink is not None:
+            sink(text)
+        elif self.original is not None:
+            try:
+                self.original.write(text)
+            except Exception:
+                pass
+        return len(text)
+
+    def flush(self):
+        if self.original is not None:
+            try:
+                self.original.flush()
+            except Exception:
+                pass
+
+
+_ROUTER = None
+
+
+def _router():
+    global _ROUTER
+    if _ROUTER is None:
+        _ROUTER = _OutputRouter(sys.stdout)
+        sys.stdout = _ROUTER
+        sys.stderr = _OutputRouter(sys.stderr)
+        sys.stderr.sinks = _ROUTER.sinks          # share the per-thread sinks
+    return _ROUTER
+
+
 class Job:
+    """One conversion, run in a background thread of this process (the same code path the command line
+    uses), with everything it prints captured into self.lines."""
+
     def __init__(self, track, args):
         self.id = secrets.token_hex(6)
         self.track = track
         self.lines = []
+        self._partial = ""
         self.step = 0
         self.status = "running"
         self.started = time.time()
         self.ended = None
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        cmd = [sys.executable, "convert"] if getattr(sys, "frozen", False) else \
-            [sys.executable, "-m", "kn5port", "convert"]
-        self.proc = subprocess.Popen(cmd + args,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                     encoding="utf-8", errors="replace", bufsize=1, env=env, creationflags=flags)
-        threading.Thread(target=self._pump, daemon=True).start()
+        self.thread = threading.Thread(target=self._run, args=(args,), daemon=True)
+        self.thread.start()
 
-    def _pump(self):
-        for line in self.proc.stdout:
-            line = line.rstrip("\n")
-            if "RuntimeWarning" in line or line.strip().startswith("l3 = "):
+    def _write(self, text):
+        text = self._partial + text
+        *done, self._partial = text.split("\n")
+        for line in done:
+            line = line.rstrip("\r")
+            if "RuntimeWarning" in line or line.strip().startswith(("l3 = ", "warnings.warn", "a = np.")):
                 continue
             m = re.match(r"== (\d)/4", line)
             if m:
                 self.step = int(m.group(1))
             self.lines.append(line)
-        rc = self.proc.wait()
-        self.ended = time.time()
-        if self.status != "cancelled":
-            problems = any("problem(s):" in l for l in self.lines)
-            self.status = "failed" if rc else ("warnings" if problems else "done")
-        if not rc:
-            self.step = 5
+
+    def _run(self, args):
+        import traceback
+        import warnings
+        router = _router()
+        router.sinks[threading.get_ident()] = self._write
+        rc = 0
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                from ..cli import main as cli_main
+                cli_main(["convert"] + args)
+        except SystemExit as e:
+            rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            if e.code not in (None, 0) and not isinstance(e.code, int):
+                self._write(f"{e.code}\n")
+        except KeyboardInterrupt:
+            rc = -1
+        except BaseException:
+            self._write(traceback.format_exc())
+            rc = 1
+        finally:
+            if self._partial:
+                self._write("\n")
+            router.sinks.pop(threading.get_ident(), None)
+            self.ended = time.time()
+            if self.status != "cancelled":
+                problems = any("problem(s):" in l for l in self.lines)
+                self.status = "failed" if rc else ("warnings" if problems else "done")
+            if not rc:
+                self.step = 5
 
     def cancel(self):
-        if self.status == "running":
-            self.status = "cancelled"
-            self.proc.terminate()
+        """Interrupt the conversion thread (takes effect at its next Python instruction)."""
+        if self.status != "running" or not self.thread.is_alive():
+            return
+        self.status = "cancelled"
+        import ctypes
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(self.thread.ident),
+                                                   ctypes.py_object(KeyboardInterrupt))
 
     def view(self, since=0):
         return {"id": self.id, "track": self.track, "status": self.status, "step": self.step,
                 "lines": self.lines[since:], "next": len(self.lines),
                 "elapsed": round((self.ended or time.time()) - self.started)}
-
-
-def pick_folder_tk(start=""):
-    """Native folder picker for browser mode (Tk in a child process, so it never touches the server threads)."""
-    if getattr(sys, "frozen", False):
-        return ""
-    code = ("import sys, tkinter as tk; from tkinter import filedialog; r = tk.Tk(); r.withdraw(); "
-            "r.attributes('-topmost', True); "
-            "print(filedialog.askdirectory(initialdir=sys.argv[1] or None, title='Choose a folder') or '')")
-    try:
-        out = subprocess.run([sys.executable, "-c", code, start], capture_output=True, text=True, timeout=600)
-        return out.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
 
 
 # ---- HTTP -------------------------------------------------------------------------------------------------
@@ -399,6 +457,9 @@ def make_handler(app, port_ref):
                     with app.lock:
                         if any(j.status == "running" for j in app.jobs.values()):
                             return self._send(409, {"error": "a conversion is already running"})
+                        if any(j.thread.is_alive() for j in app.jobs.values()):
+                            return self._send(409, {"error": "the cancelled conversion is still stopping; "
+                                                             "try again in a few seconds"})
                         args = [str(d)]
                         if app.settings.get("mods"):
                             args += ["--mods", app.settings["mods"]]
