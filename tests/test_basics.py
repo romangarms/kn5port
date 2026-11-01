@@ -103,3 +103,29 @@ def test_scanner_flags_protected_tracks():
         assert s.status["good"]["state"] == "ok"
         assert s.status["locked"]["state"] == "protected"
         assert s.status["mixed"]["state"] == "partial"
+
+
+def test_verify_catches_scrambled_payload():
+    """A file whose structure is intact but whose data is scrambled (as a protection scheme would) is caught."""
+    import os
+    with tempfile.TemporaryDirectory() as d:
+        good = Path(d) / "good.kn5"
+        make_kn5(good)
+        with KN5(str(good)) as k:
+            assert k.verify() is None
+        raw = bytearray(good.read_bytes())
+        # scramble the texture bytes (they no longer start with an image signature)
+        i = raw.index(b"DDS ")
+        raw[i:i + 4] = os.urandom(4)
+        tex_bad = Path(d) / "tex.kn5"
+        tex_bad.write_bytes(bytes(raw))
+        with KN5(str(tex_bad)) as k:
+            assert k.verify() and "textures" in k.verify()
+        # scramble the vertex block of the mesh (positions/normals become noise), structure untouched
+        raw = bytearray(good.read_bytes())
+        j = raw.index(b"1ROAD_test") + len(b"1ROAD_test") + 4 + 1 + 3 + 4
+        raw[j:j + 4 * 44] = os.urandom(4 * 44)
+        mesh_bad = Path(d) / "mesh.kn5"
+        mesh_bad.write_bytes(bytes(raw))
+        with KN5(str(mesh_bad)) as k:
+            assert k.verify() is not None

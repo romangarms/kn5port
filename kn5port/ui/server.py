@@ -57,16 +57,21 @@ def safe_name(name):
 
 # ---- convertibility scan ----------------------------------------------------------------------------------
 
+CHECK_VERSION = 2            # bump when check_kn5 changes, so cached results are redone
+
+
 def check_kn5(path):
-    """'ok' if the file opens and its whole node tree walks (what fails on protected / damaged files)."""
-    from ..kn5 import KN5, KN5Error
+    """'ok' if the file opens, its node tree walks, and its payload is plain data (KN5.verify); otherwise
+    'protected' (covers encrypted, scrambled or damaged files)."""
+    from ..kn5 import KN5
     try:
         with KN5(str(path)) as k:
-            for _ in k.walk(include_meshes=False):
-                pass
-        return "ok"
-    except Exception:          # KN5Error or anything a malformed file triggers
-        return "protected"
+            why = k.verify()
+            return f"protected: {why}" if why else "ok"
+    except Exception as e:     # KN5Error or anything a malformed file triggers
+        text = str(e).replace(f"{path}: ", "").replace(str(path), Path(path).name)
+        msg = text.rsplit(" (", 1)[-1].rstrip(")") if text.endswith(")") else (text or type(e).__name__)
+        return f"protected: unreadable ({msg})"
 
 
 class Scanner:
@@ -98,15 +103,18 @@ class Scanner:
                 if not files:
                     continue
                 ok = bad = 0
+                reasons = []
                 for f in files:
                     st = f.stat()
-                    key = f"{f}|{st.st_size}|{int(st.st_mtime)}"
+                    key = f"v{CHECK_VERSION}|{f}|{st.st_size}|{int(st.st_mtime)}"
                     r = self.cache.get(key)
                     if r is None:
                         r = self.cache[key] = check_kn5(f)
                     ok += r == "ok"; bad += r != "ok"
+                    if r != "ok":
+                        reasons.append(f"{f.name}: {r.split(': ', 1)[-1]}")
                 state = "ok" if not bad else ("protected" if not ok else "partial")
-                self.status[d.name] = {"state": state, "ok": ok, "bad": bad}
+                self.status[d.name] = {"state": state, "ok": ok, "bad": bad, "reasons": reasons[:5]}
             try:
                 self.cache_file.parent.mkdir(parents=True, exist_ok=True)
                 self.cache_file.write_text(json.dumps(self.cache))

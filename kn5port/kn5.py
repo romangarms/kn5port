@@ -123,6 +123,7 @@ class _Reader:
 class KN5:
     def __init__(self, path):
         self.path = path
+        self._verify = None
         self._f = open(path, "rb")
         self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
         try:
@@ -184,6 +185,49 @@ class KN5:
     def texture_bytes(self, tex):
         return bytes(self._mm[tex.offset:tex.offset + tex.size])
 
+    # -- integrity -------------------------------------------------------
+    IMAGE_MAGIC = (b"DDS ", b"\x89PNG", b"\xff\xd8\xff", b"BM")
+
+    def verify(self, sample_every=10, max_verts=2048):
+        """Check that the payload, not just the structure, is plain data: textures carry real image signatures
+        and sampled meshes hold plausible geometry (finite, plausible-scale positions, unit normals, indices in
+        range). Protection schemes that keep the file structure but scramble the data fail here.
+        Returns None if the file looks fine, otherwise a short reason."""
+        bad_tex = [t.name for t in self.textures if t.size >= 4 and
+                   not bytes(self._mm[t.offset:t.offset + 4]).startswith(self.IMAGE_MAGIC)]
+        if bad_tex and len(bad_tex) > len(self.textures) // 10:       # tolerate a stray odd file
+            return f"{len(bad_tex)} of {len(self.textures)} textures are not plain images"
+        self._verify = {"n": 0, "every": sample_every, "max": max_verts, "bad": 0, "checked": 0}
+        try:
+            for _ in self.walk(include_meshes=False):
+                pass
+        except KN5Error as e:
+            return f"structure: {e}"
+        finally:
+            v, self._verify = self._verify, None
+        if v["bad"] and v["bad"] > v["checked"] // 20:
+            return f"{v['bad']} of {v['checked']} sampled meshes hold implausible data"
+        return None
+
+    def _verify_mesh(self, name, verts, idx, mat_id):
+        v = self._verify
+        v["n"] += 1
+        if (v["n"] - 1) % v["every"] or not len(verts):
+            return
+        v["checked"] += 1
+        sub = verts[: v["max"]]
+        pos, nrm = sub["pos"], sub["nrm"]
+        ok = np.isfinite(pos).all() and np.isfinite(nrm).all() and float(np.abs(pos).max()) < 2e6
+        if ok:
+            ln = np.linalg.norm(nrm.astype(np.float64), axis=1)
+            ok = float(np.mean(np.abs(ln - 1) < 0.05)) > 0.8 or float(np.mean(ln < 1e-6)) > 0.8
+        if ok and len(idx):
+            ok = int(idx.max()) < len(verts) and len(idx) % 3 == 0
+        if ok:
+            ok = -1 <= mat_id < max(len(self.materials), 1)
+        if not ok:
+            v["bad"] += 1
+
     # -- node tree ------------------------------------------------------
     def walk(self, include_meshes=True):
         """Yield Mesh and Dummy objects in file order, transforms applied."""
@@ -224,6 +268,8 @@ class KN5:
             lod_in, lod_out = r.f32(), r.f32()
             r.floats(4)                  # bounding sphere
             r.u8()                       # renderable
+            if self._verify is not None:
+                self._verify_mesh(name, verts, idx, mat_id)
             if include_meshes:
                 yield self._make_mesh(name, path, mat_id, verts, idx, world, visible, transparent,
                                       lod_in, lod_out, False)
