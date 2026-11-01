@@ -247,3 +247,18 @@ def test_overlay_identical_copy_and_mixed_sizes():
     lf.resolve()
     assert np.allclose(lines[0][:, 2], 5.02) and np.allclose(mark[0][:, 2], 0.02)
     assert np.allclose(road[0][:, 2], 5.0) and np.allclose(lot[0][:, 2], 0)
+
+
+def test_detail_map_is_neutral_grey():
+    from PIL import Image
+    from kn5port.level import TextureBaker
+    with tempfile.TemporaryDirectory() as d:
+        b = TextureBaker(Path(d), "/levels/x/art/textures")
+        noise = (np.random.default_rng(0).random((64, 64, 3)) * 120 + 40).astype(np.uint8)
+        b._img = lambda k, name: Image.fromarray(noise).convert("RGBA")
+        rel = b.detail(None, "asphalt_detail.dds")
+        assert rel.endswith("asphalt_detail_detail.data.png")
+        out = np.asarray(Image.open(Path(d) / Path(rel).name).convert("L"), np.float32) / 255
+        assert abs(out.mean() - 0.5) < 0.02 and out.std() > 0.05
+        b._img = lambda k, name: Image.new("RGBA", (32, 32), (90, 90, 90, 255))
+        assert b.detail(None, "flat.dds") is None
