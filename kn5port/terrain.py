@@ -812,6 +812,8 @@ def main(argv=None):
         k_, v = item
         if not isinstance(v, dict) or not v.get("Stages") or not v["Stages"][0].get("baseColorMap"):
             return 9
+        if v.get("kn5_hidden"):          # the invisible physics material would make invisible (or white) skirts
+            return 9
         name = (v.get("ac_material") or k_).upper()
         if "DIRT" in name or "SOIL" in name or "EARTH" in name:
             return 0

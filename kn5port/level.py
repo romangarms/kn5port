@@ -291,6 +291,14 @@ class TextureBaker:
     def raw_or_png(self, k, name, tex_rel, kind="color"):
         return f"{tex_rel}/{name}" if self.raw_ok(k, name) else (self.rgba_png(k, name, kind) or f"{tex_rel}/{name}")
 
+    def invisible(self):
+        """An all-black (fully transparent) opacity map for the hidden physics material."""
+        key = ("invisible",)
+        if key not in self.done:
+            from PIL import Image
+            self.done[key] = self._save(Image.new("RGB", (16, 16), (0, 0, 0)), "kn5port_invisible_opacity.data.png")
+        return self.done[key]
+
     def opacity(self, k, name):
         key = ("opacity", name)
         if key not in self.done:
@@ -454,12 +462,19 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None, m_per_uv=None
     return mat
 
 
-def hidden_material(name, ground_type=None):
-    """Invisible material for physics meshes AC doesn't draw: every pixel is alpha-discarded (no shadow either),
-    but the shape still collides with its ground type."""
+def hidden_material(name, ground_type=None, opacity_map=None):
+    """Invisible material for physics meshes AC doesn't draw; the shape still collides with its ground type.
+
+    Alpha testing alone isn't enough: BeamNG drew these as plain white, worst further away, which turned every
+    lot, verge and hillside of a track with a separate physics kn5 white. So the material is also fully
+    translucent with zero opacity from both the factor and an all-black opacity map, and casts no shadow."""
+    stage = {"baseColorFactor": [0, 0, 0, 0], "opacityFactor": 0.0}
+    if opacity_map:
+        stage["opacityMap"] = opacity_map
     mat = {"name": name, "mapTo": name, "class": "Material", "version": 1.5,
-           "Stages": [{"baseColorFactor": [1, 1, 1, 0], "opacityFactor": 0.0}, {}, {}, {}],
+           "Stages": [stage, {}, {}, {}],
            "alphaTest": True, "alphaRef": 255, "castShadows": False,
+           "translucent": True, "translucentZWrite": False, "translucentRecvShadows": False,
            "materialTag0": "beamng", "materialTag1": "kn5_port", "kn5_hidden": True}
     if ground_type:
         mat["groundType"] = ground_type
@@ -660,7 +675,7 @@ def main(argv=None):
                     gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
                     name = f"{level}_kn5_hidden_{safe(gt or 'none').lower()}"
                     if name not in materials:
-                        materials[name] = hidden_material(name, gt)
+                        materials[name] = hidden_material(name, gt, baker.invisible())
                 elif acmat is not None and name not in materials:
                     gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
                     a3, auv = uv_density.get(acname, (0, 0))
