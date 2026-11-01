@@ -378,6 +378,8 @@ def make_handler(app, port_ref):
             u = urlparse(self.path); q = parse_qs(u.query)
             if u.path in ("/", "/index.html"):
                 return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if u.path in ("/favicon.png", "/favicon.ico"):
+                return self._send(200, (STATIC / "favicon.png").read_bytes(), "image/png", cache=True)
             if not self._allowed(q):
                 return self._send(403, {"error": "forbidden"})
             try:

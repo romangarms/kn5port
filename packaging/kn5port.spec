@@ -14,5 +14,5 @@ exe = EXE(
     name="kn5port",
     console=False,            # windowed; conversions re-launch the exe and stream their output over a pipe
     upx=False,
-    icon=None,
+    icon="kn5port.ico",       # regenerate with: python packaging/make_icon.py
 )
