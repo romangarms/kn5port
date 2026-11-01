@@ -12,3 +12,5 @@ dist/
 *.cdae
 output/
 levels/
+.venv-build/
+packaging/__pycache__/

@@ -26,25 +26,35 @@ the road, and checks the result (including that every AC AI racing line has road
 
 ## Install
 
-Python 3.9+ on Windows (Linux works too):
+**Windows app:** download `kn5port.exe` from the [releases](../../releases) page and run it. No install needed;
+it opens in its own window (uses the WebView2 runtime that ships with Windows 10/11).
+
+**From source** (Python 3.9+):
 
 ```
 git clone https://github.com/<you>/kn5port
 cd kn5port
-pip install .
+pip install .[app]
 ```
 
 ## Use
 
-### Web UI
+### App
 
-```
-kn5port ui
-```
+Run `kn5port.exe` (or `kn5port-app` from source). It:
 
-(or run `kn5port-ui`). It opens in your browser, served only on `127.0.0.1` with a per-session access token.
-Browse your AC tracks with their previews, see what kn5port detects in each, pick options and convert with a
-live log. Keep the console window open while you use it.
+- finds Assetto Corsa and BeamNG through Steam, on any drive (Steam's location comes from the registry, then
+  every library in `libraryfolders.vdf`), and your BeamNG mods folder in `%LOCALAPPDATA%\BeamNG`; anything it
+  can't find, you pick once with a folder browser
+- lists your tracks with their previews and checks every model file in the background: **✓ convertible**,
+  **! partly protected** (protected files are skipped) or **🔒 protected** (can't be converted). Results are
+  cached, so later launches are instant
+- marks tracks already converted into your mods folder
+- converts with one button, with options for terrain, vegetation, tree density and terrain shading, and shows
+  live progress, the validation results and a button to open the level folder
+
+`kn5port ui` serves the same interface in your browser instead (only on `127.0.0.1`, with a per-session
+access token).
 
 ### Command line
 
@@ -68,6 +78,13 @@ Useful options:
 | `--beamng`, `--mods`, `--out` | paths, if auto-detection fails |
 
 `kn5port validate <level folder> --ac-track <track>` re-checks a converted level.
+
+## Building the exe
+
+On Windows: `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `dist\kn5port.exe`.
+Pushing a tag like `v0.2.0` makes GitHub Actions run the tests, build the exe and attach it to a release
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). The exe contains only kn5port and its
+Python libraries, never game content.
 
 ## Track profiles
 

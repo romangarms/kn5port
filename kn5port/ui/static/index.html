@@ -38,7 +38,27 @@ main { flex: 1; display: grid; grid-template-columns: minmax(320px, 1fr) minmax(
 .thumb { aspect-ratio: 16/9; background: #0b0c0e center/cover no-repeat; position: relative; }
 .thumb.none { display: grid; place-items: center; color: var(--faint); font-size: 12px; }
 .badge { position: absolute; top: 7px; right: 7px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 99px; background: rgba(17,19,22,.85); color: var(--ok); border: 1px solid rgba(63,185,124,.5); }
-.meta { padding: 8px 10px 10px; }
+.meta { padding: 8px 10px 10px; display: flex; gap: 8px; align-items: flex-start; }
+.meta .t { min-width: 0; flex: 1; }
+.st { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; margin-top: 1px; }
+.st.ok { background: rgba(63,185,124,.16); color: var(--ok); }
+.st.partial { background: rgba(232,179,61,.16); color: var(--warn); }
+.st.protected { background: rgba(239,91,91,.16); color: var(--bad); }
+.st.checking { background: var(--panel2); }
+.st.checking::after { content: ""; width: 9px; height: 9px; border: 2px solid var(--line); border-top-color: var(--dim); border-radius: 50%; animation: s .9s linear infinite; }
+.card.dim .thumb { filter: grayscale(.85) brightness(.7); }
+.filters { display: flex; gap: 6px; padding: 10px 14px 0; flex-wrap: wrap; }
+.filters button { background: var(--panel); border: 1px solid var(--line); border-radius: 99px; padding: 4px 11px; font-size: 12px; color: var(--dim); }
+.filters button.on { color: var(--text); border-color: var(--accent); }
+.filters button span { color: var(--faint); margin-left: 4px; }
+.scanline { padding: 6px 14px 0; font-size: 12px; color: var(--faint); min-height: 18px; }
+.legend { display: flex; gap: 12px; font-size: 12px; color: var(--faint); align-items: center; }
+.legend .st { display: inline-grid; width: 16px; height: 16px; font-size: 9px; vertical-align: -3px; margin-right: 3px; }
+.field { display: flex; gap: 8px; }
+.field input { flex: 1; }
+.alert { padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+.alert.bad { background: rgba(239,91,91,.1); color: #f3a3a3; border: 1px solid rgba(239,91,91,.35); }
+.alert.warn { background: rgba(232,179,61,.08); color: #f0d08a; border: 1px solid rgba(232,179,61,.35); }
 .meta .n { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta .a { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #detail { overflow: auto; min-height: 0; }
@@ -104,6 +124,8 @@ dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px so
 <main>
   <div id="list">
     <div class="search"><input id="q" placeholder="Search tracks, authors, countries…" autocomplete="off"><span class="count" id="count"></span></div>
+    <div class="filters" id="filters"></div>
+    <div class="scanline" id="scanline"></div>
     <div id="grid"></div>
   </div>
   <div id="detail"><div class="empty">Pick a track to inspect and convert it.</div></div>
@@ -112,10 +134,10 @@ dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px so
 <dialog id="settings">
   <div class="dh">Folders</div>
   <div class="db">
-    <div><label>Assetto Corsa tracks folder</label><input type="text" id="s_tracks" placeholder="…\steamapps\common\assettocorsa\content\tracks"></div>
-    <div><label>BeamNG.drive install folder</label><input type="text" id="s_beamng" placeholder="…\steamapps\common\BeamNG.drive"></div>
-    <div><label>BeamNG mods folder (converted levels go into mods\unpacked)</label><input type="text" id="s_mods" placeholder="%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods"></div>
-    <div class="muted">These are detected automatically through Steam; change them if your installs live elsewhere.</div>
+    <div><label>Assetto Corsa tracks folder</label><div class="field"><input type="text" id="s_tracks" placeholder="…\steamapps\common\assettocorsa\content\tracks"><button class="secondary" data-browse="tracks">Browse…</button></div></div>
+    <div><label>BeamNG.drive install folder</label><div class="field"><input type="text" id="s_beamng" placeholder="…\steamapps\common\BeamNG.drive"><button class="secondary" data-browse="beamng">Browse…</button></div></div>
+    <div><label>BeamNG mods folder (converted levels go into mods\unpacked)</label><div class="field"><input type="text" id="s_mods" placeholder="%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods"><button class="secondary" data-browse="mods">Browse…</button></div></div>
+    <div class="muted">Found automatically through Steam (any drive) and your BeamNG user folder. <a href="#" id="s_detect" style="color:var(--accent)">Detect again</a></div>
   </div>
   <div class="df"><button class="secondary" id="s_cancel">Cancel</button><button class="primary" id="s_save">Save</button></div>
 </dialog>
@@ -137,7 +159,12 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const STEPS = ["Meshes & materials", "Terrain", "Trees & grass", "Validate"];
-let state = { tracks: [], settings: {}, sel: null, job: null, inspect: {}, opts: {} };
+let state = { tracks: [], settings: {}, sel: null, job: null, inspect: {}, opts: {}, filter: "all", scanning: false };
+const ST = { ok: ["ok", "✓", "Convertible"], partial: ["partial", "!", "Partly protected: some files will be skipped"],
+  protected: ["protected", "🔒", "Protected or unreadable: can't be converted"], checking: ["checking", "", "Checking files…"] };
+const stOf = (t) => ST[(t.check && t.check.state) || "checking"] || ST.checking;
+const FILTERS = [["all", "All", () => true], ["ok", "Convertible", (t) => ["ok", "partial"].includes(t.check?.state)],
+  ["converted", "Converted", (t) => t.converted], ["protected", "Protected", (t) => t.check?.state === "protected"]];
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? { headers: { "X-Token": TOKEN } }
@@ -156,17 +183,23 @@ function chips() {
 
 function renderGrid() {
   const q = $("#q").value.trim().toLowerCase();
-  const list = state.tracks.filter((t) => !q || [t.name, t.id, t.author, t.country, t.city].join(" ").toLowerCase().includes(q));
+  const fpass = (FILTERS.find((f) => f[0] === state.filter) || FILTERS[0])[2];
+  $("#filters").innerHTML = FILTERS.map(([k, label, fn]) =>
+    `<button data-f="${k}" class="${state.filter === k ? "on" : ""}">${label}<span>${state.tracks.filter(fn).length}</span></button>`).join("");
+  const checking = state.tracks.filter((t) => (t.check?.state || "checking") === "checking").length;
+  $("#scanline").innerHTML = state.scanning || checking ? `<span class="spin"></span>Checking which tracks can be converted… ${state.tracks.length - checking}/${state.tracks.length}`
+    : `<span class="legend"><span><span class="st ok">✓</span>convertible</span><span><span class="st partial">!</span>partly protected</span><span><span class="st protected">🔒</span>protected</span></span>`;
+  const list = state.tracks.filter((t) => fpass(t) && (!q || [t.name, t.id, t.author, t.country, t.city].join(" ").toLowerCase().includes(q)));
   $("#count").textContent = `${list.length} of ${state.tracks.length}`;
   if (!state.tracks.length) {
     $("#grid").innerHTML = `<div class="muted" style="grid-column:1/-1">No tracks found. Set your Assetto Corsa tracks folder under <b>Folders</b>.</div>`;
     return;
   }
   $("#grid").innerHTML = list.map((t) => `
-    <button class="card ${state.sel === t.id ? "sel" : ""}" data-id="${esc(t.id)}">
+    <button class="card ${state.sel === t.id ? "sel" : ""} ${t.check?.state === "protected" ? "dim" : ""}" data-id="${esc(t.id)}" title="${esc(stOf(t)[2])}">
       <div class="thumb ${t.preview ? "" : "none"}" ${t.preview ? `style="background-image:url('${preview(t.id)}')"` : ""}>${t.preview ? "" : "no preview"}
         ${t.converted ? '<span class="badge">converted</span>' : ""}</div>
-      <div class="meta"><div class="n">${esc(t.name)}</div><div class="a">${esc(t.author || t.id)}</div></div>
+      <div class="meta"><div class="t"><div class="n">${esc(t.name)}</div><div class="a">${esc(t.author || t.id)}</div></div><span class="st ${stOf(t)[0]}">${stOf(t)[1]}</span></div>
     </button>`).join("");
 }
 
@@ -230,17 +263,22 @@ function renderDetail() {
   if (!t) { $("#detail").innerHTML = `<div class="empty">Pick a track to inspect and convert it.</div>`; return; }
   const j = state.job && state.job.track === t.id ? state.job : null;
   const busy = state.job && state.job.status === "running";
+  const cs = t.check?.state || "checking";
+  const blocked = cs === "protected";
+  const alert = cs === "protected" ? `<div class="alert bad">This track's files are protected or unreadable, so it can't be converted. kn5port doesn't get around protection.</div>`
+    : cs === "partial" ? `<div class="alert warn">${t.check.bad} of ${t.check.ok + t.check.bad} model files are protected and will be skipped; the rest converts normally.</div>` : "";
   $("#detail").innerHTML = `
     <div class="hero" ${t.preview ? `style="background-image:url('${preview(t.id)}')"` : ""}></div>
     <div class="body">
       <div><h1>${esc(t.name)}</h1><div class="sub">${esc([t.author, [t.city, t.country].filter(Boolean).join(", "), t.length].filter(Boolean).join(" · "))}</div></div>
       ${t.description ? `<div class="desc">${esc(t.description)}</div>` : ""}
       ${t.tags.length ? `<div class="tags">${t.tags.map((g) => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
+      ${alert}
       <section><h2>What kn5port sees</h2>${inspectHtml(state.inspect[t.id])}</section>
       <section><h2>Options</h2>${optionsHtml()}</section>
       <section><h2>Convert</h2>
         <div class="actions">
-          <button class="primary" id="go" ${busy || !state.settings.mods ? "disabled" : ""}>${t.converted ? "Convert again" : "Convert to BeamNG"}</button>
+          <button class="primary" id="go" ${busy || blocked || !state.settings.mods ? "disabled" : ""}>${t.converted ? "Convert again" : "Convert to BeamNG"}</button>
           ${busy && j ? '<button class="secondary" id="cancel">Cancel</button>' : ""}
           ${t.converted && !j ? '<button class="secondary" id="openLevel">Open level folder</button>' : ""}
           <span class="muted">${busy && !j ? "Another conversion is running." : !state.settings.mods ? "Set your BeamNG mods folder first." : `→ mods\\unpacked\\${esc(t.level)}`}</span>
@@ -305,7 +343,8 @@ async function poll() {
 
 async function refresh() {
   const s = await api("/api/state");
-  state.tracks = s.tracks; state.settings = s.settings;
+  state.tracks = s.tracks; state.settings = s.settings; state.scanning = s.scanning;
+  if (s.scanning) setTimeout(() => refresh().then(() => { if (state.sel) renderDetail(); }), 1500);
   const running = (s.jobs || []).find((j) => j.status === "running");
   if (running && !state.job) { state.job = { ...running, lines: [] }; poll(); }
   chips(); renderGrid();
@@ -313,6 +352,18 @@ async function refresh() {
 
 $("#grid").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) select(c.dataset.id); });
 $("#q").addEventListener("input", renderGrid);
+$("#filters").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.filter = b.dataset.f; renderGrid(); } });
+$("#settings").addEventListener("click", async (e) => {
+  const k = e.target.dataset?.browse; if (!k) return;
+  e.preventDefault();
+  try { const r = await api("/api/pick-folder", { start: $("#s_" + k).value }); if (r.path) $("#s_" + k).value = r.path; }
+  catch (err) { alert(err.message); }
+});
+$("#s_detect").addEventListener("click", async (e) => {
+  e.preventDefault();
+  const d = await api("/api/detect", {});
+  for (const k of ["tracks", "beamng", "mods"]) if (d[k]) $("#s_" + k).value = d[k];
+});
 $("#settingsBtn").addEventListener("click", () => {
   for (const k of ["tracks", "beamng", "mods"]) $("#s_" + k).value = state.settings[k] || "";
   $("#settings").showModal();
@@ -331,7 +382,15 @@ $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port
   let ack = null; try { ack = localStorage.getItem("kn5port.ack"); } catch (_) {}
   if (!ack) $("#notice").showModal();
   if (!TOKEN) { $("#grid").innerHTML = '<div class="muted">Open kn5port through <code>kn5port ui</code> (the link it prints includes an access token).</div>'; return; }
-  try { await refresh(); } catch (e) { $("#grid").innerHTML = `<div class="muted">Couldn't reach kn5port: ${esc(e.message)}</div>`; }
+  try {
+    await refresh();
+    const s = state.settings;
+    if (!s.tracks || !s.beamng || !s.mods) {          // something wasn't found: ask right away
+      for (const k of ["tracks", "beamng", "mods"]) $("#s_" + k).value = s[k] || "";
+      if (!$("#notice").open) $("#settings").showModal();
+      else $("#n_ok").addEventListener("click", () => $("#settings").showModal(), { once: true });
+    }
+  } catch (e) { $("#grid").innerHTML = `<div class="muted">Couldn't reach kn5port: ${esc(e.message)}</div>`; }
 })();
 </script>
 </body>

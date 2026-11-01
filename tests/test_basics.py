@@ -61,3 +61,45 @@ def test_profile_defaults():
     assert p.ground_type("XYZ", {"IS_VALID_TRACK": "0"}) == "GRASS"
     assert p.species_of("H9_TREES_CONIFER") == "fir" and p.species_of("SKY_GROUNDCOVER") == "grass"
     assert p.species_of("PALM_TREE_01") == "palm" and p.species_of("SOME_TREE") == p.default_tree_species
+
+
+def test_steam_library_detection(monkeypatch=None):
+    """AC on a second library (another drive) is found through libraryfolders.vdf + its app manifest."""
+    from kn5port import beamng
+    with tempfile.TemporaryDirectory() as d:
+        root, lib2 = Path(d) / "Steam", Path(d) / "OtherDrive" / "SteamLibrary"
+        for p in (root / "steamapps" / "common" / "assettocorsa" / "content",       # stale folder, no manifest
+                  lib2 / "steamapps" / "common" / "assettocorsa" / "content" / "tracks",
+                  lib2 / "steamapps" / "common" / "BeamNG.drive" / "content" / "levels"):
+            p.mkdir(parents=True)
+        (root / "steamapps" / "libraryfolders.vdf").write_text(
+            '"libraryfolders" { "0" { "path" "%s" } "1" { "path" "%s" } }' % (root, lib2))
+        (lib2 / "steamapps" / f"appmanifest_{beamng.AC_APPID}.acf").write_text("x")
+        (lib2 / "steamapps" / f"appmanifest_{beamng.BEAMNG_APPID}.acf").write_text("x")
+        orig = beamng._steam_roots
+        beamng._steam_roots = lambda: [root]
+        try:
+            assert beamng.find_ac_tracks() == lib2 / "steamapps" / "common" / "assettocorsa" / "content" / "tracks"
+            assert beamng.find_install() == lib2 / "steamapps" / "common" / "BeamNG.drive"
+        finally:
+            beamng._steam_roots = orig
+
+
+def test_scanner_flags_protected_tracks():
+    import os
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["APPDATA"] = str(Path(d) / "appdata")
+        from kn5port.ui.server import Scanner
+        tracks = Path(d) / "tracks"
+        good, bad, mixed = tracks / "good", tracks / "locked", tracks / "mixed"
+        for t in (good, bad, mixed):
+            t.mkdir(parents=True)
+        make_kn5(good / "good.kn5")
+        (bad / "locked.kn5").write_bytes(b"sc6969" + struct.pack("<ii", 6, 0) + b"\xff" * 64)
+        make_kn5(mixed / "a.kn5")
+        (mixed / "b.kn5").write_bytes(b"not a kn5 at all")
+        s = Scanner()
+        s._run(tracks)
+        assert s.status["good"]["state"] == "ok"
+        assert s.status["locked"]["state"] == "protected"
+        assert s.status["mixed"]["state"] == "partial"

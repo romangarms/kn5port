@@ -30,14 +30,6 @@ def settings_path():
     return Path(base) / "kn5port" / "settings.json"
 
 
-def find_ac_tracks():
-    for lib in beamng.steam_libraries():
-        p = lib / "steamapps" / "common" / "assettocorsa" / "content" / "tracks"
-        if p.exists():
-            return p
-    return None
-
-
 def load_settings():
     s = {}
     try:
@@ -45,7 +37,7 @@ def load_settings():
     except (OSError, ValueError):
         pass
     if not s.get("tracks"):
-        s["tracks"] = str(find_ac_tracks() or "")
+        s["tracks"] = str(beamng.find_ac_tracks() or "")
     if not s.get("beamng"):
         s["beamng"] = str(beamng.find_install() or "")
     if not s.get("mods"):
@@ -63,6 +55,67 @@ def safe_name(name):
     return re.sub(r"[^A-Za-z0-9_]", "_", name).lower()
 
 
+# ---- convertibility scan ----------------------------------------------------------------------------------
+
+def check_kn5(path):
+    """'ok' if the file opens and its whole node tree walks (what fails on protected / damaged files)."""
+    from ..kn5 import KN5, KN5Error
+    try:
+        with KN5(str(path)) as k:
+            for _ in k.walk(include_meshes=False):
+                pass
+        return "ok"
+    except Exception:          # KN5Error or anything a malformed file triggers
+        return "protected"
+
+
+class Scanner:
+    """Checks every track's kn5 files in the background; results cached by file size + mtime."""
+
+    def __init__(self):
+        self.cache_file = settings_path().parent / "scan_cache.json"
+        try:
+            self.cache = json.loads(self.cache_file.read_text())
+        except (OSError, ValueError):
+            self.cache = {}
+        self.status = {}          # track id -> {"state": ..., "ok": n, "bad": n}
+        self.running = False
+        self.lock = threading.Lock()
+
+    def start(self, root):
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
+        threading.Thread(target=self._run, args=(Path(root),), daemon=True).start()
+
+    def _run(self, root):
+        try:
+            dirs = [d for d in sorted(root.iterdir(), key=lambda p: p.name.lower())
+                    if d.is_dir()] if root.is_dir() else []
+            for d in dirs:
+                files = sorted(d.glob("*.kn5"))
+                if not files:
+                    continue
+                ok = bad = 0
+                for f in files:
+                    st = f.stat()
+                    key = f"{f}|{st.st_size}|{int(st.st_mtime)}"
+                    r = self.cache.get(key)
+                    if r is None:
+                        r = self.cache[key] = check_kn5(f)
+                    ok += r == "ok"; bad += r != "ok"
+                state = "ok" if not bad else ("protected" if not ok else "partial")
+                self.status[d.name] = {"state": state, "ok": ok, "bad": bad}
+            try:
+                self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+                self.cache_file.write_text(json.dumps(self.cache))
+            except OSError:
+                pass
+        finally:
+            self.running = False
+
+
 # ---- tracks -----------------------------------------------------------------------------------------------
 
 def read_ui(path):
@@ -72,7 +125,7 @@ def read_ui(path):
         return {}
 
 
-def scan_tracks(settings):
+def scan_tracks(settings, scanner=None):
     root = Path(settings.get("tracks") or "")
     mods = Path(settings.get("mods") or "")
     out = []
@@ -97,6 +150,7 @@ def scan_tracks(settings):
             "tags": ui.get("tags", [])[:6] if isinstance(ui.get("tags"), list) else [],
             "layouts": [u.parent.name for u in uis] or ["(single)"],
             "preview": bool(prev), "converted": bool(converted), "level": level,
+            "check": (scanner.status.get(d.name) if scanner else None) or {"state": "checking"},
         })
     return out
 
@@ -122,7 +176,9 @@ class Job:
         self.ended = None
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        self.proc = subprocess.Popen([sys.executable, "-m", "kn5port", "convert"] + args,
+        cmd = [sys.executable, "convert"] if getattr(sys, "frozen", False) else \
+            [sys.executable, "-m", "kn5port", "convert"]
+        self.proc = subprocess.Popen(cmd + args,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                      encoding="utf-8", errors="replace", bufsize=1, env=env, creationflags=flags)
         threading.Thread(target=self._pump, daemon=True).start()
@@ -155,6 +211,20 @@ class Job:
                 "elapsed": round((self.ended or time.time()) - self.started)}
 
 
+def pick_folder_tk(start=""):
+    """Native folder picker for browser mode (Tk in a child process, so it never touches the server threads)."""
+    if getattr(sys, "frozen", False):
+        return ""
+    code = ("import sys, tkinter as tk; from tkinter import filedialog; r = tk.Tk(); r.withdraw(); "
+            "r.attributes('-topmost', True); "
+            "print(filedialog.askdirectory(initialdir=sys.argv[1] or None, title='Choose a folder') or '')")
+    try:
+        out = subprocess.run([sys.executable, "-c", code, start], capture_output=True, text=True, timeout=600)
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 # ---- HTTP -------------------------------------------------------------------------------------------------
 
 class App:
@@ -164,6 +234,10 @@ class App:
         self.jobs = {}
         self.inspect_cache = {}
         self.lock = threading.Lock()
+        self.scanner = Scanner()
+        if self.settings.get("tracks"):
+            self.scanner.start(self.settings["tracks"])
+        self.pick_folder = None       # set by the desktop app (native dialog)
 
 
 def make_handler(app, port_ref):
@@ -213,7 +287,8 @@ def make_handler(app, port_ref):
             try:
                 if u.path == "/api/state":
                     return self._send(200, {"version": __version__, "settings": app.settings,
-                                            "tracks": scan_tracks(app.settings),
+                                            "tracks": scan_tracks(app.settings, app.scanner),
+                                            "scanning": app.scanner.running, "native": app.pick_folder is not None,
                                             "jobs": [j.view(len(j.lines)) for j in app.jobs.values()]})
                 m = re.match(r"^/api/track/([^/]+)/preview$", u.path)
                 if m:
@@ -257,7 +332,19 @@ def make_handler(app, port_ref):
                         if k in body:
                             app.settings[k] = str(body[k]).strip()
                     save_settings(app.settings)
-                    return self._send(200, {"settings": app.settings, "tracks": scan_tracks(app.settings)})
+                    if app.settings.get("tracks"):
+                        app.scanner.start(app.settings["tracks"])
+                    return self._send(200, {"settings": app.settings,
+                                            "tracks": scan_tracks(app.settings, app.scanner)})
+                if u.path == "/api/detect":
+                    # re-run auto-detection for any folder (empty values are filled in)
+                    det = {"tracks": str(beamng.find_ac_tracks() or ""), "beamng": str(beamng.find_install() or ""),
+                           "mods": str(beamng.find_mods() or "")}
+                    return self._send(200, det)
+                if u.path == "/api/pick-folder":
+                    start = str(body.get("start") or "")
+                    path = app.pick_folder(start) if app.pick_folder else pick_folder_tk(start)
+                    return self._send(200, {"path": path or ""})
                 if u.path == "/api/convert":
                     d = track_dir(app.settings, body.get("track", ""))
                     with app.lock:
@@ -306,6 +393,15 @@ def make_handler(app, port_ref):
             return self._send(404, {"error": "not found"})
 
     return H
+
+
+def start_server(port=0):
+    """Start the server in a background thread; returns (app, httpd, url)."""
+    app = App()
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, {}))
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={app.token}"
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return app, httpd, url
 
 
 def serve(port=0, open_browser=True):

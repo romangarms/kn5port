@@ -15,6 +15,12 @@ dependencies = ["numpy>=1.22", "Pillow>=9.0"]
 kn5port = "kn5port.cli:main"
 kn5port-ui = "kn5port.cli:gui_main"
 
+[project.gui-scripts]
+kn5port-app = "kn5port.app:main"
+
+[project.optional-dependencies]
+app = ["pywebview>=5"]
+
 [tool.setuptools]
 packages = ["kn5port", "kn5port.ui"]
 
