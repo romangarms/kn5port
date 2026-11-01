@@ -259,37 +259,11 @@ class TextureBaker:
             self.done[key] = self._save(im, f"{Path(name).stem}.{kind}.png") if im else None
         return self.done[key]
 
-    DDS_OK = {b"DXT1", b"DXT3", b"DXT5", b"ATI1", b"ATI2", b"BC4U", b"BC4S", b"BC5U", b"BC5S", b"DX10"}
-
-    def raw_ok(self, k, name):
-        """Can BeamNG use this texture exactly as stored? It imports DDS (DXT/BC-compressed or plain RGB, not
-        luminance/alpha-only formats), PNG and JPEG, always power-of-two sized and at least 16 px."""
-        t = next((t for t in k.textures if t.name == name), None)
-        if t is None:
-            return False
-        head = bytes(k._mm[t.offset:t.offset + min(t.size, 128)])
-        good = lambda v: v >= 16 and (v & (v - 1)) == 0
-        if head[:4] == b"DDS ":
-            if len(head) < 128:
-                return False
-            h, w = int.from_bytes(head[12:16], "little"), int.from_bytes(head[16:20], "little")
-            pf_flags, fourcc = int.from_bytes(head[80:84], "little"), head[84:88]
-            bits = int.from_bytes(head[88:92], "little")
-            # compressed (FourCC) formats, or uncompressed 32-bit RGB(A); BeamNG rejects 24-bit RGB DDS
-            fmt_ok = fourcc in self.DDS_OK if pf_flags & 0x4 else bool(pf_flags & 0x40) and bits == 32
-            return fmt_ok and good(w) and good(h)
-        if head[:4] == b"\x89PNG" or head[:3] == b"\xff\xd8\xff":
-            try:
-                from PIL import Image
-                import io
-                with Image.open(io.BytesIO(k.texture_bytes(t))) as im:
-                    return good(im.size[0]) and good(im.size[1])
-            except Exception:
-                return False
-        return False          # TIFF, TGA, BMP...: converted to PNG
-
     def raw_or_png(self, k, name, tex_rel, kind="color"):
-        return f"{tex_rel}/{name}" if self.raw_ok(k, name) else (self.rgba_png(k, name, kind) or f"{tex_rel}/{name}")
+        """Re-encode to PNG whenever we can decode the texture, so BeamNG builds its own mipmaps: ripped DDS
+        files often carry broken or blank lower mip levels, which show as white surfaces once they're a little
+        way off. Only textures we can't decode (but BeamNG can) are passed through as stored."""
+        return self.rgba_png(k, name, kind) or f"{tex_rel}/{name}"
 
     def opacity(self, k, name):
         key = ("opacity", name)
