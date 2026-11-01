@@ -97,9 +97,9 @@ def pieces(part, split):
         yield c, (pos[used], nrm[used], uv[used], inv.astype(np.uint32)), round(float(sc), 3)
 
 
-# AC multiplies a layer over the macro map, so a layer's relative variation (std / mean, ~0.35 for grass) shows up
-# around the macro colour (~0.5): roughly twice the layer's own absolute contrast
-LAYER_DETAIL_CONTRAST = 1.6
+# BeamNG applies detail maps strongly: at 1.6 (meant to match AC's multiply) the grass's bright blades clipped to white
+# speckles over California Highway's hillsides, so keep the layer detail subtle
+LAYER_DETAIL_CONTRAST = 0.6
 
 
 def layer_material(name, acmat, c, k, baker, tex_rel, uv_scale, ground_type=None):
