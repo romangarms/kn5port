@@ -36,6 +36,18 @@ pip install .
 
 ## Use
 
+### Web UI
+
+```
+kn5port ui
+```
+
+(or run `kn5port-ui`). It opens in your browser, served only on `127.0.0.1` with a per-session access token.
+Browse your AC tracks with their previews, see what kn5port detects in each, pick options and convert with a
+live log. Keep the console window open while you use it.
+
+### Command line
+
 ```
 kn5port inspect  "D:\Steam\steamapps\common\assettocorsa\content\tracks\<track>"
 kn5port convert  "D:\Steam\steamapps\common\assettocorsa\content\tracks\<track>"

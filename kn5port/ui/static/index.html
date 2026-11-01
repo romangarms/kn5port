@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kn5port</title>
+<style>
+:root {
+  --bg: #111316; --panel: #181b20; --panel2: #1f232a; --line: #2a2f38; --text: #e7e9ee; --dim: #9aa1ad;
+  --faint: #6b7280; --accent: #ff7a1a; --accent-ink: #1a0d00; --ok: #3fb97c; --warn: #e8b33d; --bad: #ef5b5b;
+  --radius: 10px; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+header { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { font-weight: 700; font-size: 17px; letter-spacing: .2px; }
+.brand b { color: var(--accent); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: 8px; }
+.chip { font-size: 12px; padding: 3px 9px; border-radius: 99px; background: var(--panel2); color: var(--dim); border: 1px solid var(--line); white-space: nowrap; }
+.chip.ok::before { content: "● "; color: var(--ok); }
+.chip.bad::before { content: "● "; color: var(--bad); }
+.spacer { flex: 1; }
+.iconbtn { background: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; color: var(--dim); }
+.iconbtn:hover { color: var(--text); border-color: var(--faint); }
+main { flex: 1; display: grid; grid-template-columns: minmax(320px, 1fr) minmax(380px, 1.15fr); min-height: 0; }
+#list { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.search { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+.search input { flex: 1; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; outline: none; }
+.search input:focus { border-color: var(--accent); }
+.count { color: var(--faint); font-size: 12px; white-space: nowrap; }
+#grid { overflow: auto; padding: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; align-content: start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; cursor: pointer; transition: border-color .12s, transform .12s; text-align: left; padding: 0; }
+.card:hover { border-color: var(--faint); transform: translateY(-1px); }
+.card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.thumb { aspect-ratio: 16/9; background: #0b0c0e center/cover no-repeat; position: relative; }
+.thumb.none { display: grid; place-items: center; color: var(--faint); font-size: 12px; }
+.badge { position: absolute; top: 7px; right: 7px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 99px; background: rgba(17,19,22,.85); color: var(--ok); border: 1px solid rgba(63,185,124,.5); }
+.meta { padding: 8px 10px 10px; }
+.meta .n { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta .a { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#detail { overflow: auto; min-height: 0; }
+.empty { height: 100%; display: grid; place-items: center; color: var(--faint); text-align: center; padding: 30px; }
+.hero { aspect-ratio: 16/7; background: #0b0c0e center/cover no-repeat; border-bottom: 1px solid var(--line); }
+.body { padding: 18px 22px 40px; display: flex; flex-direction: column; gap: 18px; }
+h1 { margin: 0; font-size: 22px; }
+.sub { color: var(--dim); margin-top: 2px; }
+.desc { color: var(--dim); max-width: 70ch; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; }
+section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 8px; font-weight: 600; }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13px; }
+.kv dt { color: var(--faint); }
+.kv dd { margin: 0; }
+.warnline { color: var(--warn); }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+.opt label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+.opt .hint { font-size: 11px; color: var(--faint); margin-top: 4px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { background: none; border: 0; padding: 6px 12px; color: var(--dim); }
+.seg button.on { background: var(--panel2); color: var(--text); }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.rangeval { font-family: var(--mono); font-size: 12px; color: var(--text); float: right; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 10px 18px; font-weight: 700; }
+.primary:disabled { opacity: .45; cursor: not-allowed; }
+.secondary { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; color: var(--text); }
+.secondary:hover { border-color: var(--faint); }
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.step { font-size: 12px; color: var(--faint); padding-top: 8px; border-top: 3px solid var(--line); }
+.step.active { color: var(--text); border-color: var(--accent); }
+.step.done { color: var(--dim); border-color: var(--ok); }
+.log { font-family: var(--mono); font-size: 12px; background: #0b0c0e; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; height: 260px; overflow: auto; white-space: pre-wrap; color: #c7ccd6; margin-top: 12px; }
+.result { border-left: 3px solid var(--ok); }
+.result.warn { border-left-color: var(--warn); }
+.result.bad { border-left-color: var(--bad); }
+.result p { margin: 0 0 6px; }
+.muted { color: var(--faint); font-size: 12px; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes s { to { transform: rotate(360deg); } }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 0; width: min(620px, 92vw); }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog .dh { padding: 16px 20px; border-bottom: 1px solid var(--line); font-weight: 700; }
+dialog .db { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+dialog .df { padding: 12px 20px 16px; display: flex; justify-content: flex-end; gap: 10px; }
+dialog label { font-size: 12px; color: var(--dim); display: block; margin-bottom: 4px; }
+dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; }
+.notice { line-height: 1.55; color: var(--dim); }
+.notice strong { color: var(--text); }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .opts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">kn5<b>port</b></div>
+  <div class="chips" id="chips"></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="settingsBtn" title="Folders">⚙ Folders</button>
+</header>
+<main>
+  <div id="list">
+    <div class="search"><input id="q" placeholder="Search tracks, authors, countries…" autocomplete="off"><span class="count" id="count"></span></div>
+    <div id="grid"></div>
+  </div>
+  <div id="detail"><div class="empty">Pick a track to inspect and convert it.</div></div>
+</main>
+
+<dialog id="settings">
+  <div class="dh">Folders</div>
+  <div class="db">
+    <div><label>Assetto Corsa tracks folder</label><input type="text" id="s_tracks" placeholder="…\steamapps\common\assettocorsa\content\tracks"></div>
+    <div><label>BeamNG.drive install folder</label><input type="text" id="s_beamng" placeholder="…\steamapps\common\BeamNG.drive"></div>
+    <div><label>BeamNG mods folder (converted levels go into mods\unpacked)</label><input type="text" id="s_mods" placeholder="%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods"></div>
+    <div class="muted">These are detected automatically through Steam; change them if your installs live elsewhere.</div>
+  </div>
+  <div class="df"><button class="secondary" id="s_cancel">Cancel</button><button class="primary" id="s_save">Save</button></div>
+</dialog>
+
+<dialog id="notice">
+  <div class="dh">Before you convert anything</div>
+  <div class="db notice">
+    <p>kn5port converts tracks <strong>you already have</strong> into BeamNG levels on this computer. The result is a derivative of someone else's work, so:</p>
+    <p>• <strong>Never share converted levels</strong> — not as mods, uploads, or in bug reports.<br>
+       • <strong>Check each track's license.</strong> Some forbid conversions to other games, even for personal use.<br>
+       • Protected / encrypted tracks are skipped; kn5port doesn't get around protection.</p>
+  </div>
+  <div class="df"><button class="primary" id="n_ok">I understand</button></div>
+</dialog>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const STEPS = ["Meshes & materials", "Terrain", "Trees & grass", "Validate"];
+let state = { tracks: [], settings: {}, sel: null, job: null, inspect: {}, opts: {} };
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? { headers: { "X-Token": TOKEN } }
+    : { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+const preview = (id, layout) => `/api/track/${encodeURIComponent(id)}/preview?t=${encodeURIComponent(TOKEN)}${layout ? "&layout=" + encodeURIComponent(layout) : ""}`;
+
+function chips() {
+  const s = state.settings;
+  const c = (label, v) => `<span class="chip ${v ? "ok" : "bad"}" title="${esc(v || "not found — set it under Folders")}">${label}</span>`;
+  $("#chips").innerHTML = c("AC tracks", s.tracks) + c("BeamNG", s.beamng) + c("Mods folder", s.mods);
+}
+
+function renderGrid() {
+  const q = $("#q").value.trim().toLowerCase();
+  const list = state.tracks.filter((t) => !q || [t.name, t.id, t.author, t.country, t.city].join(" ").toLowerCase().includes(q));
+  $("#count").textContent = `${list.length} of ${state.tracks.length}`;
+  if (!state.tracks.length) {
+    $("#grid").innerHTML = `<div class="muted" style="grid-column:1/-1">No tracks found. Set your Assetto Corsa tracks folder under <b>Folders</b>.</div>`;
+    return;
+  }
+  $("#grid").innerHTML = list.map((t) => `
+    <button class="card ${state.sel === t.id ? "sel" : ""}" data-id="${esc(t.id)}">
+      <div class="thumb ${t.preview ? "" : "none"}" ${t.preview ? `style="background-image:url('${preview(t.id)}')"` : ""}>${t.preview ? "" : "no preview"}
+        ${t.converted ? '<span class="badge">converted</span>' : ""}</div>
+      <div class="meta"><div class="n">${esc(t.name)}</div><div class="a">${esc(t.author || t.id)}</div></div>
+    </button>`).join("");
+}
+
+function optionsHtml() {
+  const o = state.opts;
+  return `
+  <div class="opts">
+    <div class="opt"><label>Ground</label>
+      <div class="seg" id="o_terrain"><button data-v="auto" class="${o.terrain !== "off" ? "on" : ""}">BeamNG terrain</button><button data-v="off" class="${o.terrain === "off" ? "on" : ""}">Keep AC meshes</button></div>
+      <div class="hint">Terrain adds grass and proper ground materials; meshes are faster and exact.</div></div>
+    <div class="opt"><label>Trees &amp; grass</label>
+      <label class="check"><input type="checkbox" id="o_forest" ${o.forest !== false ? "checked" : ""}> Replace with BeamNG vegetation</label>
+      <div class="hint">Uses West Coast USA's trees, placed and scaled where the track had them.</div></div>
+    <div class="opt"><label>Tree density <span class="rangeval" id="v_density">${(o.tree_density ?? 1).toFixed(2)}</span></label>
+      <input type="range" id="o_density" min="0.2" max="1" step="0.05" value="${o.tree_density ?? 1}">
+      <div class="hint">Lower it if the forest costs too much frame rate.</div></div>
+    <div class="opt"><label>Terrain shading (AO) <span class="rangeval" id="v_ao">${(o.ao ?? 0.35).toFixed(2)}</span></label>
+      <input type="range" id="o_ao" min="0" max="1" step="0.05" value="${o.ao ?? 0.35}">
+      <div class="hint">Lower = lighter close-up ground.</div></div>
+  </div>`;
+}
+
+function inspectHtml(r) {
+  if (!r) return `<div class="box"><span class="spin"></span>Reading the track…</div>`;
+  if (r.error) return `<div class="box warnline">Couldn't read this track: ${esc(r.error)}</div>`;
+  const kv = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
+  const join = (o) => Object.entries(o).map(([k, v]) => `${esc(k)} ${Number(v).toLocaleString()}`).join(", ") || "—";
+  return `<div class="box"><dl class="kv">
+    ${kv("Layouts", esc(r.layouts.join(", ") || "—"))}
+    ${kv("Surfaces", Object.entries(r.surfaces).map(([k, v]) => `${esc(k)} → ${esc(v.toLowerCase())}`).join(", ") || "—")}
+    ${kv("Meshes", join(r.meshes))}
+    ${kv("Vegetation", join(r.vegetation))}
+    ${kv("Terrain", r.terrain ? "natural ground found → BeamNG terrain" : "no natural ground found")}
+    ${r.protected.length ? kv("Skipped", `<span class="warnline">${esc(r.protected.join(", "))} (protected or unreadable)</span>`) : ""}
+  </dl></div>`;
+}
+
+function jobHtml(j) {
+  if (!j) return "";
+  const stepsHtml = STEPS.map((s, i) => {
+    const n = i + 1, cls = j.step > n || j.status === "done" || j.status === "warnings" ? "done" : (j.step === n && j.status === "running" ? "active" : "");
+    return `<div class="step ${cls}">${n}. ${s}</div>`;
+  }).join("");
+  let res = "";
+  if (j.status !== "running") {
+    const t = state.tracks.find((x) => x.id === j.track) || {};
+    const ai = j.lines.filter((l) => l.startsWith("AI line")).map((l) => `<p class="muted">${esc(l)}</p>`).join("");
+    const cls = j.status === "done" ? "" : j.status === "warnings" ? "warn" : "bad";
+    const head = { done: "Converted. Fully restart BeamNG, then pick the level from the level list.",
+      warnings: "Converted, but validation found problems (see the log).",
+      failed: "Conversion failed (see the log).", cancelled: "Cancelled." }[j.status];
+    res = `<div class="box result ${cls}" style="margin-top:12px"><p><b>${esc(head)}</b></p>${ai}
+      <div class="actions" style="margin-top:8px">${j.status !== "failed" && j.status !== "cancelled" ? '<button class="secondary" id="openLevel">Open level folder</button>' : ""}
+      <span class="muted">${j.elapsed}s · level "${esc(t.level || "")}"</span></div></div>`;
+  }
+  return `<div class="steps">${stepsHtml}</div><div class="log" id="log">${esc(j.lines.join("\n"))}</div>${res}`;
+}
+
+function renderDetail() {
+  const t = state.tracks.find((x) => x.id === state.sel);
+  if (!t) { $("#detail").innerHTML = `<div class="empty">Pick a track to inspect and convert it.</div>`; return; }
+  const j = state.job && state.job.track === t.id ? state.job : null;
+  const busy = state.job && state.job.status === "running";
+  $("#detail").innerHTML = `
+    <div class="hero" ${t.preview ? `style="background-image:url('${preview(t.id)}')"` : ""}></div>
+    <div class="body">
+      <div><h1>${esc(t.name)}</h1><div class="sub">${esc([t.author, [t.city, t.country].filter(Boolean).join(", "), t.length].filter(Boolean).join(" · "))}</div></div>
+      ${t.description ? `<div class="desc">${esc(t.description)}</div>` : ""}
+      ${t.tags.length ? `<div class="tags">${t.tags.map((g) => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
+      <section><h2>What kn5port sees</h2>${inspectHtml(state.inspect[t.id])}</section>
+      <section><h2>Options</h2>${optionsHtml()}</section>
+      <section><h2>Convert</h2>
+        <div class="actions">
+          <button class="primary" id="go" ${busy || !state.settings.mods ? "disabled" : ""}>${t.converted ? "Convert again" : "Convert to BeamNG"}</button>
+          ${busy && j ? '<button class="secondary" id="cancel">Cancel</button>' : ""}
+          ${t.converted && !j ? '<button class="secondary" id="openLevel">Open level folder</button>' : ""}
+          <span class="muted">${busy && !j ? "Another conversion is running." : !state.settings.mods ? "Set your BeamNG mods folder first." : `→ mods\\unpacked\\${esc(t.level)}`}</span>
+        </div>
+        <div style="margin-top:14px">${jobHtml(j)}</div>
+      </section>
+    </div>`;
+  wireDetail(t);
+  const log = $("#log"); if (log) log.scrollTop = log.scrollHeight;
+}
+
+function wireDetail(t) {
+  $("#o_terrain")?.addEventListener("click", (e) => { const v = e.target.dataset.v; if (v) { state.opts.terrain = v; renderDetail(); } });
+  $("#o_forest")?.addEventListener("change", (e) => { state.opts.forest = e.target.checked; });
+  $("#o_density")?.addEventListener("input", (e) => { state.opts.tree_density = +e.target.value; $("#v_density").textContent = (+e.target.value).toFixed(2); });
+  $("#o_ao")?.addEventListener("input", (e) => { state.opts.ao = +e.target.value; $("#v_ao").textContent = (+e.target.value).toFixed(2); });
+  $("#go")?.addEventListener("click", () => convert(t.id));
+  $("#cancel")?.addEventListener("click", () => api(`/api/jobs/${state.job.id}/cancel`, {}).catch(alert));
+  $("#openLevel")?.addEventListener("click", () => api("/api/open", { track: t.id, what: "level" }).catch((e) => alert(e.message)));
+}
+
+async function select(id) {
+  state.sel = id; renderGrid(); renderDetail();
+  if (!state.inspect[id]) {
+    try { state.inspect[id] = await api(`/api/track/${encodeURIComponent(id)}/inspect`); }
+    catch (e) { state.inspect[id] = { error: e.message }; }
+    if (state.sel === id) renderDetail();
+  }
+}
+
+async function convert(id) {
+  const o = state.opts;
+  try {
+    state.job = await api("/api/convert", { track: id, options: {
+      terrain: o.terrain || "auto", forest: o.forest !== false,
+      tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35 } });
+    state.job.lines = state.job.lines || [];
+    renderDetail(); poll();
+  } catch (e) { alert(e.message); }
+}
+
+async function poll() {
+  const j = state.job; if (!j) return;
+  try {
+    const u = await api(`/api/jobs/${j.id}?since=${j.lines.length}`);
+    j.lines.push(...u.lines); j.status = u.status; j.step = u.step; j.elapsed = u.elapsed;
+    if (state.sel === j.track) {
+      const log = $("#log");
+      if (log && u.lines.length && j.status === "running") {
+        const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+        log.textContent += (log.textContent ? "\n" : "") + u.lines.join("\n");
+        if (stick) log.scrollTop = log.scrollHeight;
+        document.querySelectorAll(".step").forEach((el, i) => {
+          el.className = "step " + (j.step > i + 1 ? "done" : j.step === i + 1 ? "active" : "");
+        });
+      } else if (j.status !== "running" || !log) renderDetail();
+    }
+    if (j.status === "running") setTimeout(poll, 700);
+    else { await refresh(); renderDetail(); }
+  } catch (e) { setTimeout(poll, 2000); }
+}
+
+async function refresh() {
+  const s = await api("/api/state");
+  state.tracks = s.tracks; state.settings = s.settings;
+  const running = (s.jobs || []).find((j) => j.status === "running");
+  if (running && !state.job) { state.job = { ...running, lines: [] }; poll(); }
+  chips(); renderGrid();
+}
+
+$("#grid").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) select(c.dataset.id); });
+$("#q").addEventListener("input", renderGrid);
+$("#settingsBtn").addEventListener("click", () => {
+  for (const k of ["tracks", "beamng", "mods"]) $("#s_" + k).value = state.settings[k] || "";
+  $("#settings").showModal();
+});
+$("#s_cancel").addEventListener("click", () => $("#settings").close());
+$("#s_save").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/settings", { tracks: $("#s_tracks").value, beamng: $("#s_beamng").value, mods: $("#s_mods").value });
+    state.settings = r.settings; state.tracks = r.tracks; state.inspect = {};
+    chips(); renderGrid(); renderDetail(); $("#settings").close();
+  } catch (e) { alert(e.message); }
+});
+$("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port.ack", "1"); } catch (_) {} $("#notice").close(); });
+
+(async () => {
+  let ack = null; try { ack = localStorage.getItem("kn5port.ack"); } catch (_) {}
+  if (!ack) $("#notice").showModal();
+  if (!TOKEN) { $("#grid").innerHTML = '<div class="muted">Open kn5port through <code>kn5port ui</code> (the link it prints includes an access token).</div>'; return; }
+  try { await refresh(); } catch (e) { $("#grid").innerHTML = `<div class="muted">Couldn't reach kn5port: ${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>

@@ -21,23 +21,22 @@ NOTICE = ("kn5port converts content you own for personal use. Check the track's 
           "and never share converted levels.")
 
 
-def cmd_inspect(a):
-    track = Path(a.track)
-    prof = Profile.load(a.profile, track)
+def inspect_track(track, profile=None, beamng_path=None, mods_path=None):
+    """What kn5port detects in a track (no conversion). Returns a dict (also used by the UI)."""
+    track = Path(track)
+    prof = Profile.load(profile, track)
     surfaces = read_surfaces(track)
-    print(f"track: {track.name}")
-    print(f"surfaces.ini keys: {', '.join(f'{k}->{prof.ground_type(k, v)}' for k, v in surfaces.items()) or 'none'}")
     ui = sorted(p.parent.name for p in (track / "ui").glob("*/ui_track.json"))
-    print(f"layouts: {', '.join(ui) if ui else ('single' if (track / 'ui' / 'ui_track.json').exists() else 'none')}")
     phys = re.compile(r"^(\d+)([A-Z]+)")
     veg_re, trunk_re, ground_re, hor_re = (prof.rx(n) for n in ("vegetation_re", "trunk_re", "ground_name_re",
                                                                  "horizon_re"))
-    totals = Counter(); species = Counter(); protected = []
+    totals = Counter(); species = Counter(); protected = []; files = 0
     for f in sorted(track.glob("*.kn5")):
         try:
             k = KN5(str(f))
         except KN5Error:
             protected.append(f.name); continue
+        files += 1
         with k:
             hor = bool(hor_re.search(f.stem))
             for m in k.meshes():
@@ -60,15 +59,33 @@ def cmd_inspect(a):
                     totals["distant ground"] += 1
                 else:
                     totals["other visual"] += 1
-    print("meshes: " + ", ".join(f"{k} {v}" for k, v in totals.most_common()))
-    if species:
-        print("vegetation species: " + ", ".join(f"{k} {v}" for k, v in species.most_common()))
-    if protected:
-        print(f"PROTECTED / unreadable (will be skipped): {', '.join(protected)}")
-    terrain = "yes" if totals["natural ground"] or totals["distant ground"] else "no natural ground found"
-    print(f"terrain conversion: {terrain}")
-    inst = beamng.find_install(a.beamng)
-    print(f"BeamNG install: {inst or 'not found (pass --beamng)'}; mods folder: {beamng.find_mods(a.mods) or 'not found'}")
+    return {
+        "track": track.name,
+        "profile": prof.name,
+        "surfaces": {k: prof.ground_type(k, v) for k, v in surfaces.items()},
+        "layouts": ui or (["(single)"] if (track / "ui" / "ui_track.json").exists() else []),
+        "kn5_files": files,
+        "meshes": dict(totals.most_common()),
+        "vegetation": dict(species.most_common()),
+        "protected": protected,
+        "terrain": bool(totals["natural ground"] or totals["distant ground"]),
+        "beamng": str(beamng.find_install(beamng_path) or ""),
+        "mods": str(beamng.find_mods(mods_path) or ""),
+    }
+
+
+def cmd_inspect(a):
+    r = inspect_track(a.track, a.profile, a.beamng, a.mods)
+    print(f"track: {r['track']}  (profile: {r['profile']})")
+    print(f"surfaces.ini keys: {', '.join(f'{k}->{v}' for k, v in r['surfaces'].items()) or 'none'}")
+    print(f"layouts: {', '.join(r['layouts']) or 'none'}")
+    print("meshes: " + ", ".join(f"{k} {v}" for k, v in r["meshes"].items()))
+    if r["vegetation"]:
+        print("vegetation species: " + ", ".join(f"{k} {v}" for k, v in r["vegetation"].items()))
+    if r["protected"]:
+        print(f"PROTECTED / unreadable (will be skipped): {', '.join(r['protected'])}")
+    print(f"terrain conversion: {'yes' if r['terrain'] else 'no natural ground found'}")
+    print(f"BeamNG install: {r['beamng'] or 'not found (pass --beamng)'}; mods folder: {r['mods'] or 'not found'}")
 
 
 def cmd_convert(a):
@@ -155,8 +172,19 @@ def main(argv=None):
     p.set_defaults(func=lambda a: __import__("kn5port.validate", fromlist=["main"]).main(
         [a.level_dir] + (["--ac-track", a.ac_track, "--drive-check"] if a.ac_track else [])))
 
+    p = sub.add_parser("ui", help="open the kn5port web UI in your browser (runs locally)")
+    p.add_argument("--port", type=int, default=0, help="port (default: any free port)")
+    p.add_argument("--no-browser", action="store_true", help="just print the URL")
+    p.set_defaults(func=lambda a: __import__("kn5port.ui.server", fromlist=["serve"]).serve(
+        a.port, not a.no_browser))
+
     a = ap.parse_args(argv)
     a.func(a)
+
+
+def gui_main():
+    """Entry point for the 'kn5port-ui' launcher."""
+    main(["ui"])
 
 
 if __name__ == "__main__":

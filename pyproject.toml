@@ -13,6 +13,10 @@ dependencies = ["numpy>=1.22", "Pillow>=9.0"]
 
 [project.scripts]
 kn5port = "kn5port.cli:main"
+kn5port-ui = "kn5port.cli:gui_main"
 
 [tool.setuptools]
-packages = ["kn5port"]
+packages = ["kn5port", "kn5port.ui"]
+
+[tool.setuptools.package-data]
+"kn5port.ui" = ["static/*"]
