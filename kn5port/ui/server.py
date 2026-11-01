@@ -164,9 +164,13 @@ def scan_tracks(settings, scanner=None):
 
 
 def track_dir(settings, tid):
+    """A track folder directly inside the tracks folder. The name is validated rather than the resolved path,
+    so tracks linked in with symlinks / junctions still work, while '..' or separators can't escape."""
     root = Path(settings.get("tracks") or "")
-    d = (root / tid).resolve()
-    if root.resolve() not in d.parents or not d.is_dir():
+    if not tid or tid in (".", "..") or re.search(r"[\\/:\x00]", tid):
+        raise KeyError(tid)
+    d = root / tid
+    if not d.is_dir():
         raise KeyError(tid)
     return d
 
@@ -246,6 +250,32 @@ class App:
         if self.settings.get("tracks"):
             self.scanner.start(self.settings["tracks"])
         self.pick_folder = None       # set by the desktop app (native dialog)
+        self.palettes = {}            # level -> summary dict
+        self.palettes_running = False
+        self.start_palettes()
+
+    def start_palettes(self):
+        inst = self.settings.get("beamng")
+        if not inst or self.palettes_running:
+            return
+        self.palettes_running = True
+
+        def run():
+            from .. import donor
+            try:
+                for lv in donor.list_levels(inst):
+                    try:
+                        p = donor.analyze(inst, lv)
+                    except Exception:
+                        continue
+                    n_trees = sum(v for k, v in p["buckets"].items() if k in ("conifer", "broad", "palm"))
+                    if n_trees + p["buckets"].get("shrub", 0) < 3 or not p["terrain"]:
+                        continue          # test levels, showrooms, grid maps
+                    self.palettes[lv] = {"level": lv, "summary": donor.summary(p), "buckets": p["buckets"],
+                                         "terrain": p["terrain"], "preview": bool(p.get("preview"))}
+            finally:
+                self.palettes_running = False
+        threading.Thread(target=run, daemon=True).start()
 
 
 def make_handler(app, port_ref):
@@ -297,6 +327,9 @@ def make_handler(app, port_ref):
                     return self._send(200, {"version": __version__, "settings": app.settings,
                                             "tracks": scan_tracks(app.settings, app.scanner),
                                             "scanning": app.scanner.running, "native": app.pick_folder is not None,
+                                            "palettes": sorted(app.palettes.values(), key=lambda p: (
+                                                p["level"] != "west_coast_usa", p["level"])),
+                                            "palettes_loading": app.palettes_running,
                                             "jobs": [j.view(len(j.lines)) for j in app.jobs.values()]})
                 m = re.match(r"^/api/track/([^/]+)/preview$", u.path)
                 if m:
@@ -308,6 +341,13 @@ def make_handler(app, port_ref):
                     if not p:
                         return self._send(404, {"error": "no preview"})
                     return self._send(200, p.read_bytes(), mimetypes.guess_type(p.name)[0] or "image/png", cache=True)
+                m = re.match(r"^/api/palette/([A-Za-z0-9_\-]+)/preview$", u.path)
+                if m:
+                    from .. import donor
+                    data, name = donor.preview_bytes(app.settings.get("beamng"), m.group(1))
+                    if not data:
+                        return self._send(404, {"error": "no preview"})
+                    return self._send(200, data, mimetypes.guess_type(name)[0] or "image/jpeg", cache=True)
                 m = re.match(r"^/api/track/([^/]+)/inspect$", u.path)
                 if m:
                     d = track_dir(app.settings, m.group(1))
@@ -342,6 +382,7 @@ def make_handler(app, port_ref):
                     save_settings(app.settings)
                     if app.settings.get("tracks"):
                         app.scanner.start(app.settings["tracks"])
+                    app.start_palettes()
                     return self._send(200, {"settings": app.settings,
                                             "tracks": scan_tracks(app.settings, app.scanner)})
                 if u.path == "/api/detect":
@@ -372,6 +413,8 @@ def make_handler(app, port_ref):
                                 args += [flag, str(float(o[key]))]
                         if o.get("forest") is False:
                             args += ["--no-forest"]
+                        if o.get("palette") and re.fullmatch(r"[A-Za-z0-9_\-]+", str(o["palette"])):
+                            args += ["--palette", o["palette"]]
                         j = Job(d.name, args)
                         app.jobs[j.id] = j
                     return self._send(200, j.view())
@@ -387,6 +430,8 @@ def make_handler(app, port_ref):
                     if body.get("what") == "level":
                         lvl = safe_name(tid)
                         target = Path(app.settings.get("mods", "")) / "unpacked" / lvl / "levels" / lvl
+                    elif body.get("what") == "mod":
+                        target = Path(app.settings.get("mods", "")) / "unpacked" / safe_name(tid)
                     if not target.exists():
                         return self._send(404, {"error": "not found"})
                     if sys.platform == "win32":

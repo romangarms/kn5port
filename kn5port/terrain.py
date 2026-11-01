@@ -284,6 +284,7 @@ def main(argv=None):
     ap.add_argument("level_dir")
     ap.add_argument("--beamng", required=True, help="BeamNG.drive install folder, or its content\\levels folder")
     ap.add_argument("--no-groundcover", action="store_true")
+    ap.add_argument("--donor", default=None, help="stock BeamNG level whose terrain materials and grass to use")
     ap.add_argument("--profile", default=None, help="track profile JSON (see kn5port/profile.py)")
     ap.add_argument("--near-gain", type=float, default=0, help="brightness multiplier for the near-road ground "
                     "(default: auto, matched to the open distant terrain)")
@@ -296,8 +297,22 @@ def main(argv=None):
     PROFILE = Profile.load(a.profile, track)
     SURFACES = read_surfaces(track)
     FAR_RE = PROFILE.rx("ground_name_re")
-    LAYERS = list(PROFILE.terrain_layers)
-    MASK_TO_LAYER = dict(enumerate(PROFILE.mask_to_layer))
+    from . import donor as donor_mod
+    DONOR_LEVEL = a.donor or PROFILE.donor_level
+    pal = donor_mod.analyze(a.beamng, DONOR_LEVEL)
+    if not pal["terrain"]:
+        raise SystemExit(f"{DONOR_LEVEL} has no terrain materials to borrow; pick another palette")
+    # terrain layers: one per distinct donor material used by a role, plus a verge layer no grass grows on
+    LAYERS = []
+    for r_ in donor_mod.ROLES:
+        if pal["terrain"][r_] not in LAYERS:
+            LAYERS.append(pal["terrain"][r_])
+    LAYERS.append("kn5_verge")
+    RI = {r_: LAYERS.index(pal["terrain"][r_]) for r_ in donor_mod.ROLES}
+    RI["verge"] = LAYERS.index("kn5_verge")
+    MASK_TO_LAYER = {i: RI[r_] for i, r_ in enumerate(PROFILE.mask_roles)}
+    roles_txt = ", ".join(f"{r_}={pal['terrain'][r_]}" for r_ in donor_mod.ROLES)
+    print(f"terrain palette: {DONOR_LEVEL} ({roles_txt})")
     CARVE_DEPTH = PROFILE.carve_depth
     if a.ao == 0.35:
         a.ao = PROFILE.terrain_ao
@@ -501,7 +516,7 @@ def main(argv=None):
 
     # ---- 3. layers + base colour from AC textures
     ts = time.time()
-    layer = np.zeros((n, n), np.uint8)
+    layer = np.full((n, n), RI["forest"], np.uint8)
     color = np.zeros((n, n, 3), np.float32) + [0.35, 0.32, 0.25]
     near_px = np.zeros((n, n), bool)
     by_kn5 = {}
@@ -519,7 +534,7 @@ def main(argv=None):
             if img is not None:
                 c = sample(img, u, v)[:, :3]
                 color[sel] = c
-                layer[sel] = np.where(c[:, 1] > c[:, 0] * 1.02, 0, 2).astype(np.uint8)
+                layer[sel] = np.where(c[:, 1] > c[:, 0] * 1.02, RI["forest"], RI["dry_grass"]).astype(np.uint8)
         elif kind == "near" and "txMask" not in mat.samplers:
             # ordinary textured ground (e.g. a circuit's grass runoff): the texture tiles every few metres,
             # so use its average colour instead of point samples
@@ -527,11 +542,11 @@ def main(argv=None):
             c = img[:, :, :3].reshape(-1, 3).mean(0) if img is not None else np.array([0.3, 0.33, 0.2])
             color[sel] = c
             near_px |= sel
-            if (fp, matname) in sand_mats and "BeachSand" in LAYERS:
-                layer[sel] = LAYERS.index("BeachSand")
+            if (fp, matname) in sand_mats:
+                layer[sel] = RI["sand"]
             else:
                 green = c[1] > c[0] * 1.02
-                layer[sel] = 0 if (green and c.mean() < 0.22) else (1 if green else 2)
+                layer[sel] = RI["forest"] if (green and c.mean() < 0.22) else (RI["grass"] if green else RI["dry_grass"])
         elif kind == "near" and "txMask" in mat.samplers:
             mask = tex_img(k, mat.samplers["txMask"])
             w = sample(mask, u, v)                                     # RGBA weights
@@ -551,13 +566,14 @@ def main(argv=None):
                 color[sel] = c
                 green = c[:, 1] > c[:, 0] * 1.02
                 dark = c.mean(1) < 0.30
-                layer[sel] = np.where(green & dark, 0, np.where(green, 1, 2)).astype(np.uint8)
+                layer[sel] = np.where(green & dark, RI["forest"],
+                                      np.where(green, RI["grass"], RI["dry_grass"])).astype(np.uint8)
     for k in by_kn5.values():
         k.close()
     # AC's near-road ground is much darker than its distant terrain (in AC, GrassFX and its lighting hide that).
     # Match the near tiles' average brightness to the open distant terrain's.
     lum = lambda c: c @ np.array([0.2126, 0.7152, 0.0722], np.float32)
-    far_open = ~near_px & (layer == LAYERS.index("dirt_grass"))
+    far_open = ~near_px & (layer == RI["dry_grass"])
     if near_px.any() and far_open.any():
         gain = float(np.clip(lum(color[far_open]).mean() / max(lum(color[near_px]).mean(), 1e-3), 1.0, 1.8))
         if a.near_gain:
@@ -569,8 +585,8 @@ def main(argv=None):
     hidden = no_cover | road
     for ch in range(3):
         color[:, :, ch] = np.where(hidden, pyramid_fill(np.where(hidden, np.nan, color[:, :, ch])), color[:, :, ch])
-    layer[no_cover] = LAYERS.index("dirt")
-    layer[road] = LAYERS.index("gravel")
+    layer[no_cover] = RI["verge"]
+    layer[road] = RI["verge"]
     print(f"layers + colours in {time.time() - ts:.0f}s: " +
           ", ".join(f"{LAYERS[i]} {np.mean(layer == i) * 100:.1f}%" for i in range(len(LAYERS))))
 
@@ -604,42 +620,38 @@ def main(argv=None):
     rel = f"/levels/{lvl}/art/terrains/"
     world = n * sq
 
-    bp = Path(a.beamng)
-    zpath = next((p for p in (bp / "content" / "levels" / f"{DONOR}.zip", bp / "levels" / f"{DONOR}.zip",
-                              bp / f"{DONOR}.zip") if p.exists()), None)
-    if zpath is None:
-        raise SystemExit(f"can't find {DONOR}.zip under {bp}")
-    z = zipfile.ZipFile(zpath)
-    donor_tm = json.loads(z.read(f"levels/{DONOR}/art/terrains/main.materials.json"))
+    import zipfile as _zf
+    zpath = donor_mod.levels_dir(a.beamng) / f"{DONOR_LEVEL}.zip"
+    z = _zf.ZipFile(zpath)
     tset = f"{lvl}TerrainMaterialTextureSet"
     tmats = {tset: {"name": tset, "class": "TerrainMaterialTextureSet",
                     "baseTexSize": [BASE_TEX, BASE_TEX], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024]}}
-    for key, v in donor_tm.items():
-        if v.get("class") != "TerrainMaterial" or v.get("internalName") not in LAYERS:
-            continue
-        v = dict(v); v.pop("persistentId", None)
+    base_names = {"baseColorBaseTex": "t_terrain_base_b.color.png", "normalBaseTex": "t_terrain_base_nm.normal.png",
+                  "aoBaseTex": "t_terrain_base_ao.data.png", "roughnessBaseTex": "t_terrain_base_r.data.png",
+                  "heightBaseTex": "t_terrain_base_h.data.png"}
+
+    def adapt(v, internal):
+        v = dict(v); v.pop("persistentId", None); v.pop("name", None)
+        v["internalName"] = internal
         for kk in list(v):
             if kk.endswith("BaseTex"):
-                v[kk] = rel + {"baseColorBaseTex": "t_terrain_base_b.color.png",
-                               "normalBaseTex": "t_terrain_base_nm.normal.png",
-                               "aoBaseTex": "t_terrain_base_ao.data.png",
-                               "roughnessBaseTex": "t_terrain_base_r.data.png",
-                               "heightBaseTex": "t_terrain_base_h.data.png"}.get(kk, "t_terrain_base_h.data.png")
+                v[kk] = rel + base_names.get(kk, "t_terrain_base_h.data.png")
             if kk.endswith("BaseTexSize"):
                 v[kk] = world
         for kk in ("aoDetailStrength", "aoMacroStrength"):
             cur = v.get(kk, [1, 0] if kk == "aoDetailStrength" else [1, 1])
             v[kk] = [round(x * a.ao, 3) for x in cur]
-        tmats[f"{v['internalName']}_{lvl}"] = v
-    found = {v.get("internalName") for v in tmats.values()}
-    missing_l = [l for l in LAYERS if l not in found]
-    if missing_l:
-        print(f"  ! donor has no terrain material for {missing_l}")
+        return v
+
+    for name in LAYERS[:-1]:
+        tmats[f"{name}_{lvl}"] = adapt(pal["terrain_defs"][name], name)
+    # the verge: the palette's dirt under its own name, which no GroundCover type references
+    tmats[f"kn5_verge_{lvl}"] = adapt(pal["terrain_defs"][pal["terrain"]["dirt"]], "kn5_verge")
     (tdir / "main.materials.json").write_text(json.dumps(tmats, indent=2))
 
-    # ---- 6. GroundCover from the donor, limited to our layers
+    # ---- 6. GroundCover from the donor, limited to our layers (never the verge)
     mg_dir = level / "main" / "MissionGroup"
-    gc_objs, gc_mats = [], set()
+    gc_objs, gc_mats, gc_shapes = [], set(), set()
     if not a.no_groundcover:
         for nme in z.namelist():
             if not nme.endswith("items.level.json"):
@@ -648,9 +660,13 @@ def main(argv=None):
                 if '"GroundCover"' not in line:
                     continue
                 o = json.loads(line)
-                types = [t for t in o.get("Types", []) if t.get("layer") in LAYERS]
+                types = [t_ for t_ in o.get("Types", []) if t_.get("layer") in LAYERS[:-1]]
                 if not types:
                     continue
+                for t_ in types:
+                    if t_.get("shapeFilename"):
+                        sf = t_["shapeFilename"]
+                        gc_shapes.add(sf if sf.startswith("/") else "/" + sf)
                 o["Types"] = types
                 o.pop("persistentId", None)
                 o["__parent"] = "groundcover"
@@ -666,32 +682,15 @@ def main(argv=None):
                 for kk, v in d.items():
                     if isinstance(v, dict) and (v.get("mapTo") or kk) in gc_mats:
                         v = dict(v); v.pop("persistentId", None); donor_gc_mats[v.get("mapTo") or kk] = v
+        if gc_shapes:      # shape-based groundcover needs its shapes' materials too
+            from .forest import donor_materials
+            donor_gc_mats.update(donor_materials(z, sorted(gc_shapes)))
         (level / "art" / "forest").mkdir(parents=True, exist_ok=True)
         (level / "art" / "forest" / "donor_groundcover.materials.json").write_text(json.dumps(donor_gc_mats, indent=2))
         (mg_dir / "groundcover").mkdir(exist_ok=True)
         (mg_dir / "groundcover" / "items.level.json").write_text("".join(json.dumps(o) + "\n" for o in gc_objs))
         print(f"groundcover: {len(gc_objs)} layers ({', '.join(o['name'] for o in gc_objs)}), "
               f"{len(donor_gc_mats)} materials")
-
-    # ---- 6b. skirt shapes + material
-    mats_all = {}
-    for mf in level.rglob("*.materials.json"):
-        try:
-            mats_all.update(json.loads(mf.read_text()))
-        except ValueError:
-            pass
-    skirt_src = next((k_ for k_, v in mats_all.items() if v.get("ac_material") == "SKY_DIRT"), None) or \
-        next((k_ for k_, v in mats_all.items() if v.get("groundType") in ("DIRT", "GRAVEL")), None)
-    skirt_mat = f"{lvl}_kn5_skirt"
-    sm = dict(mats_all.get(skirt_src, {"Stages": [{}, {}, {}, {}]}))
-    sm.update({"name": skirt_mat, "mapTo": skirt_mat, "doubleSided": True})
-    sm.pop("groundType", None)
-    (level / "art" / "shapes" / "skirts").mkdir(parents=True, exist_ok=True)
-    (level / "art" / "shapes" / "skirts" / "skirts.materials.json").write_text(json.dumps({skirt_mat: sm}, indent=2))
-    skirt_items = write_skirts(level, lvl, skirt_quads, material=skirt_mat)
-    (mg_dir / "road_skirts").mkdir(exist_ok=True)
-    (mg_dir / "road_skirts" / "items.level.json").write_text("".join(json.dumps(o) + "\n" for o in skirt_items))
-    print(f"skirt shapes: {len(skirt_items)} (material from {skirt_src})")
 
     # ---- 7. TerrainBlock (+ group) in the scene
     mgf = mg_dir / "items.level.json"

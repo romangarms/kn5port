@@ -77,9 +77,8 @@ class Profile:
     clearance: dict = field(default_factory=lambda: {"grass": 0.5, "shrub": 3.0, "tree": 1.5})
     tree_density: float = 1.0           # < 1 thins trees/shrubs uniformly (performance); grass uses grass_density
     grass_density: float = 1.0
-    # terrain layers: [AC multilayer mask R, G, B, A] -> donor terrain material names
-    terrain_layers: tuple = ("Forest", "grass", "dirt_grass", "dirt", "gravel", "Rock_cliff", "BeachSand")
-    mask_to_layer: tuple = (0, 1, 2, 3)
+    # AC multilayer mask channels R, G, B, A -> terrain roles (see donor.ROLES)
+    mask_roles: tuple = ("forest", "grass", "dry_grass", "dirt")
 
     # --- terrain -----------------------------------------------------------------------------------------------
     terrain_max_size: int = 4096        # samples per side (stock levels go up to 4096)

@@ -115,7 +115,8 @@ def sample_tris(T, step=1.0):
             s = k > m
             out.append(T[s, a_, :2] + (T[s, b_, :2] - T[s, a_, :2]) * (m / k[s])[:, None])
     # interior lattice for larger triangles
-    area = 0.5 * np.abs(np.cross(T[:, 1, :2] - T[:, 0, :2], T[:, 2, :2] - T[:, 0, :2]))
+    e1, e2 = T[:, 1, :2] - T[:, 0, :2], T[:, 2, :2] - T[:, 0, :2]
+    area = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])     # 2D cross (np.cross dropped 2D in NumPy 2)
     big = area > step * step
     if big.any():
         Tb = T[big]
@@ -313,6 +314,8 @@ def main(argv=None):
     ap.add_argument("--no-shrubs", action="store_true")
     ap.add_argument("--profile", default=None, help="track profile JSON (see kn5port/profile.py)")
     ap.add_argument("--tree-density", type=float, default=None)
+    ap.add_argument("--donor", default=None, help="stock BeamNG level whose vegetation to use (default: profile, "
+                    "west_coast_usa)")
     a = ap.parse_args(argv)
     t0 = time.time()
     track, level = Path(a.track_dir), Path(a.level_dir)
@@ -320,7 +323,13 @@ def main(argv=None):
     PROFILE = Profile.load(a.profile, track)
     if a.tree_density is not None:
         PROFILE.tree_density = a.tree_density
-    DONOR = PROFILE.donor_level
+    DONOR = a.donor or PROFILE.donor_level
+    from . import donor as donor_mod
+    # West Coast USA keeps its hand-tuned mapping; every other level gets an analysed palette
+    curated = DONOR == "west_coast_usa" and bool(PROFILE.tree_items)
+    pal = None if curated else donor_mod.analyze(a.beamng, DONOR)
+    if pal is not None:
+        print(f"vegetation palette: {DONOR} ({donor_mod.summary(pal)})")
     ITEMS = PROFILE.item_heights
     CHOICES = {k: [tuple(o) for o in v] for k, v in PROFILE.tree_items.items()}
     SCALE_CLAMP = {k: tuple(v) for k, v in PROFILE.scale_clamp.items()}
@@ -531,10 +540,17 @@ def main(argv=None):
     by_item = defaultdict(list)
     rng = np.random.default_rng(1234)
     for species, x, y, zb, h in instances:
-        opts = [o for o in CHOICES[species] if o[1] <= h < o[2]] or CHOICES[species]
-        item = opts[int(rng.integers(len(opts)))][0]
-        lo_s, hi_s = SCALE_CLAMP[species]
-        scale = float(np.clip(h / ITEMS[item], lo_s, hi_s))
+        if pal is None:
+            opts = [o for o in CHOICES[species] if o[1] <= h < o[2]] or CHOICES[species]
+            item = opts[int(rng.integers(len(opts)))][0]
+            ref_h = ITEMS[item]
+        else:
+            got = donor_mod.choose(pal, species, h, rng)
+            if got is None:
+                continue
+            item, ref_h = got
+        lo_s, hi_s = SCALE_CLAMP.get(species, (0.5, 2.0))
+        scale = float(np.clip(h / ref_h, lo_s, hi_s))
         yaw = float(rng.uniform(0, 2 * math.pi)); c, s = math.cos(yaw), math.sin(yaw)
         z = zb - SINK.get(species, 0.25)
         by_item[item].append({"ctxid": 0, "pos": [round(float(x), 3), round(float(y), 3), round(float(z), 3)],
@@ -553,15 +569,18 @@ def main(argv=None):
                               bp / f"{DONOR}.zip") if p.exists()), None)
     if zpath is None:
         raise SystemExit(f"can't find {DONOR}.zip under {bp} (pass the BeamNG.drive install folder)")
-    with zipfile.ZipFile(zpath) as z:
-        donor = json.loads(z.read(f"levels/{DONOR}/art/forest/managedItemData.json"))
     defs = {}
-    for item in by_item:
-        d = dict(donor[item])
-        d.pop("persistentId", None)
-        sf = d["shapeFile"]
-        d["shapeFile"] = sf if sf.startswith("/") else "/" + sf
-        defs[item] = d
+    if pal is None:
+        with zipfile.ZipFile(zpath) as z:
+            donor = json.loads(z.read(f"levels/{DONOR}/art/forest/managedItemData.json"))
+        for item in by_item:
+            d = dict(donor[item])
+            d.pop("persistentId", None)
+            sf = d["shapeFile"]
+            d["shapeFile"] = sf if sf.startswith("/") else "/" + sf
+            defs[item] = d
+    else:
+        defs = {item: pal["vegetation"][item]["def"] for item in by_item}
     with zipfile.ZipFile(zpath) as z:
         donor_mats = donor_materials(z, [d["shapeFile"] for d in defs.values()])
     (level / "art" / "forest").mkdir(parents=True, exist_ok=True)

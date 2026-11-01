@@ -27,6 +27,7 @@ header { display: flex; align-items: center; gap: 14px; padding: 12px 18px; bord
 .iconbtn:hover { color: var(--text); border-color: var(--faint); }
 main { flex: 1; display: grid; grid-template-columns: minmax(320px, 1fr) minmax(380px, 1.15fr); min-height: 0; }
 #list { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.search, .filters, .scanline { flex: none; }
 .search { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
 .search input { flex: 1; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; outline: none; }
 .search input:focus { border-color: var(--accent); }
@@ -53,9 +54,22 @@ main { flex: 1; display: grid; grid-template-columns: minmax(320px, 1fr) minmax(
 .filters button { background: var(--panel); border: 1px solid var(--line); border-radius: 99px; padding: 4px 11px; font-size: 12px; color: var(--dim); }
 .filters button.on { color: var(--text); border-color: var(--accent); }
 .filters button span { color: var(--faint); margin-left: 4px; }
-.scanline { padding: 6px 14px 0; font-size: 12px; color: var(--faint); min-height: 18px; }
+.scanline { padding: 8px 14px 4px; font-size: 12px; color: var(--faint); min-height: 26px; line-height: 18px; }
 .legend { display: flex; gap: 12px; font-size: 12px; color: var(--faint); align-items: center; }
 .legend .st { display: inline-grid; width: 16px; height: 16px; font-size: 9px; vertical-align: -3px; margin-right: 3px; }
+.palettes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.pal { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; text-align: left; padding: 0; display: flex; flex-direction: column; }
+.pal:hover { border-color: var(--faint); }
+.pal.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.pal .pt { aspect-ratio: 16/8; background: #0b0c0e center/cover no-repeat; flex: none; }
+.pal .pm { padding: 6px 8px 8px; }
+.pal .pn { font-weight: 600; font-size: 13px; }
+.pal .ps { font-size: 11px; color: var(--faint); line-height: 1.35; }
+.ctx { position: fixed; z-index: 50; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 240px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+.ctx button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 7px 10px; border-radius: 6px; font-size: 13px; }
+.ctx button:hover:not(:disabled) { background: var(--panel); }
+.ctx button:disabled { color: var(--faint); cursor: default; }
+.ctx .sep { height: 1px; background: var(--line); margin: 4px 2px; }
 .field { display: flex; gap: 8px; }
 .field input { flex: 1; }
 .alert { padding: 10px 12px; border-radius: 8px; font-size: 13px; }
@@ -161,12 +175,17 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const STEPS = ["Meshes & materials", "Terrain", "Trees & grass", "Validate"];
-let state = { tracks: [], settings: {}, sel: null, job: null, inspect: {}, opts: {}, filter: "all", scanning: false };
+let state = { tracks: [], settings: {}, sel: null, job: null, inspect: {}, opts: {}, filter: "all", scanning: false, palettes: [], palettesLoading: false };
 const ST = { ok: ["ok", "✓", "Convertible"], partial: ["partial", "!", "Partly protected: some files will be skipped"],
   protected: ["protected", "🔒", "Protected or unreadable: can't be converted"], checking: ["checking", "", "Checking files…"] };
 const stOf = (t) => ST[(t.check && t.check.state) || "checking"] || ST.checking;
-const FILTERS = [["all", "All", () => true], ["ok", "Convertible", (t) => ["ok", "partial"].includes(t.check?.state)],
-  ["converted", "Converted", (t) => t.converted], ["protected", "Protected", (t) => t.check?.state === "protected"]];
+const FILTERS = [["all", "All", () => true], ["ok", "Ready", (t) => t.check?.state === "ok"],
+  ["partial", "Partial", (t) => t.check?.state === "partial"], ["protected", "Protected", (t) => t.check?.state === "protected"],
+  ["converted", "Converted", (t) => t.converted]];
+const PRETTY = { west_coast_usa: "West Coast, USA", east_coast_usa: "East Coast, USA", jungle_rock_island: "Jungle Rock Island",
+  hirochi_raceway: "Hirochi Raceway", driver_training: "Driver Training", automation_test_track: "Automation Test Track",
+  small_island: "Small Island", johnson_valley: "Johnson Valley", italy: "Italy", utah: "Utah", derby: "Derby", Industrial: "Industrial", Cliff: "Cliff" };
+const pretty = (l) => PRETTY[l] || l.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? { headers: { "X-Token": TOKEN } }
@@ -190,7 +209,7 @@ function renderGrid() {
     `<button data-f="${k}" class="${state.filter === k ? "on" : ""}">${label}<span>${state.tracks.filter(fn).length}</span></button>`).join("");
   const checking = state.tracks.filter((t) => (t.check?.state || "checking") === "checking").length;
   $("#scanline").innerHTML = state.scanning || checking ? `<span class="spin"></span>Checking which tracks can be converted… ${state.tracks.length - checking}/${state.tracks.length}`
-    : `<span class="legend"><span><span class="st ok">✓</span>convertible</span><span><span class="st partial">!</span>partly protected</span><span><span class="st protected">🔒</span>protected</span></span>`;
+    : `<span class="legend"><span><span class="st ok">✓</span>convertible</span><span><span class="st partial">!</span>partly readable</span><span><span class="st protected">🔒</span>protected</span></span>`;
   const list = state.tracks.filter((t) => fpass(t) && (!q || [t.name, t.id, t.author, t.country, t.city].join(" ").toLowerCase().includes(q)));
   $("#count").textContent = `${list.length} of ${state.tracks.length}`;
   if (!state.tracks.length) {
@@ -221,7 +240,21 @@ function optionsHtml() {
     <div class="opt"><label>Terrain shading (AO) <span class="rangeval" id="v_ao">${(o.ao ?? 0.35).toFixed(2)}</span></label>
       <input type="range" id="o_ao" min="0" max="1" step="0.05" value="${o.ao ?? 0.35}">
       <div class="hint">Lower = lighter close-up ground.</div></div>
+    <div class="opt" style="grid-column:1/-1"><label>Palette: trees, ground materials and grass borrowed from</label>
+      ${palettesHtml()}
+      <div class="hint">Pick the BeamNG map whose look best matches the track. Trees are placed and sized where the track had them.</div></div>
   </div>`;
+}
+
+function palettesHtml() {
+  const sel = state.opts.palette || "west_coast_usa";
+  if (!state.palettes.length)
+    return `<div class="muted">${state.palettesLoading ? '<span class="spin"></span>Reading your BeamNG maps…' : "No BeamNG maps found. Set the BeamNG install under Folders."}</div>`;
+  return `<div class="palettes" id="o_palette">${state.palettes.map((p) => `
+    <button class="pal ${p.level === sel ? "on" : ""}" data-p="${esc(p.level)}" title="${esc(p.summary)}">
+      <div class="pt" ${p.preview ? `style="background-image:url('/api/palette/${encodeURIComponent(p.level)}/preview?t=${encodeURIComponent(TOKEN)}')"` : ""}></div>
+      <div class="pm"><div class="pn">${esc(pretty(p.level))}</div><div class="ps">${esc(p.summary)}</div></div>
+    </button>`).join("")}</div>`;
 }
 
 function inspectHtml(r) {
@@ -298,6 +331,7 @@ function wireDetail(t) {
   $("#o_forest")?.addEventListener("change", (e) => { state.opts.forest = e.target.checked; });
   $("#o_density")?.addEventListener("input", (e) => { state.opts.tree_density = +e.target.value; $("#v_density").textContent = (+e.target.value).toFixed(2); });
   $("#o_ao")?.addEventListener("input", (e) => { state.opts.ao = +e.target.value; $("#v_ao").textContent = (+e.target.value).toFixed(2); });
+  $("#o_palette")?.addEventListener("click", (e) => { const b = e.target.closest(".pal"); if (b) { state.opts.palette = b.dataset.p; document.querySelectorAll(".pal").forEach((x) => x.classList.toggle("on", x === b)); } });
   $("#go")?.addEventListener("click", () => convert(t.id));
   $("#cancel")?.addEventListener("click", () => api(`/api/jobs/${state.job.id}/cancel`, {}).catch(alert));
   $("#openLevel")?.addEventListener("click", () => api("/api/open", { track: t.id, what: "level" }).catch((e) => alert(e.message)));
@@ -317,7 +351,7 @@ async function convert(id) {
   try {
     state.job = await api("/api/convert", { track: id, options: {
       terrain: o.terrain || "auto", forest: o.forest !== false,
-      tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35 } });
+      tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35, palette: o.palette || "west_coast_usa" } });
     state.job.lines = state.job.lines || [];
     renderDetail(); poll();
   } catch (e) { alert(e.message); }
@@ -347,13 +381,39 @@ async function poll() {
 async function refresh() {
   const s = await api("/api/state");
   state.tracks = s.tracks; state.settings = s.settings; state.scanning = s.scanning;
-  if (s.scanning) setTimeout(() => refresh().then(() => { if (state.sel) renderDetail(); }), 1500);
+  const hadPalettes = state.palettes?.length;
+  state.palettes = s.palettes || []; state.palettesLoading = s.palettes_loading;
+  if (state.sel && state.palettes.length !== hadPalettes && !(state.job && state.job.status === "running")) renderDetail();
+  if (s.scanning || s.palettes_loading) setTimeout(() => refresh().then(() => { if (state.sel) renderDetail(); }), 1500);
   const running = (s.jobs || []).find((j) => j.status === "running");
   if (running && !state.job) { state.job = { ...running, lines: [] }; poll(); }
   chips(); renderGrid();
 }
 
 $("#grid").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) select(c.dataset.id); });
+function closeCtx() { document.querySelector(".ctx")?.remove(); }
+$("#grid").addEventListener("contextmenu", (e) => {
+  const c = e.target.closest(".card"); if (!c) return;
+  e.preventDefault(); closeCtx();
+  const t = state.tracks.find((x) => x.id === c.dataset.id); if (!t) return;
+  const m = document.createElement("div"); m.className = "ctx";
+  m.innerHTML = `<button data-w="track">Open Assetto Corsa track folder</button>
+    <div class="sep"></div>
+    <button data-w="level" ${t.converted ? "" : "disabled"}>Open BeamNG level folder${t.converted ? "" : " (not converted yet)"}</button>
+    <button data-w="mod" ${t.converted ? "" : "disabled"}>Open BeamNG mod folder</button>`;
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(e.clientX, innerWidth - r.width - 8) + "px";
+  m.style.top = Math.min(e.clientY, innerHeight - r.height - 8) + "px";
+  m.addEventListener("click", (ev) => {
+    const w = ev.target.closest("button")?.dataset.w; if (!w || ev.target.disabled) return;
+    closeCtx(); api("/api/open", { track: t.id, what: w }).catch((err) => alert(err.message));
+  });
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".ctx")) closeCtx(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCtx(); });
+$("#grid").addEventListener("scroll", closeCtx);
+window.addEventListener("blur", closeCtx);
 $("#q").addEventListener("input", renderGrid);
 $("#filters").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.filter = b.dataset.f; renderGrid(); } });
 $("#settings").addEventListener("click", async (e) => {

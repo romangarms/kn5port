@@ -129,3 +129,11 @@ def test_verify_catches_scrambled_payload():
         mesh_bad.write_bytes(bytes(raw))
         with KN5(str(mesh_bad)) as k:
             assert k.verify() is not None
+
+
+def test_sample_tris_numpy2():
+    """Regression: 2D np.cross was removed in NumPy 2.x."""
+    from kn5port.forest import sample_tris
+    T = np.array([[[0, 0, 0], [4, 0, 0], [0, 4, 0]]], dtype=np.float64)
+    pts = sample_tris(T, 1.0)
+    assert pts.shape[1] == 2 and len(pts) > 10

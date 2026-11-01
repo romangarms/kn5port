@@ -125,12 +125,16 @@ def cmd_convert(a):
             args += ["--ao", str(a.ao)]
         if a.near_gain:
             args += ["--near-gain", str(a.near_gain)]
+        if a.palette:
+            args += ["--donor", a.palette]
         terrain.main(args)
     if not a.no_forest and not a.keep_ac_trees:
         print("\n== 3/4 trees and grass")
         fargs = [str(track), str(level_dir), "--beamng", str(inst)] + common
         if a.tree_density is not None:
             fargs += ["--tree-density", str(a.tree_density)]
+        if a.palette:
+            fargs += ["--donor", a.palette]
         forest.main(fargs)
     print("\n== 4/4 validate")
     try:
@@ -164,6 +168,8 @@ def main(argv=None):
     p.add_argument("--near-gain", type=float, default=0, help="brighten near-road ground (default: auto)")
     p.add_argument("--no-forest", action="store_true", help="don't replace AC trees with BeamNG forest items")
     p.add_argument("--tree-density", type=float, help="0-1: thin trees and shrubs for performance (default 1)")
+    p.add_argument("--palette", help="stock BeamNG level whose trees, terrain materials and grass to use "
+                                     "(e.g. west_coast_usa, east_coast_usa, italy, utah; default west_coast_usa)")
     p.add_argument("--keep-ac-trees", action="store_true", help="keep AC's tree meshes as they are")
     p.set_defaults(func=cmd_convert)
 
