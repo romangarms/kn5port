@@ -4,6 +4,8 @@ The letters are geometric strokes (no font), so the icon renders identically on 
 
     python packaging/make_icon.py            -> packaging/kn5port.png (1024) + packaging/kn5port.ico
 """
+import io
+import struct
 import sys
 from pathlib import Path
 
@@ -74,12 +76,47 @@ def draw():
     return img.resize((1024, 1024), Image.LANCZOS)
 
 
+ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
+
+
+def write_ico(img, path, sizes=ICO_SIZES):
+    """A Windows .ico the way Explorer expects it: 32-bit BMP (DIB + AND mask) entries for the small sizes and a
+    PNG entry only for 256, with planes = 1. Pillow writes every size as PNG with planes = 0, which Explorer
+    doesn't reliably pick up from an exe's icon resource (it falls back to the generic exe icon)."""
+    entries = []
+    for s in sizes:
+        im = img.resize((s, s), Image.LANCZOS).convert("RGBA")
+        if s >= 256:
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            data = buf.getvalue()
+        else:
+            r, g, b, a = im.split()
+            xor = Image.merge("RGBA", (b, g, r, a)).transpose(Image.FLIP_TOP_BOTTOM).tobytes()   # BGRA, bottom-up
+            row = ((s + 31) // 32) * 4
+            mask = bytearray(row * s)                     # AND mask: 1 = transparent (alpha 0)
+            alpha = a.transpose(Image.FLIP_TOP_BOTTOM).tobytes()
+            for y in range(s):
+                for x in range(s):
+                    if alpha[y * s + x] == 0:
+                        mask[y * row + x // 8] |= 0x80 >> (x % 8)
+            header = struct.pack("<IiiHHIIiiII", 40, s, s * 2, 1, 32, 0, len(xor) + len(mask), 0, 0, 0, 0)
+            data = header + xor + bytes(mask)
+        entries.append((s, data))
+    out = struct.pack("<HHH", 0, 1, len(entries))
+    off = 6 + 16 * len(entries)
+    for s, data in entries:
+        out += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32, len(data), off)
+        off += len(data)
+    Path(path).write_bytes(out + b"".join(d for _, d in entries))
+
+
 def main(out_dir):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     img = draw()
     img.save(out / "kn5port.png")
-    img.save(out / "kn5port.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    write_ico(img, out / "kn5port.ico")
     img.resize((64, 64), Image.LANCZOS).save(out / "favicon.png")
     print(f"wrote {out / 'kn5port.png'}, kn5port.ico, favicon.png")
 
