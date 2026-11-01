@@ -270,3 +270,10 @@ def test_uvmult_shader_tiling():
     assert m.uv_mult == 40.0
     assert Material(0, "road", "ksPerPixel", 0, False, 0, {"diffuseMult": (40.0, (), (), ())}).uv_mult == 1.0
     assert Material(0, "x", "ksPerPixelNM_UVMult", 0, False, 0).uv_mult == 1.0
+
+
+def test_multilayer_detail_scale():
+    from kn5port.level import detail_scale
+    assert detail_scale(80, 900) == 80                      # Kunos: tiles per UV unit
+    assert detail_scale(0.1, 2800) == 280                    # object space: 10 m tiles over 2.8 km of UV
+    assert detail_scale(0, 100) is None and detail_scale(0.1, None) == 0.1

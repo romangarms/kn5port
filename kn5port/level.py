@@ -327,7 +327,22 @@ class TextureBaker:
         return self.done[key]
 
 
-def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
+def detail_scale(mult, m_per_uv):
+    """Detail repeats per mesh UV unit for an AC multilayer layer.
+
+    Kunos tracks use the classic meaning: the layer tiles `mult` times per UV unit (mult is well above 1, since a
+    detail texture is finer than the macro map). Many modern and ripped tracks swap in CSP's object-space variant
+    (ksMultilayer_objsp, via ext_config), where the layer tiles every 1/mult metres in world space, so mult is
+    below 1 (0.1 = a 10 m tile); read as UV tiling those give tiles kilometres wide. We tell them apart by that,
+    and convert object-space tiling to UV repeats with the mesh's measured metres per UV unit."""
+    if not mult or mult <= 0:
+        return None
+    if mult >= 1 or not m_per_uv:
+        return round(float(mult), 3)
+    return round(float(m_per_uv * mult), 3)
+
+
+def bng_material(name, acmat, k, baker, tex_rel, ground_type=None, m_per_uv=None):
     s = acmat.samplers
     shader = acmat.shader
     stage = {"roughnessFactor": 0.85, "metallicFactor": 0.0, "useAnisotropic": True}
@@ -339,16 +354,18 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
         base = baker.multilayer(k, acmat)
         if base:
             stage["baseColorMap"] = base
-            # AC tiles the four detail layers at multR..multA times the macro UV. One material takes one detail
-            # map, so use the layer that covers the most ground for the close-up texture.
+            # One material takes one detail map, so use the layer that covers the most ground (and has a
+            # tiling) for the close-up texture.
             w = baker.ml_weights.get(acmat.name)
             if w is not None:
+                w = np.array([w[i] if acmat.props.get(f"mult{c}", (0,))[0] > 0 and f"txDetail{c}" in s else -1
+                              for i, c in enumerate("RGBA")])
                 c = "RGBA"[int(np.argmax(w))]
-                mult = acmat.props.get(f"mult{c}", (0,))[0]
-                dm = baker.detail(k, s[f"txDetail{c}"]) if mult > 0 and f"txDetail{c}" in s else None
+                scale = detail_scale(acmat.props.get(f"mult{c}", (0,))[0], m_per_uv)
+                dm = baker.detail(k, s[f"txDetail{c}"]) if w.max() >= 0 and scale else None
                 if dm:
                     stage["detailMap"] = dm
-                    stage["detailScale"] = [round(float(mult), 3)] * 2
+                    stage["detailScale"] = [scale] * 2
         stage["roughnessFactor"] = 0.95
     elif "txDiffuse" in s:
         if shader.startswith("ksPerPixelMultiMap") or not (alpha_test or translucent):
@@ -619,12 +636,13 @@ def main(argv=None):
                         materials[name] = hidden_material(name, gt)
                 elif acmat is not None and name not in materials:
                     gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
-                    materials[name] = bng_material(name, acmat, k, baker, tex_rel, gt)
+                    a3, auv = uv_density.get(acname, (0, 0))
+                    mpu = float(np.sqrt(a3 / auv)) if auv > 0 else None
+                    materials[name] = bng_material(name, acmat, k, baker, tex_rel, gt, mpu)
                     if acname in ground_mats:
                         materials[name]["kn5_ground"] = True   # natural ground (the terrain ignores it)
-                    a3, auv = uv_density.get(acname, (0, 0))
-                    if auv > 0:   # how many metres one texture repeat covers (diagnostics)
-                        materials[name]["ac_m_per_uv"] = round(float(np.sqrt(a3 / auv)), 3)
+                    if mpu:   # how many metres one texture repeat covers (diagnostics)
+                        materials[name]["ac_m_per_uv"] = round(mpu, 3)
                     used = {Path(v).name for v in materials[name]["Stages"][0].values() if isinstance(v, str)}
                     for tname in acmat.samplers.values():
                         if tname in used and tname in tex_by_name and tname not in textures_needed:
