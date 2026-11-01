@@ -86,6 +86,7 @@ Useful options:
 | `--no-forest` / `--keep-ac-trees` | skip tree replacement / keep AC's own tree meshes |
 | `--no-edge-fill` | don't raise the terrain to the road edges or hang curtains under them (if they show as walls/ramps) |
 | `--show-hidden` | also draw meshes AC hides; off by default because physics-only road copies on ripped (e.g. Forza) tracks flicker against the visual road |
+| `--layer-lift 0.02` | metres to raise each road layer (patch, line, dirt decal) that lies exactly on an earlier-drawn surface, so stacked layers don't flicker; `0` turns it off |
 | `--profile my.json` | per-track overrides (see below) |
 | `--beamng`, `--mods`, `--out` | paths, if auto-detection fails |
 

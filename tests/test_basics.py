@@ -181,3 +181,69 @@ def test_track_list_sorted_by_display_name():
             (d / "ui" / "ui_track.json").write_text(json.dumps({"name": name}))
         names = [t["name"] for t in scan_tracks({"tracks": str(root)})]
         assert names == ["Brands Hatch", "monza", "Zandvoort"]
+
+
+
+def _grid(x0, x1, y0, y1, z=0.0, n=4):
+    xs, ys = np.linspace(x0, x1, n + 1), np.linspace(y0, y1, n + 1)
+    X, Y = np.meshgrid(xs, ys)
+    pos = np.stack([X.ravel(), Y.ravel(), np.full(X.size, z)], 1).astype(np.float32)
+    idx = []
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            idx += [a, a + 1, a + n + 2, a, a + n + 2, a + n + 1]
+    return pos, np.array(idx, np.uint32)
+
+
+def test_overlay_layers_lifted_in_draw_order():
+    from kn5port.overlay import OverlayLifter
+    lf = OverlayLifter(step=0.02)
+    road_a = _grid(0, 10, 0, 10); road_b = _grid(10, 20, 0, 10)       # segments sharing a seam
+    shoulder = _grid(-3, 0, 0, 10, z=0.001)                              # adjacent, not overlapping
+    patch = _grid(2, 8, 2, 8, z=0.0, n=3)                                # on road_a
+    decal = _grid(3, 7, 3, 7, z=-0.005, n=2)                             # translucent, on top of the patch
+    for (p, i), tr in ((road_a, 0), (decal, 1), (road_b, 0), (shoulder, 0), (patch, 0)):
+        lf.add(p, i, tr)
+    lf.resolve()
+    assert np.all(road_a[0][:, 2] == 0) and np.all(road_b[0][:, 2] == 0)   # seams don't chain
+    assert np.allclose(shoulder[0][:, 2], 0.001)
+    assert np.allclose(patch[0][:, 2], 0.02)                                  # level 1
+    assert np.allclose(decal[0][:, 2], -0.005 + 0.04 + 0.005, atol=1e-5)      # level 2, drawn after opaque
+    # a later kn5 that lays a line on road_b sees the earlier kn5's surfaces
+    line = _grid(12, 18, 4, 5, n=2)
+    lf.add(*line); lf.resolve()
+    assert np.allclose(line[0][:, 2], 0.02)
+    assert lf.stats["max_level"] == 2
+
+
+def test_overlay_off():
+    from kn5port.overlay import OverlayLifter
+    lf = OverlayLifter(step=0)
+    road, patch = _grid(0, 10, 0, 10), _grid(2, 8, 2, 8)
+    lf.add(*road); lf.add(*patch); lf.resolve()
+    assert np.all(patch[0][:, 2] == 0)
+
+
+def test_overlay_stacks_across_kn5s():
+    from kn5port.overlay import OverlayLifter
+    lf = OverlayLifter(step=0.02)
+    road, patch = _grid(0, 10, 0, 10), _grid(2, 8, 2, 8)
+    lf.add(*road); lf.add(*patch); lf.resolve()
+    decal = _grid(3, 7, 3, 7, n=2)          # next kn5: on the patch (level 1) -> level 2
+    lf.add(*decal); lf.resolve()
+    assert np.allclose(patch[0][:, 2], 0.02) and np.allclose(decal[0][:, 2], 0.04)
+
+
+def test_overlay_identical_copy_and_mixed_sizes():
+    from kn5port.overlay import OverlayLifter
+    lf = OverlayLifter(step=0.02)
+    lot = _grid(0, 200, 0, 200, n=2)                 # coarse parking lot (100 m triangles)
+    road = _grid(0, 10, 0, 10, z=5.0, n=20)          # dense road elsewhere, different height
+    lines = _grid(0, 10, 0, 10, z=5.0, n=20)         # line mesh sharing the road's vertices exactly
+    mark = _grid(50, 52, 50, 60, n=1)                # small marking on the big lot
+    for p, i in (lot, road, lines, mark):
+        lf.add(p, i)
+    lf.resolve()
+    assert np.allclose(lines[0][:, 2], 5.02) and np.allclose(mark[0][:, 2], 0.02)
+    assert np.allclose(road[0][:, 2], 5.0) and np.allclose(lot[0][:, 2], 0)

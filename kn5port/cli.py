@@ -121,6 +121,8 @@ def cmd_convert(a):
         args += ["--keep-ac-trees"]
     if a.show_hidden:
         args += ["--show-hidden"]
+    if a.layer_lift is not None:
+        args += ["--layer-lift", str(a.layer_lift)]
     level.main(args)
     if a.terrain != "off":
         print("\n== 2/4 terrain")
@@ -183,6 +185,9 @@ def main(argv=None):
                    "curtains off them (turn off if they look wrong on a track)")
     p.add_argument("--show-hidden", action="store_true", help="also draw meshes AC hides, e.g. physics-only road "
                    "copies (off by default: on game-rip tracks they z-fight/flicker with the visual road)")
+    p.add_argument("--layer-lift", type=float, default=None, metavar="M", help="raise road layers lying exactly on "
+                   "an earlier-drawn surface (patches, lines, decals) by M metres per layer so they don't z-fight "
+                   "(default 0.02; 0 = off)")
     p.set_defaults(func=cmd_convert)
 
     p = sub.add_parser("validate", help="check a converted level for broken references")
