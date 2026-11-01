@@ -22,6 +22,8 @@ reloaded level can still show the old look.
 | "Import failed" messages, textures missing | BeamNG requires power-of-two sides ≥ 16 px. It also rejects 24-bit uncompressed DDS | Resize to power of two (16–4096). Pass DDS through only if DXT/BC/DX10 or 32-bit, otherwise re-encode as PNG (`raw_ok`) |
 | Lakes drawn as a grid of squares | AC water is a tiling diffuse plus normal map made glossy by a huge specular (`ksSpecular 8`, `ksSpecularEXP 250`). At BeamNG's default roughness 0.85 every tile of the normal map reads as a matte square | Water materials (matched by `water_re`) drop the normal map and get roughness 0.04 |
 | Road flickers (z-fighting), worst on Forza rips | The track ships a **hidden physics copy of the road** exactly on the visual road (`visible=0`, `renderable=0`, material `blank`; about 600k triangles on Montserrat). AC never draws it, but we did | `Mesh.hidden` reads both flags. Hidden physics meshes get an invisible alpha-discarded material that still collides; hidden visual meshes are dropped. `--show-hidden` undoes this |
+| Road flickers on non-Forza rips too (Project CARS 2 California Highway): dark blotches over the whole road and lots | **Stacked visible layers**: base road plus patch/line/dirt-decal meshes at the same height. AC resolves them by draw order (later wins at equal depth); BeamNG has no such order | `overlay.py` lifts each layer 2 cm above the earlier-drawn surfaces it lies on, in AC's draw order (opaque by file order, then transparent). `--layer-lift 0` / "Separate stacked road layers" off undoes it |
+| Decal meshes drawn as solid sheets | AC blend mode 2 (alpha-to-coverage) wasn't treated as a cut-out | Blend mode 2 maps to `alphaTest` (`bng_material`) |
 | Numbered node names render at odd distances | Torque reads a trailing number in a Collada node name as a detail size | Node names always end in letters |
 
 **Ruling out the terrain first.** Before blaming a material, sample the terrain height under the problem area
@@ -92,14 +94,8 @@ unusual alpha use. Read DDS headers (FourCC and bit count) before assuming a for
 
 ## Open issues (v1)
 
-- **Some road flicker remains** (much less than before). Untested suspects:
-  - Several visible road meshes laid on top of each other (base asphalt, patches, line or decal meshes in
-    `road.kn5`/`shldr.kn5`).
-  - Shoulders overlapping road edges.
-  - Depth precision at distance.
-
-  Next step: for each pair of visual meshes, measure how much of one lies within ~2 cm of the other (rasterise
-  both, compare heights). Then lift the upper "overlay" mesh 1–2 cm along its normal, as an "edge case" toggle.
+- **Road flicker far from the camera.** Stacked layers are now separated by 2 cm (see Rendering). If flicker
+  remains only at long range, it is depth precision: try `--layer-lift 0.04`.
 - **Some grass looks emissive / lit in shade.** Untested suspects:
   - AC materials with `ksEmissive > 0` mapped to `emissiveFactor`. AC tracks sometimes use emissive to fake
     brightness on vegetation.

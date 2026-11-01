@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from .kn5 import KN5, KN5Error, Dummy, Mesh
+from .overlay import OverlayLifter, STEP as LAYER_STEP
 from .profile import Profile, read_surfaces, mostly_flat, phys_key, material_uses, is_natural_ground
 
 MAX_VERTS_PER_CHUNK = 65000
@@ -332,7 +333,8 @@ def bng_material(name, acmat, k, baker, tex_rel, ground_type=None):
     s = acmat.samplers
     shader = acmat.shader
     stage = {"roughnessFactor": 0.85, "metallicFactor": 0.0, "useAnisotropic": True}
-    alpha_test = acmat.alpha_tested or "AT" in shader.replace("ksPerPixelMultiMap", "") or shader == "ksTree"
+    # blend mode 2 is alpha-to-coverage: a cut-out, like alpha testing (common on decals of game rips)
+    alpha_test = acmat.alpha_tested or acmat.alpha_blend == 2 or "AT" in shader.replace("ksPerPixelMultiMap", "") or shader == "ksTree"
     translucent = acmat.alpha_blend == 1
 
     if shader.startswith("ksMultilayer"):
@@ -426,6 +428,9 @@ def main(argv=None):
                     help="also draw meshes AC hides (physics-only road copies; these z-fight with the visual road)")
     ap.add_argument("--keep-ac-trees", action="store_true",
                     help="keep AC's tree/groundcover meshes instead of leaving them to kn5port (forest step)")
+    ap.add_argument("--layer-lift", type=float, default=LAYER_STEP, metavar="M",
+                    help=f"raise road layers that lie on an earlier-drawn surface (patches, lines, decals) by M "
+                         f"metres per layer so they don't z-fight (default {LAYER_STEP}; 0 = off)")
     args = ap.parse_args(argv)
 
     track = Path(args.track_dir)
@@ -504,6 +509,7 @@ def main(argv=None):
     textures_needed = {}   # texture name -> (kn5 path, Texture)
     statics = defaultdict(list)   # group -> list of TSStatic dicts
     stats = {}
+    lifter = OverlayLifter(step=args.layer_lift)
 
     for stem in todo:
         path = track / f"{stem}.kn5"
@@ -558,9 +564,15 @@ def main(argv=None):
                 mat_surfaces[m.material.name].add(surf)
             c = pos.mean(0)
             cell = (int(math.floor(c[0] / args.cell)), int(math.floor(c[1] / args.cell)), kind)
-            cells[cell][(m.material.name, surf, hidden)].append(
-                (pos.astype(np.float32), nrm.astype(np.float32), m.uvs, idx.astype(np.uint32)))
+            pos32, idx32 = pos.astype(np.float32), idx.astype(np.uint32)
+            if not hidden:     # drawn: may be a layer on top of an earlier surface (lifted in place below)
+                lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1)
+            cells[cell][(m.material.name, surf, hidden)].append((pos32, nrm.astype(np.float32), m.uvs, idx32))
             kept += 1
+
+        lifted0 = lifter.stats["meshes"]
+        lifter.resolve()
+        lifted = lifter.stats["meshes"] - lifted0
 
         # materials for this kn5
         def bng_name(acname, surf):
@@ -602,11 +614,12 @@ def main(argv=None):
             else:
                 st.update({"collisionType": "None", "decalType": "None"})
             statics[stem].append(st)
-        stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop,
+        stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop, layers_lifted=lifted,
                            shapes=len(cells), seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "
               f"(dropped {dropped_lod} LOD, {dropped_crop} outside crop, {dropped_veg} vegetation, "
-              f"{dropped_ground} terrain-replaced, {dropped_hidden} hidden) in {stats[stem]['seconds']}s")
+              f"{dropped_ground} terrain-replaced, {dropped_hidden} hidden; {lifted} layers lifted) "
+              f"in {stats[stem]['seconds']}s")
         # copy textures for this kn5 now, then close
         tex_dir = out_level / "art" / "textures"
         tex_dir.mkdir(parents=True, exist_ok=True)

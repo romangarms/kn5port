@@ -41,6 +41,13 @@ flipped for Collada.
   especially) ship a hidden physics copy of the road exactly on the visual one. Drawn in BeamNG it z-fights
   (flickers), so hidden physics meshes get an invisible, alpha-discarded material that still collides, and
   hidden visual meshes are dropped.
+- **Stacked road layers z-fight.** Tracks (game rips most of all) lay patch, line and grime/decal meshes
+  exactly on the road. AC draws opaque meshes in file order, then transparent ones, with a less-or-equal depth
+  test, so the later layer always wins. BeamNG doesn't, so `overlay.py` replays that order: a mesh whose
+  triangles lie (centroid inside an earlier triangle, within a few cm) on an earlier-drawn surface is one layer above it,
+  and those triangles are raised 2 cm per layer (`--layer-lift`). Meshes that only meet at a seam are untouched.
+- **AC blend mode 2 is alpha-to-coverage**, i.e. a cut-out. It's mapped to `alphaTest`, otherwise the decal
+  turns into an opaque sheet.
 - **AC water is a tiling diffuse plus normal map made glossy by a strong specular.** At BeamNG's PBR roughness
   each tile of the normal map shows as a matte square, so water materials get no normal map and a very low
   roughness.

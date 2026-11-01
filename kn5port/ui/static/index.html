@@ -248,7 +248,9 @@ function optionsHtml() {
       <label class="check"><input type="checkbox" id="o_edgefill" ${o.edge_fill !== false ? "checked" : ""}> Fill gaps at road edges</label>
       <div class="hint">Raises the terrain to the road edges and hangs curtains under them. Turn off if you see walls or ramps beside the road.</div>
       <label class="check"><input type="checkbox" id="o_hidden" ${o.hide_hidden !== false ? "checked" : ""}> Skip meshes AC doesn't draw</label>
-      <div class="hint">Physics-only road copies stay as invisible collision. Turning this off makes ripped tracks (Forza etc.) flicker.</div></div>
+      <div class="hint">Physics-only road copies stay as invisible collision. Turning this off makes ripped tracks (Forza etc.) flicker.</div>
+      <label class="check"><input type="checkbox" id="o_layers" ${o.separate_layers !== false ? "checked" : ""}> Separate stacked road layers</label>
+      <div class="hint">Patches, lines and dirt decals laid exactly on the road are raised 2 cm per layer so they don't flicker. Turn off only if road markings look like they float.</div></div>
     <div class="opt" style="grid-column:1/-1"><label>Palette: trees, ground materials and grass borrowed from</label>
       ${palettesHtml()}
       <div class="hint">Pick the BeamNG map whose look best matches the track. Trees are placed and sized where the track had them.</div></div>
@@ -342,6 +344,7 @@ function wireDetail(t) {
   $("#o_density")?.addEventListener("input", (e) => { state.opts.tree_density = +e.target.value; $("#v_density").textContent = (+e.target.value).toFixed(2); });
   $("#o_edgefill")?.addEventListener("change", (e) => { state.opts.edge_fill = e.target.checked; });
   $("#o_hidden")?.addEventListener("change", (e) => { state.opts.hide_hidden = e.target.checked; });
+  $("#o_layers")?.addEventListener("change", (e) => { state.opts.separate_layers = e.target.checked; });
   $("#o_ao")?.addEventListener("input", (e) => { state.opts.ao = +e.target.value; $("#v_ao").textContent = (+e.target.value).toFixed(2); });
   $("#o_palette")?.addEventListener("click", (e) => { const b = e.target.closest(".pal"); if (b) { state.opts.palette = b.dataset.p; document.querySelectorAll(".pal").forEach((x) => x.classList.toggle("on", x === b)); } });
   $("#go")?.addEventListener("click", () => convert(t.id));
@@ -368,7 +371,8 @@ async function convert(id) {
     state.job = await api("/api/convert", { track: id, options: {
       terrain: o.terrain || "auto", forest: o.forest !== false,
       tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35, palette: o.palette || "west_coast_usa",
-      edge_fill: o.edge_fill !== false, hide_hidden: o.hide_hidden !== false } });
+      edge_fill: o.edge_fill !== false, hide_hidden: o.hide_hidden !== false,
+      separate_layers: o.separate_layers !== false } });
     state.job.lines = state.job.lines || [];
     renderDetail(); poll();
   } catch (e) { alert(e.message); }
