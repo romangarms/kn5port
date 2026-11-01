@@ -32,7 +32,7 @@ it opens in its own window (uses the WebView2 runtime that ships with Windows 10
 **From source** (Python 3.9+):
 
 ```
-git clone https://github.com/<you>/kn5port
+git clone https://github.com/romangarms/kn5port
 cd kn5port
 pip install .[app]
 ```
