@@ -1,0 +1,9 @@
+{
+  "_comment": "Example profile. Skyline Boulevard converts fine with the defaults; this file only documents the knobs a track typically needs. Keys starting with _ are ignored. See kn5port/profile.py for every field.",
+  "name": "skyline_boulevard",
+  "_example_ground_types": {"KERB": "ASPHALT"},
+  "_example_species_re": {"redwood": "REDWOOD|SEQUOIA"},
+  "terrain_margin": 1500,
+  "terrain_ao": 0.35,
+  "tree_density": 1.0
+}

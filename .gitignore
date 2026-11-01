@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+# never commit game content or converted output
+*.kn5
+*.dds
+*.ter
+*.dae
+*.cdae
+output/
+levels/

@@ -1,0 +1,84 @@
+# kn5port
+
+Convert Assetto Corsa tracks **that you own** into BeamNG.drive levels, on your own computer.
+
+kn5port contains no game content. It reads the track files already installed on your machine, reuses trees,
+grass and terrain materials from your own BeamNG.drive install, and writes the converted level into your local
+BeamNG mods folder. Like game recompilation projects, the repository is only the tool; you bring the data.
+
+> **Personal use only.** Converted levels are derivative works of someone else's track. Never upload, share or
+> sell them, or post them in issues. Check the track's license first: some mods explicitly forbid conversions
+> to other games, and that applies to you even if you never share the result. kn5port only reads unprotected
+> `.kn5` files and does not attempt to get around encryption or other protection.
+
+## What it does
+
+| AC | BeamNG |
+|---|---|
+| Road, kerb, gravel, wall meshes (physics surfaces) | Collision meshes with matching ground models (asphalt, gravel, grass, ...) |
+| Visual meshes (buildings, props, decals) | Static meshes, merged per material and split into 500 m cells |
+| Multilayer / grass / sand ground and distant terrain | A `TerrainBlock` (up to 4096²), fitted under the road, with stock terrain materials and GroundCover grass |
+| Card / mesh trees, bushes, grass cards | BeamNG forest items (redwoods, pines, oaks, shrubs, grass clumps) from a stock level, scaled to the AC heights |
+| Layouts, pit / start positions, previews, descriptions | Spawn points with previews and descriptions in the level picker |
+
+It also generates dirt skirts along road edges where the terrain can't follow them, keeps grass and trees off
+the road, and checks the result (including that every AC AI racing line has road under it).
+
+## Install
+
+Python 3.9+ on Windows (Linux works too):
+
+```
+git clone https://github.com/<you>/kn5port
+cd kn5port
+pip install .
+```
+
+## Use
+
+```
+kn5port inspect  "D:\Steam\steamapps\common\assettocorsa\content\tracks\<track>"
+kn5port convert  "D:\Steam\steamapps\common\assettocorsa\content\tracks\<track>"
+```
+
+`convert` finds your BeamNG install (via Steam) and mods folder automatically and writes
+`mods\unpacked\<track>`. **Fully restart BeamNG** before loading a converted level (it caches materials).
+
+Useful options:
+
+| option | |
+|---|---|
+| `--terrain off` | keep AC's ground as meshes instead of building a terrain (faster, no GroundCover) |
+| `--tree-density 0.5` | thin trees and shrubs for performance |
+| `--ao 0.2`, `--near-gain 1.3` | lighter terrain shading / brighter near-road ground |
+| `--no-forest` / `--keep-ac-trees` | skip tree replacement / keep AC's own tree meshes |
+| `--profile my.json` | per-track overrides (see below) |
+| `--beamng`, `--mods`, `--out` | paths, if auto-detection fails |
+
+`kn5port validate <level folder> --ac-track <track>` re-checks a converted level.
+
+## Track profiles
+
+Everything track-specific (surface → ground model mapping, which meshes are terrain, which materials are
+vegetation and what species, which donor items replace them, terrain size and shading) lives in
+[`kn5port/profile.py`](kn5port/profile.py). The defaults work on most tracks; when one needs tweaks, put a JSON
+file with just the fields to change next to the track as `kn5port.json`, or pass `--profile`. See
+[`profiles/skyline_boulevard.json`](profiles/skyline_boulevard.json) for the format. Run `kn5port inspect` to
+see how a track is being interpreted before converting.
+
+## Known limits
+
+- Terrain is at most 4096² samples, so large maps get coarser terrain (e.g. 5 m for a 20 km road); road edges
+  are covered by generated skirts but may look slightly raised in places.
+- AC shaders (CSP GrassFX, multilayer detail, reflections) don't exist in BeamNG; materials are simplified.
+- Trees, terrain materials and grass come from a stock BeamNG level (West Coast USA by default), so the look is
+  BeamNG's, placed where the AC track had vegetation.
+- No AI paths, race timing or night lighting yet.
+
+## How it works
+
+See [docs/how-it-works.md](docs/how-it-works.md).
+
+## License
+
+MIT for the code in this repository. It does not grant any rights to tracks you convert or to BeamNG content.
