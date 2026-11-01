@@ -93,15 +93,41 @@ section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; 
 .kv dt { color: var(--faint); }
 .kv dd { margin: 0; }
 .warnline { color: var(--warn); }
-.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
-.opt label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
-.opt .hint { font-size: 11px; color: var(--faint); margin-top: 4px; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.seg button { background: none; border: 0; padding: 6px 12px; color: var(--dim); }
-.seg button.on { background: var(--panel2); color: var(--text); }
-input[type=range] { width: 100%; accent-color: var(--accent); }
-.rangeval { font-family: var(--mono); font-size: 12px; color: var(--text); float: right; }
-.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.opts { display: flex; flex-direction: column; gap: 12px; }
+.og { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.og-t { font-weight: 600; font-size: 15px; }
+.og-s { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.og-s b { color: var(--text); font-weight: 600; }
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.choice { text-align: left; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; color: var(--text); }
+.choice:hover { border-color: var(--faint); }
+.choice.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.choice .ct { font-weight: 600; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.choice .ct > i { font-style: normal; white-space: nowrap; }
+.choice .ct::before { content: ""; flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--faint); box-sizing: border-box; }
+.choice.on .ct::before { border-color: var(--accent); background: radial-gradient(var(--accent) 0 3px, transparent 3.5px); }
+.rec { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); border: 1px solid rgba(255,122,26,.45); border-radius: 99px; padding: 0 6px; }
+.pc { font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; line-height: 1.4; }
+.pc > span { display: block; padding-left: 15px; position: relative; }
+.pc > span::before { position: absolute; left: 1px; font-weight: 700; }
+.pc > .p::before { content: "+"; color: var(--ok); }
+.pc > .c::before { content: "\2212"; color: var(--warn); }
+.subopts { border-top: 1px solid var(--line); padding-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px 22px; }
+.setting .st-t { font-size: 13px; color: var(--text); margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+.setting .st-d { font-size: 12px; color: var(--dim); margin-top: 3px; }
+.setting .pc { margin-top: 5px; }
+.scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
+.note { font-size: 12px; color: var(--faint); }
+.note.warnline { color: var(--warn); }
+details.og > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px; }
+details.og > summary::-webkit-details-marker { display: none; }
+details.og > summary::before { content: "\25B8"; color: var(--faint); transition: transform .12s; display: inline-block; }
+details.og[open] > summary::before { transform: rotate(90deg); }
+details.og > summary .og-s { margin: 0; }
+.toggles { display: flex; flex-direction: column; gap: 14px; }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
+.rangeval { font-family: var(--mono); font-size: 12px; color: var(--text); margin-left: auto; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; }
 .check input { accent-color: var(--accent); width: 16px; height: 16px; }
 .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 10px 18px; font-weight: 700; }
@@ -129,7 +155,7 @@ dialog label { font-size: 12px; color: var(--dim); display: block; margin-bottom
 dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; }
 .notice { line-height: 1.55; color: var(--dim); }
 .notice strong { color: var(--text); }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .opts { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .subopts { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -228,37 +254,96 @@ function renderGrid() {
   $("#grid").scrollTop = keepScroll;
 }
 
-function optionsHtml() {
-  const o = state.opts;
+// The palette defaults to West Coast USA, or the first map found if that one isn't installed.
+function paletteLevel() {
+  const p = state.opts.palette;
+  if (p && (!state.palettes.length || state.palettes.some((x) => x.level === p))) return p;
+  return state.palettes.some((x) => x.level === "west_coast_usa") || !state.palettes.length ? "west_coast_usa" : state.palettes[0].level;
+}
+const treesMode = () => state.opts.trees || "beamng";        // beamng | ac | none
+const pc = (pros, cons) => `<span class="pc">${pros.map((x) => `<span class="p">${x}</span>`).join("")}${cons.map((x) => `<span class="c">${x}</span>`).join("")}</span>`;
+const choice = (group, v, on, title, rec, pros, cons) => `
+  <button class="choice ${on ? "on" : ""}" data-g="${group}" data-v="${v}">
+    <span class="ct"><i>${title}</i>${rec ? '<span class="rec">Recommended</span>' : ""}</span>${pc(pros, cons)}</button>`;
+const toggle = (id, on, title, desc, pros, cons) => `
+  <div class="setting"><label class="check"><input type="checkbox" id="${id}" ${on ? "checked" : ""}> ${title}</label>
+    <div class="st-d">${desc}</div>${pc(pros, cons)}</div>`;
+const slider = (id, label, val, min, max, lo, hi, desc) => `
+  <div class="setting"><div class="st-t">${label}<span class="rangeval" id="v_${id}">${val.toFixed(2)}</span></div>
+    <input type="range" id="o_${id}" min="${min}" max="${max}" step="0.05" value="${val}">
+    <div class="scale"><span>${lo}</span><span>${hi}</span></div>
+    <div class="st-d">${desc}</div></div>`;
+
+function optionsHtml(t) {
+  const o = state.opts, terrain = o.terrain !== "off", trees = treesMode();
+  const map = `<b class="palname">${esc(pretty(paletteLevel()))}</b>`;
+  const ins = state.inspect[t.id];
+  const uses = [trees === "beamng" && "trees", trees === "beamng" && "shrubs", terrain && "ground materials",
+    (terrain || trees === "beamng") && "grass"].filter(Boolean);
+  const noGround = ins && !ins.error && !ins.terrain;
   return `
   <div class="opts">
-    <div class="opt"><label>Ground</label>
-      <div class="seg" id="o_terrain"><button data-v="auto" class="${o.terrain !== "off" ? "on" : ""}">BeamNG terrain</button><button data-v="off" class="${o.terrain === "off" ? "on" : ""}">Keep AC meshes</button></div>
-      <div class="hint">Terrain adds grass and proper ground materials; meshes are faster and exact.</div></div>
-    <div class="opt"><label>Trees &amp; grass</label>
-      <label class="check"><input type="checkbox" id="o_forest" ${o.forest !== false ? "checked" : ""}> Replace with BeamNG vegetation</label>
-      <div class="hint">Uses West Coast USA's trees, placed and scaled where the track had them.</div></div>
-    <div class="opt"><label>Tree density <span class="rangeval" id="v_density">${(o.tree_density ?? 1).toFixed(2)}</span></label>
-      <input type="range" id="o_density" min="0.2" max="1" step="0.05" value="${o.tree_density ?? 1}">
-      <div class="hint">Lower it if the forest costs too much frame rate.</div></div>
-    <div class="opt"><label>Terrain shading (AO) <span class="rangeval" id="v_ao">${(o.ao ?? 0.35).toFixed(2)}</span></label>
-      <input type="range" id="o_ao" min="0" max="1" step="0.05" value="${o.ao ?? 0.35}">
-      <div class="hint">Lower = lighter close-up ground.</div></div>
-    <div class="opt" style="grid-column:1/-1"><label>Edge cases</label>
-      <label class="check"><input type="checkbox" id="o_edgefill" ${o.edge_fill !== false ? "checked" : ""}> Fill gaps at road edges</label>
-      <div class="hint">Raises the terrain to the road edges and hangs curtains under them. Turn off if you see walls or ramps beside the road.</div>
-      <label class="check"><input type="checkbox" id="o_hidden" ${o.hide_hidden !== false ? "checked" : ""}> Skip meshes AC doesn't draw</label>
-      <div class="hint">Physics-only road copies stay as invisible collision. Turning this off makes ripped tracks (Forza etc.) flicker.</div>
-      <label class="check"><input type="checkbox" id="o_layers" ${o.separate_layers !== false ? "checked" : ""}> Separate stacked road layers</label>
-      <div class="hint">Patches, lines and dirt decals laid exactly on the road are raised 2 cm per layer so they don't flicker. Turn off only if road markings look like they float.</div></div>
-    <div class="opt" style="grid-column:1/-1"><label>Palette: trees, ground materials and grass borrowed from</label>
+    <div class="og">
+      <div><div class="og-t">Scenery style</div>
+        <div class="og-s">${uses.length ? `The ${uses.slice(0, -1).join(", ")} and ${uses[uses.length - 1]} come from a BeamNG map. Pick the one whose look best matches this track.`
+          : "Not used with these settings: the ground keeps AC's meshes and the trees aren't replaced."}</div></div>
       ${palettesHtml()}
-      <div class="hint">Pick the BeamNG map whose look best matches the track. Trees are placed and sized where the track had them.</div></div>
+    </div>
+
+    <div class="og">
+      <div><div class="og-t">Ground</div><div class="og-s">How the grass, dirt and hills around the road are built.</div></div>
+      <div class="choices">
+        ${choice("terrain", "auto", terrain, "BeamNG terrain", true,
+          [`3D grass and ground materials from ${map}`, "Lighting and shading that match BeamNG"],
+          ["Off-road ground shape is resampled to a grid, so small bumps soften", "Slower to convert"])}
+        ${choice("terrain", "off", !terrain, "Keep AC ground", false,
+          ["Exactly the ground the track author built", "Faster to convert"],
+          ["No 3D grass, flat AC textures that can look dated in BeamNG"])}
+      </div>
+      ${noGround ? `<div class="note">kn5port found no natural ground on this track, so it keeps AC's ground either way.</div>` : ""}
+      ${terrain ? `<div class="subopts">
+        ${slider("ao", "Terrain shading", o.ao ?? 0.35, 0, 1, "Lighter, flatter", "Darker, more depth",
+          "Ambient occlusion on the ground materials. Lower it if the ground looks too dark close up.")}
+        ${toggle("o_edgefill", o.edge_fill !== false, "Fill gaps at road edges",
+          "Raises the terrain to meet the road and hangs dirt curtains under its edges.",
+          ["No see-through gaps or floating road edges"], ["Can leave small walls or ramps beside raised roads"])}
+      </div>` : ""}
+    </div>
+
+    <div class="og">
+      <div><div class="og-t">Trees &amp; grass</div><div class="og-s">What happens to the track's trees, bushes and grass cards.</div></div>
+      <div class="choices">
+        ${choice("trees", "beamng", trees === "beamng", "BeamNG vegetation", true,
+          [`Proper 3D trees, shrubs and grass from ${map}`, "Placed and sized where the track had them"],
+          ["Species won't exactly match the original", "Dense forests cost frame rate"])}
+        ${choice("trees", "ac", trees === "ac", "Keep AC trees", false,
+          ["Exactly the original trees"],
+          ["Flat 2D cards that look like cardboard up close"])}
+        ${choice("trees", "none", trees === "none", "No trees", false,
+          ["Fastest to convert and to drive"], ["Bare landscape where the forest was"])}
+      </div>
+      ${trees === "beamng" ? `<div class="subopts">
+        ${slider("density", "Tree density", o.tree_density ?? 1, 0.2, 1, "Sparser, faster", "As in the track",
+          "Thins out trees and shrubs at random. Lower it if the forest costs too much frame rate.")}
+      </div>` : ""}
+    </div>
+
+    <details class="og" id="o_adv" ${state.advOpen ? "open" : ""}>
+      <summary><span class="og-t">Road fixes</span><span class="og-s">Leave these on unless you see the problem they describe.</span></summary>
+      <div class="toggles">
+        ${toggle("o_hidden", o.hide_hidden !== false, "Skip meshes AC doesn't draw",
+          "Physics-only copies of the road stay as invisible collision instead of being drawn.",
+          ["Stops flickering roads on ripped tracks (Forza etc.)"], ["Turn off if parts of the road or walls are missing"])}
+        ${toggle("o_layers", o.separate_layers !== false, "Separate stacked road layers",
+          "Patches, lines and dirt decals laid exactly on the road are raised 2 cm per layer.",
+          ["Stops road markings and patches from flickering"], ["Turn off if road markings look like they float"])}
+      </div>
+    </details>
   </div>`;
 }
 
 function palettesHtml() {
-  const sel = state.opts.palette || "west_coast_usa";
+  const sel = paletteLevel();
   if (!state.palettes.length)
     return `<div class="muted">${state.palettesLoading ? '<span class="spin"></span>Reading your BeamNG maps…' : "No BeamNG maps found. Set the BeamNG install under Folders."}</div>`;
   return `<div class="palettes" id="o_palette">${state.palettes.map((p) => `
@@ -323,7 +408,7 @@ function renderDetail() {
       ${t.tags.length ? `<div class="tags">${t.tags.map((g) => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
       ${alert}
       <section><h2>What kn5port sees</h2>${inspectHtml(state.inspect[t.id])}</section>
-      <section><h2>Options</h2>${optionsHtml()}</section>
+      <section><h2>Options</h2>${optionsHtml(t)}</section>
       <section><h2>Convert</h2>
         <div class="actions">
           <button class="primary" id="go" ${busy || blocked || !state.settings.mods ? "disabled" : ""}>${t.converted ? "Convert again" : "Convert to BeamNG"}</button>
@@ -339,14 +424,22 @@ function renderDetail() {
 }
 
 function wireDetail(t) {
-  $("#o_terrain")?.addEventListener("click", (e) => { const v = e.target.dataset.v; if (v) { state.opts.terrain = v; renderDetail(); } });
-  $("#o_forest")?.addEventListener("change", (e) => { state.opts.forest = e.target.checked; });
+  document.querySelectorAll(".choice").forEach((b) => b.addEventListener("click", () => {
+    state.opts[b.dataset.g] = b.dataset.v;
+    const top = $("#detail").scrollTop; renderDetail(); $("#detail").scrollTop = top;
+  }));
   $("#o_density")?.addEventListener("input", (e) => { state.opts.tree_density = +e.target.value; $("#v_density").textContent = (+e.target.value).toFixed(2); });
+  $("#o_ao")?.addEventListener("input", (e) => { state.opts.ao = +e.target.value; $("#v_ao").textContent = (+e.target.value).toFixed(2); });
   $("#o_edgefill")?.addEventListener("change", (e) => { state.opts.edge_fill = e.target.checked; });
   $("#o_hidden")?.addEventListener("change", (e) => { state.opts.hide_hidden = e.target.checked; });
   $("#o_layers")?.addEventListener("change", (e) => { state.opts.separate_layers = e.target.checked; });
-  $("#o_ao")?.addEventListener("input", (e) => { state.opts.ao = +e.target.value; $("#v_ao").textContent = (+e.target.value).toFixed(2); });
-  $("#o_palette")?.addEventListener("click", (e) => { const b = e.target.closest(".pal"); if (b) { state.opts.palette = b.dataset.p; document.querySelectorAll(".pal").forEach((x) => x.classList.toggle("on", x === b)); } });
+  $("#o_adv")?.addEventListener("toggle", (e) => { state.advOpen = e.target.open; });
+  $("#o_palette")?.addEventListener("click", (e) => {
+    const b = e.target.closest(".pal"); if (!b) return;
+    state.opts.palette = b.dataset.p;
+    document.querySelectorAll(".pal").forEach((x) => x.classList.toggle("on", x === b));
+    document.querySelectorAll(".palname").forEach((x) => { x.textContent = pretty(b.dataset.p); });
+  });
   $("#go")?.addEventListener("click", () => convert(t.id));
   $("#cancel")?.addEventListener("click", () => api(`/api/jobs/${state.job.id}/cancel`, {}).catch(alert));
   $("#openLevel")?.addEventListener("click", () => api("/api/open", { track: t.id, what: "level" }).catch((e) => alert(e.message)));
@@ -369,8 +462,8 @@ async function convert(id) {
   const o = state.opts;
   try {
     state.job = await api("/api/convert", { track: id, options: {
-      terrain: o.terrain || "auto", forest: o.forest !== false,
-      tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35, palette: o.palette || "west_coast_usa",
+      terrain: o.terrain || "auto", forest: treesMode() === "beamng", keep_ac_trees: treesMode() === "ac",
+      tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35, palette: paletteLevel(),
       edge_fill: o.edge_fill !== false, hide_hidden: o.hide_hidden !== false,
       separate_layers: o.separate_layers !== false } });
     state.job.lines = state.job.lines || [];

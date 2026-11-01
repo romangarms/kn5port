@@ -476,7 +476,9 @@ def make_handler(app, port_ref):
                                           ("near_gain", "--near-gain")):
                             if o.get(key) not in (None, ""):
                                 args += [flag, str(float(o[key]))]
-                        if o.get("forest") is False:
+                        if o.get("keep_ac_trees") is True:
+                            args += ["--keep-ac-trees"]
+                        elif o.get("forest") is False:
                             args += ["--no-forest"]
                         if o.get("edge_fill") is False:
                             args += ["--no-edge-fill"]
