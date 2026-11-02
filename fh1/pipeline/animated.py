@@ -25,7 +25,7 @@ OBJECTS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -
 AXIS = (0, 1, 0)
 # mesh: the source meshes for LOD0 and LOD1. model: the file holding the route. group: the anim_proc set that places it. lod: detail sizes
 VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1))}
-KEY_SECONDS = 1.0; STOPPED = .05
+KEY_SECONDS = 1.0; STOPPED = .05; AXLES = 1.4; TRACK = 1.0
 # Planes come from Granny meshes, which have no decoded UVs, so colour is the median of their texture. The route is level in FH1 once its tilted frame is removed
 FLYERS = {'cropduster': dict(model='ANIM_CropDuster_Zone_05_001.pgeo', group='cropduster_zone_05_001', colour=(117, 16, 10), lod=(60, 20, 1))}
 FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; GRAVITY = 9.81
@@ -112,6 +112,43 @@ def flight(t, q):
     rate = np.convolve(np.gradient(yaw, times), np.ones(7) / 7, 'same')
     bank = np.clip(np.degrees(np.arctan(flat * rate / GRAVITY)), -MAX_BANK, MAX_BANK)
     return times, p, np.degrees(yaw), np.degrees(np.arctan2(d[:, 2], flat)), -bank
+
+
+def ground_triangles(lo, hi):
+    """Ground triangles in a box, from the collision shapes of the map cells, in world space."""
+    out = []
+    for o in world:
+        name = Path(o['shapeName']).name; q = np.array(o['position'])
+        if not name.endswith('_col.dae') or (q[:2] < lo - 600).any() or (q[:2] > hi + 600).any():
+            continue
+        R = np.array(o.get('rotationMatrix', np.eye(3).ravel())).reshape(3, 3)
+        for geo in (level / 'art' / 'shapes' / 'fh1' / name).read_text().split('<geometry ')[1:]:
+            v = re.search(r'-p-a"[^>]*>([^<]*)<', geo)
+            V = np.array(v.group(1).split(), 'f8').reshape(-1, 3) @ R + q
+            for inputs, p in re.findall(r'<triangles[^>]*>(.*?)<p>([^<]*)</p>', geo, re.S):
+                step = max(map(int, re.findall(r'offset="(\d+)"', inputs))) + 1
+                out.append(V[np.array(p.split(), 'i8')[::step].reshape(-1, 3)])
+    T = np.concatenate(out); box = (T[:, :, :2].max(1) >= lo).all(1) & (T[:, :, :2].min(1) <= hi).all(1)
+    return T[box]
+
+
+def height(T, xy):
+    """Height of the highest triangle over each point."""
+    lo, hi = T[:, :, :2].min(1), T[:, :, :2].max(1); out = np.zeros(len(xy))
+    for k, q in enumerate(xy):
+        A, B_, C = T[(lo <= q).all(1) & (hi >= q).all(1)].transpose(1, 0, 2)
+        e, f = B_ - A, C - A; g = q - A[:, :2]; d = e[:, 0] * f[:, 1] - e[:, 1] * f[:, 0]
+        u = (g[:, 0] * f[:, 1] - g[:, 1] * f[:, 0]) / d; v = (e[:, 0] * g[:, 1] - e[:, 1] * g[:, 0]) / d
+        inside = (u >= -1e-3) & (v >= -1e-3) & (u + v <= 1.001)
+        out[k] = (A[:, 2] + u * e[:, 2] + v * f[:, 2])[inside].max()
+    return out
+
+
+def on_ground(T, xy, yaw):
+    """Height, pitch and roll of a vehicle resting on the ground, from where its wheels stand."""
+    a = np.radians(yaw)[:, None]; ahead = np.c_[-np.sin(a), np.cos(a)]; right = np.c_[np.cos(a), np.sin(a)]
+    f, b_ = height(T, xy + AXLES * ahead), height(T, xy - AXLES * ahead); r, l = height(T, xy + TRACK * right), height(T, xy - TRACK * right)
+    return (f + b_ + r + l) / 4, np.degrees(np.arctan2(f - b_, 2 * AXLES)), np.degrees(np.arctan2(l - r, 2 * TRACK))
 
 
 def ground_samples():
@@ -243,24 +280,31 @@ for kind, w in VEHICLES.items():
     # Granny axes are x, up, z. The big wheels show which end of the mesh is the rear, so which way it drives
     p0 = groups[0][1]; rear = np.sign(p0[p0[:, 1] > 0, 2].size and (p0[(p0[:, 1] > .7) & (np.abs(p0[:, 0]) > .8), 2].max() - p0[(p0[:, 1] < -.7) & (np.abs(p0[:, 0]) > .8), 2].max()))
     forward = -1 if rear > 0 else 1
-    times = np.arange(0, t[-1], KEY_SECONDS); x = np.interp(times, t, c[:, 0]); y = np.interp(times, t, c[:, 2]); z = np.interp(times, t, c[:, 1])
-    times = np.r_[times, t[-1]]; x = np.r_[x, x[0]]; y = np.r_[y, y[0]]; z = np.r_[z, z[0]]
-    dx = np.gradient(x, times); dy = np.gradient(y, times); moving = np.hypot(dx, dy) > STOPPED
-    yaw = np.degrees(np.arctan2(-dx * forward, dy * forward))
-    first = yaw[moving][0]; yaw = np.array([first] + yaw.tolist()); keep = first
-    for i in range(1, len(yaw)):
-        yaw[i] = keep = yaw[i] if moving[i - 1] else keep
-    yaw = np.degrees(np.unwrap(np.radians(yaw[1:])))
-    print(kind, 'route', len(t), 'keys', round(float(t[-1]), 1), 's, moves', np.round(np.ptp(np.c_[x, y, z], axis=0), 1).tolist(), 'forward', forward, 'turned', round(float(np.ptp(yaw))))
-    path = out / f'{kind}.dae'
-    write_lod(path, groups, np.zeros(3), w['lod'], None)
-    lo = np.array([x.min() - 6, y.min() - 6, z.min() - 1]); hi = np.array([x.max() + 6, y.max() + 6, z.max() + 6])
-    animate(path, [('location.X', 'X', times, x), ('location.Y', 'Y', times, y), ('location.Z', 'Z', times, z), ('rotationZ.ANGLE', 'ANGLE', times, yaw)], bounds(lo, hi))
+    # The ANIM model stands away from its origin, and the route starts from there
+    a_ = granny.vertices(gamezip.read('animatedobjects.zip', w['model']))[2][:, :2]
+    start = (np.nanmin(a_, 0) + np.nanmax(a_, 0)) / 2 - (p0[:, :2].min(0) + p0[:, :2].max(0)) / 2
+    times = np.arange(0, t[-1], KEY_SECONDS); u = np.c_[np.interp(times, t, c[:, 0]), np.interp(times, t, c[:, 2])] + start
+    times = np.r_[times, t[-1]]; u = np.r_[u, u[:1]]
+    # FH1's route is flat, but the ground under it isn't, so each placement gets its own shape that follows the ground
     for i, r in enumerate(records(w['group'])):
-        Rm = yaw_matrix(r); pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
-        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
-                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
-        print(kind, i, [round(float(v)) for v in pos], 'route end', np.round(Rm @ np.array([x[len(x) // 2], y[len(y) // 2], 0]) + pos, 0).tolist())
+        pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
+        xy = pos[:2] + u[:, :1] * [r[0], r[2]] + u[:, 1:] * [r[8], r[10]]
+        d = np.gradient(xy, times, axis=0); moving = np.hypot(*d.T) > STOPPED
+        yaw = np.degrees(np.arctan2(-d[:, 0] * forward, d[:, 1] * forward))
+        for k in range(len(yaw)):
+            if not moving[k]:
+                yaw[k] = yaw[k - 1] if k else yaw[moving][0]
+        yaw = np.degrees(np.unwrap(np.radians(yaw)))
+        T = ground_triangles(xy.min(0) - 8, xy.max(0) + 8); z, pitch, roll = on_ground(T, xy, yaw)
+        x, y = xy.T - pos[:2, None]; z = z - pos[2]
+        path = out / f'{kind}_{i}.dae'
+        write_lod(path, groups, np.zeros(3), w['lod'], None)
+        lo = np.array([x.min() - 6, y.min() - 6, z.min() - 1]); hi = np.array([x.max() + 6, y.max() + 6, z.max() + 6])
+        animate(path, [('location.X', 'X', times, x), ('location.Y', 'Y', times, y), ('location.Z', 'Z', times, z), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
+                       ('rotationY.ANGLE', 'ANGLE', times, roll), ('rotationX.ANGLE', 'ANGLE', times, pitch)], bounds(lo, hi))
+        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_{i}.dae', 'position': [round(float(v), 3) for v in pos],
+                     'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+        print(kind, i, [round(float(v)) for v in pos], 'ground follows', round(float(np.ptp(z)), 1), 'm, max pitch', round(float(np.abs(pitch).max()), 1), 'max roll', round(float(np.abs(roll).max()), 1))
 g = ground_samples()
 for kind, w in FLYERS.items():
     q, tri = granny.mesh(w['model']); t, c = route(w['model'])
