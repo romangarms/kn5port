@@ -1,12 +1,13 @@
-"""FH1's animated objects: windmills and wind turbines. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
-as West Coast USA's pump jacks do. Fans have no collision.
+"""FH1's animated objects: windmills, wind turbines and tractors. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
+as West Coast USA's pump jacks do. Vehicles follow the route in their ANIM_*.pgeo the same way. Moving parts have no collision.
 Run after build3.py, which wipes the level: python animated.py [fh1_colorado]. Safe to run twice. Needs no rebuild."""
-import glob, json, os, re, struct, sys
+import glob, json, os, pickle, re, struct, sys
 from pathlib import Path
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from daewrite import FARCUT, write_lod
+import gamezip, rmb
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -21,27 +22,93 @@ OBJECTS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -
            'wood': dict(shape='m6627', group='fx_windmillswood', hub=(-.02, -1.55, 9.94), radius=1.75, depth=.5, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
            'turbine': dict(shape='m6429', group='fx_maintown', hub=(7.42, -4.6, 82.17), radius=56, depth=1.6, origin=(7.5, -1.35, 0), turns=(5, 6, 7.5), tower_lod=(211, 88, 45), fan_lod=(190, 70, 1))}
 AXIS = (0, 1, 0)
+# mesh: the source meshes for LOD0 and LOD1. model: the file holding the route. group: the anim_proc set that places it. lod: detail sizes
+VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1))}
+KEY_SECONDS = 1.0; STOPPED = .05
 
 
-def animate(path, seconds):
-    """Turn every LOD node of a shape about its Y axis. Nodes use the separate transforms that animation channels address, as in the stock pump jacks."""
+def channel(node, target, param, times, values):
+    """One animation curve, in the form Collada loaders expect."""
+    a = f"{node}_{re.sub('[^A-Za-z]', '', target)}"; n = len(times)
+    t = ' '.join(f'{v:.4f}' for v in times); o = ' '.join(f'{v:.4f}' for v in values)
+    return (f'<animation id="{a}">'
+            f'<source id="{a}-in"><float_array id="{a}-in-a" count="{n}">{t}</float_array><technique_common><accessor source="#{a}-in-a" count="{n}" stride="1"><param name="TIME" type="float"/></accessor></technique_common></source>'
+            f'<source id="{a}-out"><float_array id="{a}-out-a" count="{n}">{o}</float_array><technique_common><accessor source="#{a}-out-a" count="{n}" stride="1"><param name="{param}" type="float"/></accessor></technique_common></source>'
+            f'<source id="{a}-int"><Name_array id="{a}-int-a" count="{n}">{" ".join(["LINEAR"] * n)}</Name_array><technique_common><accessor source="#{a}-int-a" count="{n}" stride="1"><param name="INTERPOLATION" type="name"/></accessor></technique_common></source>'
+            f'<sampler id="{a}-s"><input semantic="INPUT" source="#{a}-in"/><input semantic="OUTPUT" source="#{a}-out"/><input semantic="INTERPOLATION" source="#{a}-int"/></sampler>'
+            f'<channel source="#{a}-s" target="{node}/{target}"/></animation>\n')
+
+
+def animate(path, curves, extra=''):
+    """Give each LOD node the separate transforms that animation channels address, as in the stock pump jacks. curves: (target, param, times, values)."""
     text = path.read_text(); anims = []
-    keys = 8; times = ' '.join(f'{seconds * i / keys:.5f}' for i in range(keys + 1)); angles = ' '.join(f'{360 * i / keys:.3f}' for i in range(keys + 1))
     for node in re.findall(r'<node id="(o\d+_a\d+)"', text):
         m = re.search(rf'(<node id="{node}"[^>]*>\s*)<matrix sid="transform">[^<]*</matrix>', text)
         text = text[:m.start()] + m.group(1) + ('<translate sid="location">0 0 0</translate><rotate sid="rotationZ">0 0 1 0</rotate><rotate sid="rotationY">0 1 0 0</rotate>'
                                                 '<rotate sid="rotationX">1 0 0 0</rotate><scale sid="scale">1 1 1</scale>') + text[m.end():]
-        a = f'{node}_spin'
-        anims.append(f'<animation id="{a}">'
-                     f'<source id="{a}-in"><float_array id="{a}-in-a" count="{keys + 1}">{times}</float_array><technique_common><accessor source="#{a}-in-a" count="{keys + 1}" stride="1"><param name="TIME" type="float"/></accessor></technique_common></source>'
-                     f'<source id="{a}-out"><float_array id="{a}-out-a" count="{keys + 1}">{angles}</float_array><technique_common><accessor source="#{a}-out-a" count="{keys + 1}" stride="1"><param name="ANGLE" type="float"/></accessor></technique_common></source>'
-                     f'<source id="{a}-int"><Name_array id="{a}-int-a" count="{keys + 1}">{" ".join(["LINEAR"] * (keys + 1))}</Name_array><technique_common><accessor source="#{a}-int-a" count="{keys + 1}" stride="1"><param name="INTERPOLATION" type="name"/></accessor></technique_common></source>'
-                     f'<sampler id="{a}-s"><input semantic="INPUT" source="#{a}-in"/><input semantic="OUTPUT" source="#{a}-out"/><input semantic="INTERPOLATION" source="#{a}-int"/></sampler>'
-                     f'<channel source="#{a}-s" target="{node}/rotationY.ANGLE"/></animation>\n')
+        anims += [channel(node, *c) for c in curves]
     if not anims:
         raise ValueError(f'no LOD nodes in {path}')
     i = text.index('<library_visual_scenes')
-    path.write_text(text[:i] + '<library_animations>\n' + ''.join(anims) + '</library_animations>\n' + text[i:])
+    text = text[:i] + '<library_animations>\n' + ''.join(anims) + '</library_animations>\n' + text[i:]
+    if extra:
+        text = text.replace('</library_geometries>', extra[0] + '</library_geometries>', 1)
+        text = re.sub(r'(<visual_scene [^>]*>)', lambda m: m.group(1) + extra[1], text, 1)
+    path.write_text(text)
+
+
+def spin(seconds, keys=8):
+    times = [seconds * i / keys for i in range(keys + 1)]
+    return [('rotationY.ANGLE', 'ANGLE', times, [360 * i / keys for i in range(keys + 1)])]
+
+
+def bounds(lo, hi):
+    """BeamNG culls a shape by its resting bounds, so a vehicle would vanish partway along its route. A node named bounds sets them."""
+    x = [(lo[0], lo[1], lo[2]), (hi[0], lo[1], lo[2]), (hi[0], hi[1], lo[2]), (lo[0], hi[1], lo[2]), (lo[0], lo[1], hi[2]), (hi[0], lo[1], hi[2]), (hi[0], hi[1], hi[2]), (lo[0], hi[1], hi[2])]
+    tri = '0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 1 2 6 1 6 5 2 3 7 2 7 6 3 0 4 3 4 7'
+    p = ' '.join(f'{v:.3f}' for q in x for v in q)
+    return (f'<geometry id="bounds_g" name="bounds_g"><mesh><source id="bounds_p"><float_array id="bounds_a" count="24">{p}</float_array><technique_common><accessor source="#bounds_a" count="8" stride="3">'
+            '<param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>'
+            f'<vertices id="bounds_v"><input semantic="POSITION" source="#bounds_p"/></vertices><triangles count="12"><input semantic="VERTEX" source="#bounds_v" offset="0"/><p>{tri}</p></triangles></mesh></geometry>\n',
+            '<node id="bounds" name="bounds" type="NODE"><instance_geometry url="#bounds_g"/></node>')
+
+
+def route(name):
+    """Times and positions of an ANIM model's root track, the longest move among its raw float curves. These are a run of rising knots followed by three floats per knot."""
+    b = gamezip.read('animatedobjects.zip', name); F = np.frombuffer(b[:len(b) // 4 * 4], '>f4'); best = None; i = 0x100 // 4
+    while i < len(F) - 8:
+        j = i
+        while j + 1 < len(F) and 0 <= F[j] < F[j + 1] < 2000 and F[j + 1] - F[j] < 60:
+            j += 1
+        n = j - i + 1
+        if n >= 7 and j + 1 + 3 * n <= len(F):
+            c = F[j + 1:j + 1 + 3 * n].astype('f8').reshape(-1, 3)
+            if np.isfinite(c).all() and np.abs(c).max() < 5000 and (best is None or np.ptp(c, axis=0).max() > np.ptp(best[1], axis=0).max()):
+                best = (F[i:j + 1].astype('f8'), c)
+            i = j + 1
+        else:
+            i += 1
+    return best
+
+
+def mesh_groups(nos):
+    """Geometry straight from the source meshes, for objects the build merged into map cells. Naming follows Textures and box_uv in build3.py."""
+    MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX = pickle.load(open('../texshader.pkl', 'rb'))[0]
+    mats = json.loads((level / 'art' / 'shapes' / f'{LVL}.materials.json').read_text()); out = []
+    for lv, no in enumerate(nos):
+        m = rmb.parse(open(f'../x/coloradoout.{no:05d}.rmb.bin', 'rb').read())['meshes'][0]
+        p, nr, _ = rmb.verts(m); a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
+        r0 = np.frombuffer(a[:, 16:20].tobytes(), '>i2').reshape(-1, 2).astype('f8') / 32767
+        pb = np.c_[p[:, 0], -p[:, 2], p[:, 1]]; nb = np.c_[nr[:, 0], -nr[:, 2], nr[:, 1]]
+        for s_ in m['secs']:
+            T = rmb.tris(s_['ib'], m['nv'], s_['ints'][1])
+            names = [f'fh1_d{IDX[i][0]:X}' for i in MT[no][0] if i in IDX]
+            mat = next((n for n in names if n in mats), None)
+            if mat is None:
+                sys.exit(f'no built material for mesh {no}: {names}')
+            lo, hi = np.array(s_['fl'][4:6]), np.array(s_['fl'][6:8]); uv = lo + (r0 + 1) / 2 * (hi - lo)
+            out.append(((mat, (lv,)), pb, nb, uv, T.ravel(), uv))
+    return out
 
 
 def arrays(text, gid):
@@ -123,7 +190,7 @@ for kind, w in OBJECTS.items():
     for v, seconds in enumerate(w['turns']):
         path = out / f'{kind}_fan_{v}.dae'
         write_lod(path, [((mat, (0,)),) + centred(fan[0]), ((mat, (1,)),) + centred(fan[1])], np.zeros(3), w['fan_lod'], None)
-        animate(path, seconds)
+        animate(path, spin(seconds))
     places = []
     for r in records(w['group']):
         Rm = yaw_matrix(r); places.append((np.array([r[12] - CX, r[14] + CZ, r[13]]) - Rm @ origin, Rm))
@@ -141,6 +208,29 @@ for kind, w in OBJECTS.items():
         rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_fan_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_fan_{int(rng.integers(len(w['turns'])))}.dae', 'position': [round(float(v), 3) for v in at],
                      'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     print(kind, len(places), 'placed', [[round(float(v)) for v in (p[0] if p[0] is not None else p[2])] for p in places][:8])
+for kind, w in VEHICLES.items():
+    groups = mesh_groups(w['mesh']); t, c = route(w['model'])
+    # Granny axes are x, up, z. The big wheels show which end of the mesh is the rear, so which way it drives
+    p0 = groups[0][1]; rear = np.sign(p0[p0[:, 1] > 0, 2].size and (p0[(p0[:, 1] > .7) & (np.abs(p0[:, 0]) > .8), 2].max() - p0[(p0[:, 1] < -.7) & (np.abs(p0[:, 0]) > .8), 2].max()))
+    forward = -1 if rear > 0 else 1
+    times = np.arange(0, t[-1], KEY_SECONDS); x = np.interp(times, t, c[:, 0]); y = np.interp(times, t, c[:, 2]); z = np.interp(times, t, c[:, 1])
+    times = np.r_[times, t[-1]]; x = np.r_[x, x[0]]; y = np.r_[y, y[0]]; z = np.r_[z, z[0]]
+    dx = np.gradient(x, times); dy = np.gradient(y, times); moving = np.hypot(dx, dy) > STOPPED
+    yaw = np.degrees(np.arctan2(-dx * forward, dy * forward))
+    first = yaw[moving][0]; yaw = np.array([first] + yaw.tolist()); keep = first
+    for i in range(1, len(yaw)):
+        yaw[i] = keep = yaw[i] if moving[i - 1] else keep
+    yaw = np.degrees(np.unwrap(np.radians(yaw[1:])))
+    print(kind, 'route', len(t), 'keys', round(float(t[-1]), 1), 's, moves', np.round(np.ptp(np.c_[x, y, z], axis=0), 1).tolist(), 'forward', forward, 'turned', round(float(np.ptp(yaw))))
+    path = out / f'{kind}.dae'
+    write_lod(path, groups, np.zeros(3), w['lod'], None)
+    lo = np.array([x.min() - 6, y.min() - 6, z.min() - 1]); hi = np.array([x.max() + 6, y.max() + 6, z.max() + 6])
+    animate(path, [('location.X', 'X', times, x), ('location.Y', 'Y', times, y), ('location.Z', 'Z', times, z), ('rotationZ.ANGLE', 'ANGLE', times, yaw)], bounds(lo, hi))
+    for i, r in enumerate(records(w['group'])):
+        Rm = yaw_matrix(r); pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
+        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
+                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+        print(kind, i, [round(float(v)) for v in pos], 'route end', np.round(Rm @ np.array([x[len(x) // 2], y[len(y) // 2], 0]) + pos, 0).tolist())
 (mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in world))
 (mg / 'fh1_anim').mkdir(exist_ok=True)
 (mg / 'fh1_anim' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
