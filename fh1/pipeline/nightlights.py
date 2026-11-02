@@ -179,6 +179,9 @@ for f in mg.rglob('items.level.json'):
 if TOWN:
     heads = [h for h in heads if np.hypot(*(h[0][:2] - TOWN[:2])) < TOWN[2]]
 WARM = np.array([1.0, .75, .45])
+# Lamp-post lights with shadows faded in, then straight back out in-game: BeamNG gives shadows to only about 64 lights within a time budget,
+# and dropped the rest. Without shadows they stay, as the earlier PointLights did
+LAMP_SHADOWS = False
 lights = []; used = np.zeros(len(pool), bool)
 ptree = cKDTree([q[:2] for q in pool]) if pool else None
 for p, rise in heads:
@@ -187,7 +190,7 @@ for p, rise in heads:
         used[j] = True; _, _, _, peak, rgb, rad = pool[j]
     else:
         peak, rgb, rad = PEAK, WARM, 6.0
-    lights.append((p, peak, rgb, rise, True)); stats['lamp_matched' if d < MATCH else 'lamp_unmatched'] += 1
+    lights.append((p, peak, rgb, rise, LAMP_SHADOWS)); stats['lamp_matched' if d < MATCH else 'lamp_unmatched'] += 1
 htree = cKDTree([h[0][:2] for h in heads]) if heads else None
 for q, u in zip(pool, used):
     if u or (htree is not None and htree.query(q[:2])[0] < MATCH):
