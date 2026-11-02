@@ -1,4 +1,4 @@
--- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, spinning windmills, and the current road on the minimap's location line.
+-- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, and the current road on the minimap's location line.
 -- Does nothing unless the level ships fh1_extras.json. levelinfo.py writes that file and installs this one.
 
 local M = {}
@@ -10,7 +10,6 @@ local ROAD_SEARCH_METRES = 30
 local AMBIENCE_VOLUME = 0.6
 local PARTICLE_SECONDS = 2
 local MAX_PARTICLE_NODES = 60
-local SPIN_METRES = 900
 
 local data
 local levelDir
@@ -21,8 +20,6 @@ local ambienceOn = true
 local sinceUpdate = 0
 local shotsOn = true
 local emitters
-local spinners -- { shape, x, y, z, axis x, y, z, radians per second, starting angle }
-local spinObjects = {} -- shape -> object
 local awake = {} -- emitter name -> true
 local sinceParticles = 0
 local clock = 0
@@ -147,42 +144,6 @@ local function updateParticles(x, y)
   awake = want
 end
 
--- Each fan's facing is baked into its shape, so this is a plain turn about one axis
-local function createSpinner(shape)
-  local object = createObject('TSStatic')
-  object:setField('shapeName', 0, shape)
-  object.useInstanceRenderData = true
-  object:setField('instanceColor', 0, '1 1 1 1')
-  object:setField('collisionType', 0, 'None')
-  object:setField('decalType', 0, 'None')
-  object.canSave = false
-  object:registerObject(Sim.getUniqueName('fh1_spinner'))
-  return object
-end
-
-local function updateSpinners(x, y)
-  for _, s in ipairs(spinners) do
-    local dx, dy = x - s[2], y - s[3]
-    if dx * dx + dy * dy < SPIN_METRES * SPIN_METRES then
-      local object = spinObjects[s[1]]
-      if not object then
-        object = createSpinner(s[1])
-        spinObjects[s[1]] = object
-        log('I', logTag, 'Spinning ' .. s[1])
-      end
-      local half = (clock * s[8] + s[9]) / 2
-      local sine = math.sin(half)
-      object:setPosRot(s[2], s[3], s[4], s[5] * sine, s[6] * sine, s[7] * sine, math.cos(half))
-      object:updateInstanceRenderData()
-    end
-  end
-end
-
-local function removeSpinners()
-  for _, object in pairs(spinObjects) do object:delete() end
-  spinObjects = {}
-end
-
 local function zoneWithRoad(pos)
   local zone = originalZone(pos)
   if not roadName then return zone end
@@ -238,8 +199,6 @@ local function start()
   if not levelDir or not FS:fileExists(levelDir .. 'fh1_extras.json') then return end
   data = jsonReadFile(levelDir .. 'fh1_extras.json')
   awake = {}
-  removeSpinners()
-  spinners = FS:fileExists(levelDir .. 'fh1_animated.json') and jsonReadFile(levelDir .. 'fh1_animated.json') or nil
   sinceParticles = PARTICLE_SECONDS
   emitters = FS:fileExists(levelDir .. 'fh1_particles.json') and jsonReadFile(levelDir .. 'fh1_particles.json') or nil
   ambienceOn = true
@@ -250,14 +209,6 @@ local function onUpdate(dtReal)
   if not data then return end
   sinceUpdate = sinceUpdate + dtReal
   clock = clock + dtReal
-  if spinners then
-    local x, y = core_camera.getPositionXYZ()
-    local ok, err = pcall(updateSpinners, x, y)
-    if not ok then
-      log('E', logTag, tostring(err) .. ', animated objects are off')
-      spinners = nil
-    end
-  end
   sinceParticles = sinceParticles + dtReal
   if emitters and sinceParticles >= PARTICLE_SECONDS then
     sinceParticles = 0
@@ -283,7 +234,6 @@ local function onUpdate(dtReal)
 end
 
 local function onClientEndMission()
-  removeSpinners()
   data = nil
   stopAmbience()
   unpatchCity()

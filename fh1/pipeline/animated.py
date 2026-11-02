@@ -1,6 +1,7 @@
-"""FH1's animated objects, starting with the metal windmills: the fan is cut out of the built shape and fh1Extras.lua spins it. Fans have no collision.
+"""FH1's animated objects, starting with the metal windmills. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
+as West Coast USA's pump jacks do. Fans have no collision.
 Run after build3.py, which wipes the level: python animated.py [fh1_colorado]. Safe to run twice. Needs no rebuild."""
-import glob, json, math, os, re, struct, sys
+import glob, json, os, re, struct, sys
 from pathlib import Path
 import numpy as np
 from scipy.sparse import coo_matrix
@@ -13,9 +14,31 @@ LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); S = np.diag([1., 1., -1.])
 # The shape built for this mesh, the anim_proc set that places it, and the Fan bone from ANIM_FARM_WindmillMetal.pgeo in BeamNG axes.
-# Spin speed isn't read from FH1's curves yet. Parts within FAN_RADIUS of the hub and FAN_DEPTH along its axis are the fan
+# Spin speed isn't read from FH1's curves yet. Parts within radius of the hub and depth along its axis are the fan
 WINDMILLS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -1.174, 9.931), axis=(0, 1, 0), radius=1.75, depth=.6, speed=2.2)}
-SPEED_SPREAD = .2
+# Seconds per turn. Each speed needs its own shape, as the animation lives in the file
+TURN_SECONDS = (2.4, 2.9, 3.5)
+
+
+def animate(path, seconds):
+    """Turn every LOD node of a shape about its Y axis. Nodes use the separate transforms that animation channels address, as in the stock pump jacks."""
+    text = path.read_text(); anims = []
+    keys = 8; times = ' '.join(f'{seconds * i / keys:.5f}' for i in range(keys + 1)); angles = ' '.join(f'{360 * i / keys:.3f}' for i in range(keys + 1))
+    for node in re.findall(r'<node id="(o\d+_a\d+)"', text):
+        m = re.search(rf'(<node id="{node}"[^>]*>\s*)<matrix sid="transform">[^<]*</matrix>', text)
+        text = text[:m.start()] + m.group(1) + ('<translate sid="location">0 0 0</translate><rotate sid="rotationZ">0 0 1 0</rotate><rotate sid="rotationY">0 1 0 0</rotate>'
+                                                '<rotate sid="rotationX">1 0 0 0</rotate><scale sid="scale">1 1 1</scale>') + text[m.end():]
+        a = f'{node}_spin'
+        anims.append(f'<animation id="{a}">'
+                     f'<source id="{a}-in"><float_array id="{a}-in-a" count="{keys + 1}">{times}</float_array><technique_common><accessor source="#{a}-in-a" count="{keys + 1}" stride="1"><param name="TIME" type="float"/></accessor></technique_common></source>'
+                     f'<source id="{a}-out"><float_array id="{a}-out-a" count="{keys + 1}">{angles}</float_array><technique_common><accessor source="#{a}-out-a" count="{keys + 1}" stride="1"><param name="ANGLE" type="float"/></accessor></technique_common></source>'
+                     f'<source id="{a}-int"><Name_array id="{a}-int-a" count="{keys + 1}">{" ".join(["LINEAR"] * (keys + 1))}</Name_array><technique_common><accessor source="#{a}-int-a" count="{keys + 1}" stride="1"><param name="INTERPOLATION" type="name"/></accessor></technique_common></source>'
+                     f'<sampler id="{a}-s"><input semantic="INPUT" source="#{a}-in"/><input semantic="OUTPUT" source="#{a}-out"/><input semantic="INTERPOLATION" source="#{a}-int"/></sampler>'
+                     f'<channel source="#{a}-s" target="{node}/rotationY.ANGLE"/></animation>\n')
+    if not anims:
+        raise ValueError(f'no LOD nodes in {path}')
+    i = text.index('<library_visual_scenes')
+    path.write_text(text[:i] + '<library_animations>\n' + ''.join(anims) + '</library_animations>\n' + text[i:])
 
 
 def arrays(text, gid):
@@ -77,8 +100,10 @@ mg = level / 'main' / 'MissionGroup'; items = mg / 'items.level.json'
 if not items.exists():
     sys.exit(f'{items} is missing: run build3.py first')
 out = level / 'art' / 'shapes' / 'fh1_anim'; out.mkdir(parents=True, exist_ok=True)
+for old in out.glob('*'):
+    old.unlink()
 rel = f'/levels/{LVL}/art/shapes/fh1_anim'
-rows = []; spins = []; world = [json.loads(l) for l in (mg / 'fh1' / 'items.level.json').read_text().splitlines() if l.strip()]
+rows = []; world = [json.loads(l) for l in (mg / 'fh1' / 'items.level.json').read_text().splitlines() if l.strip()]
 for kind, w in WINDMILLS.items():
     src = level / 'art' / 'shapes' / 'fh1' / f"{w['shape']}.dae"
     text = src.read_text(); mat = re.search(r'<material id="([^"]+)"', text).group(1)
@@ -88,6 +113,14 @@ for kind, w in WINDMILLS.items():
     print(kind, 'fan triangles', [int(m.sum()) for m in masks], 'of', [len(a[3]) for a in lods])
     tower = [piece(a, ~m) for a, m in zip(lods, masks)]; fan = [piece(a, m) for a, m in zip(lods, masks)]
     write_lod(out / f'{kind}_tower.dae', [((mat, (0,)),) + tower[0], ((mat, (1, FARCUT)),) + tower[1]], np.zeros(3), (25, 9, 3), 2)
+    # The fan shape is centred on the hub, with its axis along Y
+    def centred(g):
+        p, n, uv, tri, u2 = g
+        return p - hub, n, uv, tri, u2
+    for v, seconds in enumerate(TURN_SECONDS):
+        path = out / f'{kind}_fan_{v}.dae'
+        write_lod(path, [((mat, (0,)),) + centred(fan[0]), ((mat, (1,)),) + centred(fan[1])], np.zeros(3), (20, 6, 1), None)
+        animate(path, seconds)
     places = []
     for r in records(w['group']):
         places.append((np.array([r[12] - CX, r[14] + CZ, r[13]]), yaw_matrix(r)))
@@ -101,14 +134,9 @@ for kind, w in WINDMILLS.items():
         if place[0] is not None:
             rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_tower_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_tower.dae', 'position': [round(float(v), 3) for v in pos],
                          'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'Collision Mesh', 'decalType': 'Collision Mesh'})
-        # The facing is baked into each fan, so only a world axis is left to spin about
-        def turned(g):
-            p, n, uv, tri, u2 = g
-            return (p - hub) @ Rm.T, n @ Rm.T, uv, tri, u2
-        write_lod(out / f'{kind}_fan_{i}.dae', [((mat, (0,)),) + turned(fan[0]), ((mat, (1,)),) + turned(fan[1])], np.zeros(3), (20, 6, 1), None)
-        # Fans aren't level objects: a static TSStatic never redraws when moved, so fh1Extras.lua creates them the way stock code makes moving markers
-        at = pos + Rm @ hub; ax = Rm @ axis
-        spins.append([f'{rel}/{kind}_fan_{i}.dae'] + [round(float(v), 3) for v in at] + [round(float(v), 5) for v in ax] + [round(float(w['speed'] * (1 + SPEED_SPREAD * rng.uniform(-1, 1))), 3), round(float(rng.uniform(0, math.tau)), 3)])
+        at = pos + Rm @ hub
+        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_fan_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_fan_{int(rng.integers(len(TURN_SECONDS)))}.dae', 'position': [round(float(v), 3) for v in at],
+                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     print(kind, len(places), 'placed', [[round(float(v)) for v in (p[0] if p[0] is not None else p[2])] for p in places][:8])
 (mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in world))
 (mg / 'fh1_anim').mkdir(exist_ok=True)
@@ -117,5 +145,5 @@ top = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
 if not any(o.get('name') == 'fh1_anim' for o in top):
     top.append({'name': 'fh1_anim', 'class': 'SimGroup', '__parent': 'MissionGroup'})
     items.write_text(''.join(json.dumps(o) + '\n' for o in top))
-(level / 'fh1_animated.json').write_text(json.dumps(spins))
-print('done', len(rows), 'objects', len(spins), 'spinners ->', level)
+(level / 'fh1_animated.json').unlink(missing_ok=True)
+print('done', len(rows), 'objects ->', level)
