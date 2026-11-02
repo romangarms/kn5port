@@ -8,6 +8,8 @@ FH1's own terrain meshes are the visible ground and the collision. The level has
 
 Far ground near a road is kept and capped just under road height, not cut away. `TERR_CUBE` stays out: enabling it added almost no coverage. Sections listing a red and green blend mask as a colour layer use a real layer instead (`rgmask`), or they draw yellow.
 
+`TERR` decides what is ground. Mountains Area 3, around Beaumont, is named `TERR_Moun_A3_LOD00_04` and so on, and once missed it: it drew as props with one texture and wasn't counted as coverage, so MIDDIST and UberLOD ground was laid over it. The festival's fine ground, `Festival_Area5_09_LOD00` and so on, was missed the same way. `TERR_Zone*` (sparse, plain diffuse) and `TERR_Fuji_Waterfall` (additive) stay out on purpose.
+
 All LODs of a world mesh go in the cell of the group's centre (`group_cell`), so they switch together. Splitting them by triangle left ground missing at distance. Terrain LOD1 covers LOD2, to save memory.
 
 Placed solid objects are instanced: one `m<mesh>.dae` shared by `TSStatic`s. Mirrored ones stay baked into cells.
@@ -17,7 +19,7 @@ Placed solid objects are instanced: one `m<mesh>.dae` shared by `TSStatic`s. Mir
 - Origin-local meshes are left out of the world path (`origin_local`), or they appear raw at (0, 0) by the festival. Any zone record away from the origin marks a mesh, and its LOD group, as local.
 - Near roads the height is capped at road height minus 0.2 m, rising with distance out to 40 m.
 - Far terrain only shows where nothing better covers it, in density order: `PATCH` (about 21,000 tris per km2, as fine as near ground and the only ground on much of the map), `MIDDIST` and `_MID_` (about 3,000), then the `UberLOD` shell (about 240). `TERR_UberLOD_Patch` is the shell despite its name. `UberLOD` meshes are exempt from the 6 km size limit: they're the ground under the eastern trees.
-- `clip_far` splits triangles and keeps the parts outside coverage. Far ground runs `LIP` metres under nearer ground, sloping down, so a height mismatch can't open a crack. Within 40 m of a road, far ground is capped near road height so it can't form panels across it.
+- `clip_far` splits triangles and keeps the parts outside coverage. Inside coverage, far vertices are first held to the near ground's height (`top`, the lowest cell in a 3-cell window, since `raster` keeps each cell's highest point), then sunk. Sinking alone left coarse mountain sides up to 17 m above the fine ground's edge near Beaumont. Far ground runs `LIP` metres under nearer ground, sloping down, so a height mismatch can't open a crack. Within 40 m of a road, far ground is capped near road height so it can't form panels across it.
 - A zone record's `lod` field holds FH1's own switch distances, such as `[400, 650, 131008]`, where 131008 means never. The build doesn't read them yet. LOD1 and LOD2 files can have no record of their own, so a missing record only proves a mesh unused at LOD0.
 - Terrain meshes cover 66% of the Colorado square. The rest is mostly edges and off-map land, showing the BeamNG terrain with map art as its base colour.
 - `theTerrain.ter` is format 9: u32 size, heights, layer map, one material.
@@ -34,7 +36,17 @@ BeamNG equivalent: `activeLayers` 3, with layers 1 and 2 using `opacityMap` and 
 
 Textures are written as pre-cooked DXT1 `.dds` files by `dds.py`, capped at `TEXMAX = 1024`. A DXT1 top mip keeps FH1's own blocks unchanged. Lower mips, masks and DXT3/5 sources are encoded in `dds.py`. Colorado's PNGs were cooked up to 1024 px by BeamNG for an unknown reason (3.56 GB against 213 MB now), which caused the out-of-VRAM load. Red Rock's PNGs weren't. Keep the `.color.` and `.data.` suffixes: BeamNG picks the colour space from them.
 
-The user has said terrain looks a little low-res. FH1's sources are mostly 128 to 512 px and only 22 reach `TEXMAX`, so raising it won't help. Normal maps aren't used, which is probably part of that.
+The user has said terrain looks a little low-res. FH1's sources are mostly 128 to 512 px and only 22 reach `TEXMAX`, so raising it won't help.
+
+Normal maps are `n<id>.normal.dds`, BC5U like stock maps, keeping FH1's top-mip blocks. `section_normals` sets `NM`, the current section's colour-to-normal pairs, which `material` and `blend_material` read, as `LV` and `FIX` work. Each normal goes on the stage drawing its colour layer, chosen by gradient correlation, falling back to the first layer. Material names gain `_n<id>`.
+
+## Water
+
+Lake shader sections go in `wat` shapes: no collision, never culled, with FH1's ripple normals on the translucent material. `water.py` (run by `build3.py` after `particles.py`) rasters them at 3 m, traces each piece of water's centre line, the longest path through it weighted to keep away from the banks, then branches the first ribbon misses. Each becomes a `River` in `fh1_water`: nodes every 40 m or less, at FH1's surface height, with width from the distance to the bank plus 4 m and depth to the lowest ground under the water, so bridges don't count. The `wat` TSStatics are removed, and saved in `fh1_water/meshwater.json` so a rerun can read them. Ripples are FH1's two lake normals as RGB DXT1 (`w<id>.normal.dds`), reflections come from `fh1_sky_cubemap`, and the depth ramp and foam are BeamNG's core ones, with foam off.
+
+## Particles
+
+BeamNG 0.40 crashes on level load (integer divide by zero, `BeamNG.drive.x64.exe` + 0x9def55) in two particle cases. With `animateTexture`, `preload` reads `animTexTiling` as 0 0, although `"4 4"` passes `onAdd`, and the frame list divides by it. No stock content animates particle textures, so `particles.py` cuts each tile into its own particle. An emitter's `particles` list over 255 characters is dropped at load ("particle string too long"), which silently removed birds and campfire flames, so tiles are capped at 16 (`MAX_TILES`) under short `fh1q<crc>_<i>` names, and the script refuses longer lists. Separately, `preload` divides by `ejectionPeriodMS - periodVarianceMS`, and the validator clamps both to 2047 without keeping the variance below the period.
 
 ## Static LODs
 
@@ -43,6 +55,7 @@ The user has said terrain looks a little low-res. FH1's sources are mostly 128 t
 - Switch distances: `LOD_DIST = (300, 800)`, from the shape's edge. Props vanish at `PROP_FAR = 1600`. `col` shapes never vanish.
 - Detail sizes are computed from each shape's radius and `PX = 1250` (pixels of radius per radius/distance at 1440p), so all cells switch at the same distance. The engine measures from the centre, so `detail_sizes` adds the radius: tile groups can be 1 km wide. A name like `o0_a71` means detail size 71.
 - Shape tree: `base00 > start01 > o<i>_a<size>`, as in stock shapes.
+- A cell's meshes drawn at all three LODs go in a second shape, `c<u>_<cat>f`, with one detail (size `detail_sizes(...)[2]`) and its own `Colmesh`. In one shape they'd be cooked once per detail. `animated.py` reads ground from both `_col` and `_colf` shapes.
 - Each LOD and `Colmesh` node is a full copy in the `.cdae`: size fits 56.1 bytes per instantiated vertex and 11.8 per triangle, R2 0.9999. `write_lod` welds vertices that would write the same text, which took Colorado's predicted cooked shapes from 2.80 GB to 1.91 GB.
 
 ## Collision
@@ -58,6 +71,8 @@ Plants use BeamNG's forest system, not `TSStatic`. Items have `o0_a120`, `o*_a40
 ## Scene
 
 `visibleDistance` 6000, `shadowDistance` 1600, `TimeOfDay` fixed, `ScatterSky`, one `SpawnSphere`. The spawn is the first race route checkpoint near Red Rock, moved onto the road height. `info.json` holds the title and spawn point.
+
+The level starts at 9:30 (`TIME` in `sky.py`), as the user asked. The sky is a `SkyBox`, `fh1_skybox`, over the `ScatterSky`. `sky.py` bakes ten DXT1 cubemaps from `TimeOfDayA.xml`, at FH1's 0:00, 6:45, 7:25, 10:00, 12:00, 15:36, 18:10, 19:20, 19:55 and 20:40 (about 41 MB, 1024 per face). The 15:36 bake keeps the names `fh1_sky` and `fh1_sky_cubemap`, so the default look and the rivers' reflections are unchanged. Every bake scales the measured 15:36 gradient by FH1's atmosphere colours and `SkyGain` relative to 15:36, and uses FH1's cloud and ground colours for its own minute. Stars come from `Stars.bin`, faded by `StarFade`. In-game they were invisible as 0.6 px points, because mips averaged them away, so they're 0.9 px and bakes with `StarFade` over 0.1 build mips that keep the brightest of each 2x2 (`dds.save(peak=True)`). The moon is `Moon2.xds` (full moon with glow) at FH1's fixed night position, about 11 degrees up in the south-east, faded by `SunObjectMoon` and `SunObjectAlpha`, and 3 degrees wide by eye. FH1's sun never sets: its night runs 20:02 to 6:28. BeamNG's legacy sun sets at 18:00, so each bake takes over at a BeamNG hour chosen by phase: night 20:30, predawn 5:00, sunrise 5:45, morning 6:45, midday 8:30, afternoon 14:00, sunset 16:45, golden 17:30, dusk 18:00, twilight 19:00. `fh1_sky.json` lists the bakes and the bake for each quarter hour. Every 2 s, `fh1Extras.lua` checks it, and when the bake changes it sets the skybox `material`, `theLevelInfo.globalEnviromentMap` and every `River`'s `cubemap`, each followed by `postApply`. Switches are cuts, as a `SkyBox` can't cross-fade. Bakes in `BEAMNG_SKY` (night, 20:30 to 5:00) set `hideBox`, and the Lua hides the skybox so BeamNG's `ScatterSky` and `core_celestial` draw the night: their stars are additive and stay visible at full night, where the baked ones faded with the scene. The user chose this over FH1's stars. The night bake still feeds reflections. In-game the switching works. The user found FH1's 9:00 bake, held until 10:30, far yellower than FH1, which is blue most of the day: FH1's horizon is only yellow from about 8:00 to 9:45, so morning is now 10:00 and short. Needs an in-game look: stars after the mip change, the 18:00 sunset match, and night brightness.
 
 ## Performance
 

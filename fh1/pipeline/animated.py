@@ -1,7 +1,7 @@
-"""FH1's animated objects: windmills, wind turbines, tractors and the crop duster. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
+"""FH1's animated objects: windmills, wind turbines, tractors, combines and the crop duster. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
 as West Coast USA's pump jacks do. Vehicles follow the route in their ANIM_*.pgeo the same way. Moving parts have no collision.
 Run after build3.py, which wipes the level: python animated.py [fh1_colorado]. Safe to run twice. Needs no rebuild."""
-import glob, json, os, pickle, re, struct, sys
+import json, os, pickle, re, struct, sys
 from pathlib import Path
 import numpy as np
 from scipy.sparse import coo_matrix
@@ -9,6 +9,7 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from daewrite import FARCUT, write_lod
 import gamezip, granny, rmb
+from animsets import records
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -24,7 +25,11 @@ OBJECTS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -
            'turbine': dict(shape='m6429', group='fx_maintown', hub=(7.42, -4.6, 82.17), radius=56, depth=1.6, origin=(7.5, -1.35, 0), turns=(5, 6, 7.5), tower_lod=(211, 88, 45), fan_lod=(190, 70, 1))}
 AXIS = (0, 1, 0)
 # mesh: the source meshes for LOD0 and LOD1. model: the file holding the route. group: the anim_proc set that places it. lod: detail sizes
-VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1))}
+# front: which way along y the mesh faces, given for vehicles whose route is a quantised curve. key: seconds between keys.
+# parts: meshes that spin about the vehicle's x axis through hub, in BeamNG axes, once per `seconds`. The combine's reel speed is chosen by eye
+VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1)),
+            'combine': dict(mesh=(6621, 6622), model='ANIM_CombineHarvester_001.pgeo', group='clrd_festival_combineharvester', lod=(40, 14, 1), front=-1, key=.25,
+                            parts={'reel': dict(mesh=6623, hub=(0, -5.607, .992), seconds=1.5)})}
 KEY_SECONDS = 1.0; STOPPED = .05; AXLES = 1.4; TRACK = 1.0
 # Planes come from Granny meshes, which have no decoded UVs, so colour is the median of their texture. The route is level in FH1 once its tilted frame is removed
 FLYERS = {'cropduster': dict(model='ANIM_CropDuster_Zone_05_001.pgeo', group='cropduster_zone_05_001', colour=(117, 16, 10), lod=(60, 20, 1))}
@@ -103,6 +108,44 @@ def level_route(c):
     return np.c_[w[:, 0], w[:, 2], w[:, 1]]
 
 
+def quantised_route(b):
+    """Times and positions of a D3K16uC16u curve, in Granny axes. Its header is format 10, degree, the top half of 1 / knot scale as a float, 3 scales, 3 offsets, then the count of
+    u16 values. The values sit elsewhere, as knots rising from 0 and then 3 controls per knot, so the run that reads as the smoothest path is taken."""
+    U = np.frombuffer(b[:len(b) // 2 * 2], '>u2').astype('i8'); rising = np.r_[np.diff(U) > 0, False]
+    for i in range(len(b) - 32):
+        if b[i] != 10 or b[i + 1] > 3:
+            continue
+        f = np.array(struct.unpack('>6f', b[i + 4:i + 28])); cnt = struct.unpack('>I', b[i + 28:i + 32])[0]
+        if not np.isfinite(f).all() or np.abs(f).max() > 1e4 or not 0 < cnt < 100000 or cnt % 4 or not np.abs(f[:3]).max() > 1e-6:
+            continue
+        per = struct.unpack('>f', b[i + 2:i + 4] + b'\0\0')[0]; n = cnt // 4; best = None
+        for s in np.flatnonzero(U == 0):
+            if s + cnt <= len(U) and rising[s:s + n - 1].all():
+                c = U[s + n:s + cnt].reshape(-1, 3) * f[:3] + f[3:]; step = np.median(np.abs(np.diff(c, axis=0)).max(1))
+                if best is None or step < best[0]:
+                    best = (step, U[s:s + n] / per, c)
+        if best:
+            return best[1:]
+    raise ValueError('no D3K16uC16u curve')
+
+
+def fit_box(u, body, box):
+    """Offset that centres a route, with the body's footprint turning along it, in the bounding box of the model's header (min x, y, z, pad, max x, y, z)."""
+    d = np.gradient(u, axis=0); a = np.arctan2(d[:, 0], d[:, 1]); c, s = np.cos(a)[:, None], np.sin(a)[:, None]
+    fx, fy = np.ptp(body[:, 0]) / 2, np.ptp(body[:, 1]) / 2
+    pts = np.concatenate([u + np.c_[c * x + s * y, -s * x + c * y] for x in (-fx, fx) for y in (-fy, fy)])
+    lo, hi = np.array([box[0], box[2]]), np.array([box[4], box[6]])
+    print('  route box', np.round(np.ptp(pts, 0), 1), 'header box', np.round(hi - lo, 1))
+    return (lo + hi) / 2 - (pts.min(0) + pts.max(0)) / 2
+
+
+def turn(yaw, roll, pitch):
+    """The rotation of a node with rotationZ, rotationY and rotationX in that order, in degrees."""
+    z, y, x = np.radians([yaw, roll, pitch])
+    return (np.array([[np.cos(z), -np.sin(z), 0], [np.sin(z), np.cos(z), 0], [0, 0, 1]]) @ np.array([[np.cos(y), 0, np.sin(y)], [0, 1, 0], [-np.sin(y), 0, np.cos(y)]])
+            @ np.array([[1, 0, 0], [0, np.cos(x), -np.sin(x)], [0, np.sin(x), np.cos(x)]]))
+
+
 def flight(t, q):
     """Keys through a route, with the plane's heading, pitch and bank taken from its motion, as FH1's rotation curves aren't decoded."""
     times = np.arange(0, t[-1], FLY_KEY_SECONDS); p = np.c_[[np.interp(times, t, q[:, i]) for i in range(3)]].T
@@ -119,7 +162,7 @@ def ground_triangles(lo, hi):
     out = []
     for o in world:
         name = Path(o['shapeName']).name; q = np.array(o['position'])
-        if not name.endswith('_col.dae') or (q[:2] < lo - 600).any() or (q[:2] > hi + 600).any():
+        if not name.endswith(('_col.dae', '_colf.dae')) or (q[:2] < lo - 600).any() or (q[:2] > hi + 600).any():
             continue
         R = np.array(o.get('rotationMatrix', np.eye(3).ravel())).reshape(3, 3)
         for geo in (level / 'art' / 'shapes' / 'fh1' / name).read_text().split('<geometry ')[1:]:
@@ -211,26 +254,6 @@ def piece(a, keep):
     return p[used], n[used], uv[used], inv.ravel(), u2[used]
 
 
-def records(group):
-    """(rotation rows, position) of each object in an anim_proc set. Layout is in docs/formats.md."""
-    out = {}
-    for f in glob.glob('../x/__R00G*.pgeo'):
-        b = open(f, 'rb').read()
-        m = re.search(rb'anim_proc_' + group.encode() + rb'_\d', b[:0x200])
-        if b[:4] != b'OEGP' or not m:
-            continue
-        # Counts in the header don't always cover every record, so records are found by shape: rotation rows with a zero fourth value, then position and 1
-        F = np.frombuffer(b[:len(b) // 4 * 4], '>f4').astype('f8')
-        for i in range(0x80 // 4, len(F) - 15):
-            r = F[i:i + 16]
-            if r[3] != 0 or r[7] != 0 or r[11] != 0 or r[15] != 1 or not np.isfinite(r).all() or np.abs(r[12:15]).max() > 9000:
-                continue
-            R = np.array([r[0:3], r[4:7], r[8:11]]); n = np.linalg.norm(R, axis=1)
-            if ((n > .05) & (n < 50)).all() and np.abs((R / n[:, None]) @ (R / n[:, None]).T - np.eye(3)).max() < .02:
-                out[tuple(np.round(r[12:15], 1))] = r
-    return list(out.values())
-
-
 def yaw_matrix(r):
     """As the 96-byte placed sets in build3.py."""
     Rg = np.c_[r[0:3], r[4:7], r[8:11]]; Rg = Rg / np.maximum(np.linalg.norm(Rg, axis=0, keepdims=True), 1e-6)
@@ -285,17 +308,28 @@ for kind, w in OBJECTS.items():
                      'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     print(kind, len(places), 'placed', [[round(float(v)) for v in (p[0] if p[0] is not None else p[2])] for p in places][:8])
 for kind, w in VEHICLES.items():
-    groups = mesh_groups(w['mesh']); t, c = route(w['model'])
-    # Granny axes are x, up, z. The big wheels show which end of the mesh is the rear, so which way it drives
-    p0 = groups[0][1]; rear = np.sign(p0[p0[:, 1] > 0, 2].size and (p0[(p0[:, 1] > .7) & (np.abs(p0[:, 0]) > .8), 2].max() - p0[(p0[:, 1] < -.7) & (np.abs(p0[:, 0]) > .8), 2].max()))
-    forward = -1 if rear > 0 else 1
-    # The ANIM model stands away from its origin, and the route starts from there
-    a_ = granny.vertices(gamezip.read('animatedobjects.zip', w['model']))[2][:, :2]
-    start = (np.nanmin(a_, 0) + np.nanmax(a_, 0)) / 2 - (p0[:, :2].min(0) + p0[:, :2].max(0)) / 2
-    times = np.arange(0, t[-1], KEY_SECONDS); u = np.c_[np.interp(times, t, c[:, 0]), np.interp(times, t, c[:, 2])] + start
-    # The route is a quarter turn from the placement's frame: Granny x, z becomes -z, x. This fits the bounding boxes in the sets' headers, and puts the laps on fields
-    u = np.c_[-u[:, 1], u[:, 0]]
+    groups = mesh_groups(w['mesh']); p0 = groups[0][1]; b = gamezip.read('animatedobjects.zip', w['model'])
+    if 'front' in w:
+        forward = w['front']; t, c = quantised_route(b)
+        times = np.arange(0, t[-1], w['key']); u = np.c_[np.interp(times, t, c[:, 0]), np.interp(times, t, c[:, 2])]
+        # The same quarter turn as the tractor's. The offset of the route in the placement's frame is fitted to the bounding box in the model's header
+        u = np.c_[-u[:, 1], u[:, 0]]; u += fit_box(u, p0, np.frombuffer(b[0x10:0x2c], '>f4').astype('f8'))
+    else:
+        t, c = route(w['model'])
+        # Granny axes are x, up, z. The big wheels show which end of the mesh is the rear, so which way it drives
+        rear = np.sign(p0[p0[:, 1] > 0, 2].size and (p0[(p0[:, 1] > .7) & (np.abs(p0[:, 0]) > .8), 2].max() - p0[(p0[:, 1] < -.7) & (np.abs(p0[:, 0]) > .8), 2].max()))
+        forward = -1 if rear > 0 else 1
+        # The ANIM model stands away from its origin, and the route starts from there
+        a_ = granny.vertices(b)[2][:, :2]
+        start = (np.nanmin(a_, 0) + np.nanmax(a_, 0)) / 2 - (p0[:, :2].min(0) + p0[:, :2].max(0)) / 2
+        times = np.arange(0, t[-1], KEY_SECONDS); u = np.c_[np.interp(times, t, c[:, 0]), np.interp(times, t, c[:, 2])] + start
+        # The route is a quarter turn from the placement's frame: Granny x, z becomes -z, x. This fits the bounding boxes in the sets' headers, and puts the laps on fields
+        u = np.c_[-u[:, 1], u[:, 0]]
     times = np.r_[times, t[-1]]; u = np.r_[u, u[:1]]
+    parts = []
+    for name, part in w.get('parts', {}).items():
+        hub = np.array(part['hub']); turns = round(t[-1] / part['seconds'])
+        parts.append((name, hub, mesh_groups((part['mesh'],)), 360 * turns * times / t[-1]))
     # FH1's route is flat, so each placement gets its own shape, tilted to the ground under it
     for i, r in enumerate(records(w['group'])):
         pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
@@ -313,8 +347,18 @@ for kind, w in VEHICLES.items():
         lo = np.array([x.min() - 6, y.min() - 6, z.min() - 1]); hi = np.array([x.max() + 6, y.max() + 6, z.max() + 6])
         animate(path, [('location.X', 'X', times, x), ('location.Y', 'Y', times, y), ('location.Z', 'Z', times, z), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
                        ('rotationY.ANGLE', 'ANGLE', times, roll), ('rotationX.ANGLE', 'ANGLE', times, pitch)], bounds(lo, hi))
-        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_{i}.dae', 'position': [round(float(v), 3) for v in pos],
-                     'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+        shapes = [f'{kind}_{i}']
+        # A spinning part turns about its own axis, the vehicle's x, so its pitch and spin add. Its node follows the hub as the vehicle moves and tilts
+        for name, hub, pg, spin_ in parts:
+            ppath = out / f'{kind}_{name}_{i}.dae'
+            write_lod(ppath, [(g[0], g[1] - hub) + tuple(g[2:]) for g in pg], np.zeros(3), w['lod'], None)
+            at = np.array([turn(a, b_, c_) @ hub for a, b_, c_ in zip(yaw, roll, pitch)])
+            animate(ppath, [('location.X', 'X', times, x + at[:, 0]), ('location.Y', 'Y', times, y + at[:, 1]), ('location.Z', 'Z', times, z + at[:, 2]), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
+                            ('rotationY.ANGLE', 'ANGLE', times, roll), ('rotationX.ANGLE', 'ANGLE', times, pitch + spin_)], bounds(lo, hi))
+            shapes.append(f'{kind}_{name}_{i}')
+        for s_ in shapes:
+            rows.append({'class': 'TSStatic', 'name': f'fh1_{s_}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{s_}.dae', 'position': [round(float(v), 3) for v in pos],
+                         'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
         print(kind, i, [round(float(v)) for v in pos], 'ground follows', round(float(np.ptp(z)), 1), 'm, max pitch', round(float(np.abs(pitch).max()), 1), 'max roll', round(float(np.abs(roll).max()), 1))
 g = ground_samples()
 for kind, w in FLYERS.items():

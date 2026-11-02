@@ -1,4 +1,4 @@
--- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, and the current road on the minimap's location line.
+-- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, the sky for the time of day, and the current road on the minimap's location line.
 -- Does nothing unless the level ships fh1_extras.json. levelinfo.py writes that file and installs this one.
 
 local M = {}
@@ -10,7 +10,10 @@ local ROAD_SEARCH_METRES = 30
 local AMBIENCE_VOLUME = 0.6
 local SHOW_COORDS = true -- adds the camera's map position to the minimap's location line
 local PARTICLE_SECONDS = 2
-local MAX_PARTICLE_NODES = 60
+local MAX_PARTICLE_NODES = 80
+-- Particles alive at once across running emitters, from each entry's count. Nearer emitters win. Set after the user saw fps drop
+local PARTICLE_BUDGET = 4000
+local SKY_SECONDS = 2
 
 local data
 local levelDir
@@ -23,6 +26,9 @@ local shotsOn = true
 local emitters
 local awake = {} -- emitter name -> true
 local sinceParticles = 0
+local sky -- fh1_sky.json: the baked skies and which one each quarter hour shows
+local skyBake -- index of the bake on show
+local sinceSky = 0
 local clock = 0
 local shots = {} -- playing one-shots: { id, ends }
 local nextShot = {} -- one-shot group -> clock time
@@ -125,17 +131,36 @@ local function setAwake(name, on)
   if node then node:setActive(on) end
 end
 
--- Nodes start switched off. The nearest ones run, measured against each one's own range.
+-- BeamNG's time of day runs from 0 at noon to 1, so this is the hour on a 24 hour clock
+local function hourNow()
+  local tod = core_environment and core_environment.getTimeOfDay and core_environment.getTimeOfDay()
+  return tod and tod.time and (tod.time * 24 + 12) % 24
+end
+
+-- An emitter's optional window, from FH1's effect: e[6] to e[7], which may wrap past midnight
+local function inWindow(e, hour)
+  if not e[6] or not hour then return true end
+  if e[6] <= e[7] then return hour >= e[6] and hour < e[7] end
+  return hour >= e[6] or hour < e[7]
+end
+
+-- Nodes start switched off. The nearest ones run, measured against each one's own range, up to MAX_PARTICLE_NODES and PARTICLE_BUDGET.
 local function updateParticles(x, y)
   local near = {}
+  local hour = hourNow()
   for _, e in ipairs(emitters) do
     local dx, dy = x - e[2], y - e[3]
     local range = (dx * dx + dy * dy) / (e[4] * e[4])
-    if range < 1 then table.insert(near, { name = e[1], range = range }) end
+    if range < 1 and inWindow(e, hour) then table.insert(near, { name = e[1], range = range, cost = e[5] or 0 }) end
   end
   table.sort(near, function(a, b) return a.range < b.range end)
   local want = {}
-  for i = 1, math.min(#near, MAX_PARTICLE_NODES) do want[near[i].name] = true end
+  local spent = 0
+  for i = 1, math.min(#near, MAX_PARTICLE_NODES) do
+    spent = spent + near[i].cost
+    if spent > PARTICLE_BUDGET and i > 1 then break end
+    want[near[i].name] = true
+  end
   for name in pairs(awake) do
     if not want[name] then setAwake(name, false) end
   end
@@ -143,6 +168,53 @@ local function updateParticles(x, y)
     if not awake[name] then setAwake(name, true) end
   end
   awake = want
+end
+
+-- Puts one of sky.py's bakes on the skybox, reflections and rivers, and hides the skybox for bakes marked hideBox. Only does work when the quarter hour picks a different bake
+-- nightlights.py's lightmap overlays are hidden by day: their black additive surface still shows a sheen in shade. Same 18:00 to 6:00 window as
+-- stock core_environment's nightEmissive switch, which makes them glow. Only does work when day turns to night or back
+local NIGHT_FROM, NIGHT_TO = 18, 6
+local nightShown = nil
+local function updateNightLights()
+  local hour = hourNow()
+  if not hour then return end
+  local show = hour >= NIGHT_FROM or hour < NIGHT_TO
+  if show == nightShown then return end
+  local group = scenetree.findObject('fh1_night')
+  if not group then return end
+  nightShown = show
+  for i = 0, group:getCount() - 1 do
+    local obj = group:getObject(i)
+    if obj then obj:setHidden(not show) end
+  end
+end
+
+local function updateSky()
+  local hour = hourNow()
+  if not hour then return end
+  local index = sky.quarterHours[math.floor(hour * 4) % 96 + 1]
+  if index == skyBake then return end
+  skyBake = index
+  local bake = sky.bakes[index]
+  local box = scenetree.findObject('fh1_skybox')
+  if box then
+    box:setField('material', 0, bake.material)
+    box:postApply()
+    -- At full night the skybox steps aside for BeamNG's own sky, whose stars stay visible
+    box:setHidden(bake.hideBox == true)
+  end
+  local info = scenetree.findObject('theLevelInfo')
+  if info then
+    info:setField('globalEnviromentMap', 0, bake.cubemap)
+    info:postApply()
+  end
+  for _, name in ipairs(scenetree.findClassObjects('River') or {}) do
+    local river = scenetree.findObject(name)
+    if river then
+      river:setField('cubemap', 0, bake.cubemap)
+      river:postApply()
+    end
+  end
 end
 
 local function zoneWithRoad(pos)
@@ -207,6 +279,10 @@ local function start()
   awake = {}
   sinceParticles = PARTICLE_SECONDS
   emitters = FS:fileExists(levelDir .. 'fh1_particles.json') and jsonReadFile(levelDir .. 'fh1_particles.json') or nil
+  sky = FS:fileExists(levelDir .. 'fh1_sky.json') and jsonReadFile(levelDir .. 'fh1_sky.json') or nil
+  skyBake = nil
+  nightShown = nil
+  sinceSky = SKY_SECONDS
   ambienceOn = true
   shotsOn = true
 end
@@ -216,6 +292,17 @@ local function onUpdate(dtReal)
   sinceUpdate = sinceUpdate + dtReal
   clock = clock + dtReal
   sinceParticles = sinceParticles + dtReal
+  sinceSky = sinceSky + dtReal
+  if sky and sinceSky >= SKY_SECONDS then
+    sinceSky = 0
+    local ok, err = pcall(updateSky)
+    if not ok then
+      log('E', logTag, tostring(err) .. ', sky changes are off')
+      sky = nil
+    end
+    local okNight, errNight = pcall(updateNightLights)
+    if not okNight then log('E', logTag, tostring(errNight) .. ', night lights stay as they are') end
+  end
   if emitters and sinceParticles >= PARTICLE_SECONDS then
     sinceParticles = 0
     local x, y = core_camera.getPositionXYZ()

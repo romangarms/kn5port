@@ -32,6 +32,15 @@ Read by `rmb.py`, catalogued by `r4.py` into `cat2.pkl`.
 
 Read by `tex.py`. BIX1 header, mips, then the top mip as Xenos tiled DXT1, 3 or 5, byte swapped in 16-bit words. `*_B` holds the top mip. Format 0x52 is the one used for blend masks, and 0x71 textures are skipped as blend layers.
 
+Format 0x71 is Xenos DXN, BC5 under the same tiling and byte swap: red is tangent x, green is y, centred on 127, 128 (`tex.normal`). Measured against their colour layers' brightness gradients, most have the handedness of stock BeamNG BC5 maps, whose red and green signs agree on 15 of 17 West Coast and Italy pairs. There are 41, and no DXT1 normal maps: a scan of all 7,098 DXT1 textures found one with a normal map's colour.
+
+Slots by shader name (working: surveyed over every material in the catalog):
+
+- Normal map: slot 3 in `h_road_*norm1*`, `h_blnd*_nm1*` and `h_vblnd_norm*_mask*` (slot 4 too there), slot 1 in `h_diff_spec_norm*`. It goes with slot 0's colour, except where gradients say otherwise, such as layer 1 in `h_blnd3_spec_nm1`.
+- `_ao`: a small per-mesh map, 64 px on roads and terrain, in slot 4, 5 or 6. A road's AO is a top-down view of the road over the mesh's bounding box. A barn's is an atlas of islands that neither UV set at bytes 16 or 20 lands on.
+- `_lm`: slot 7 in the 69 shaders named `*_lm*` (22,352 materials, 3,158 lightmaps, mostly 128 px DXT1). Night lighting, not baked daylight: black apart from light pools. 1,393 of them aren't in `bin.zip` at all. Of the 1,765 present, 477 have light, mostly around Carson, then Beaumont, the festival and Gladstone. On road and blend ground a lightmap is a top-down view, u along FH1 x and v along z, over the box of the LOD0 ground that shares it: a median 87% of lit texels land within 2 texels of that ground, against 22% by chance, and other orientations score at chance. No vertex stream fits (bytes 16 to 32, as s16 with or without the UV box, flipped or swapped). Building and sign lightmaps fit neither and stay unsolved (55% against 36%).
+- `lake_anim_norm_opac_refl_3`: 0xD9D (not in the dump), 0x1294 (32 px white), and two ripple normal maps, 0x1295 and 0x1296. `materials()` can't read its record.
+
 ## `Colorado_00.pvs`, FPVS (proven)
 
 Read by `p3.py`, `p5.py`, `p7.py`, `p8.py`.
@@ -73,7 +82,22 @@ Evidence: all 1,434 zones parsed with no failures. 2,972 of 2,979 checks agreed 
 
 The earlier bit-0x800 theory was wrong. Rotation rows are not unit length, so don't use them to detect records.
 
-The 7 failed checks sit at 4 spots: two barn placements where the record gives `CO_CLRD_Outhouse`, two gantries whose ids have no named mesh, and a water tower where the record gives `OBJ_FEST_BarrierMetal`. Unresolved. The barn may simply share a position with an outhouse.
+The 7 failed checks sit at 4 spots: two barn placements where the record gives `CO_CLRD_Outhouse`, two gantries whose ids have no named mesh, and a water tower where the record gives `OBJ_FEST_BarrierMetal`. Barns: each barnfind barn has a second record owned by `<event>C`, pointing at draw ids 208 and 218, which resolve to meshes 0 and 1 named `CO_CLRD_Outhouse`, probably a null entry. Gantries: the third record is LOD02, mesh 6619, which has no `.rmb.bin`, and Xenia only had LOD00 and LOD01 loaded. Neither is a reader bug. The water tower isn't real. Both live `PLA_FARM_WaterTower2` records near there, at (-4313, -2096) and (-5419, -3183), carry the exact position and rotation of a plane race's `OBJ_FEST_BarrierMetal` (`PLANE_RACE_006_04` and `PLANE_RACE_001_07`), and the nearest zone-placed tower is 3.9 km away. The capture paired a tower's draw id with a reused event-barrier slot. So all 7 failures are explained and none is a reader bug.
+
+## `Colorado_00.hex`, zone hexes (proven)
+
+In `Ribbon_00`. Says where each `.pvsz` zone is: zones are 100 m hexes.
+
+- Header, 32 bytes: magic `HEXY`, u32 101, float hex radius (100, centre to corner), float x0 (-6700), float z0 (-6495.19, 75 rows of 86.6), u32 zone count (1434), u32 width (91), u32 height (60).
+- Then a 91 by 60 grid of u32 zone numbers, row-major, `ffffffff` for no zone. 1,434 cells are filled, one per zone.
+- Flat-topped hexes, odd columns shifted half a row: centre `x = x0 + (c + .5) * 1.5 * R`, `z = z0 + (r + .5 + .5 * (c % 2)) * sqrt(3) * R`, with zone z signs (opposite to mesh z, the same as `colorado.nav` north).
+- Then bytes that look like 6-bit masks, one per cell (`3f` is common), probably neighbours. Not decoded.
+
+Evidence: 99.7% of `colorado.nav` road nodes fall in a filled hex with this layout. The next best layout gets 92%.
+
+Filled hexes follow the drivable area, so open country far from roads has no zone. `PVSZLookup_00.dat` is 1,434 `(key, zone number)` pairs whose keys look like hashes. `PVSZoneSpeeds.dat` is one float per zone, 55 to 111, probably a streaming speed.
+
+**A zone's id list is what FH1 draws from that hex**, not a delta. Bit 31 set means drawn. A fine tile, `Mountains_Area01A_Terrain_LOD00_10`, is listed by every hex within 300 m of it and none beyond 600 m. `UberLOD_04B` is listed by none of the 149 hexes within 1 km of it, including the 65 inside its bounds. `TERR_CLRD_ZONE02_AREA6_MIDDIST_02` (mesh 12873) isn't listed within 300 m. So a mesh's nearest listing hex gives the closest distance FH1 ever shows it from. Overlapping ground meshes can be listed by the same hex, so the lists alone don't settle overlaps.
 
 ## `*.pgeo` plant and model sets (working)
 
@@ -84,18 +108,20 @@ Read by `read_pgeo` in `build3.py`. Magic `OEGP`, version 42. Bounding box at 0x
 - The instance block is 40 bytes per instance at the end of the file. Word 0 is 11:11:10 position inside the file's bounding box, then 11:11:10 up and side axes, a half-float size pair, tint.
 - Model records `(flag, k, a, n, lods)` give n instances per model, in order.
 - Model entries are 64 bytes, starting at 0x80. Files with `models_proc` at 0x98 start them at 0xd0. All 26 of these found are `[freeroam]` tree sets.
-- Draw ids follow the last entry. Each model lists 1 or 2 ids, as its entry says (`e[1]` plus `e[3]` when under 8).
+- Draw ids follow the last entry. Each model lists 1 or 2 ids, as its entry says (`e[1]` plus `e[3]` when under 8). An entry whose word 8 isn't 0 has no id: that word is the byte length of a `.max` path, and the paths follow the ids, padded to 4 bytes (`model_ids`). These are mostly festival canopy tents with no catalogue mesh.
 
 **Placed sets** (`size == 0`, `models_proc_*`):
 
-- 96-byte full transforms, with a 32-byte trailer after each model's block. Blocks sit at the end of the file.
+- 96-byte full transforms, followed by 32-byte trailers. In the `(1, k, count, 0, t)` record form, `t` is the number of trailers after that model's rows, usually 1 but 2 in `__R00G06349` and `__R00G06371`. Blocks sit at the end of the file.
 - The header start varies. Don't assume 0xd0, or a name-length rule (that theory failed). Find `tga\0` after 0x98: the first draw ids follow it, and the entries are the 64 × M bytes before that point.
 
 The set name carries layer tags such as `[freeroam]`, which appears on 55 sets, the trees plus Red Rock fencing.
 
 **Packed files also hold full-transform instances.** A model record is `(flag, k, a, n, lods)`: `n` packed instances and `a` full-transform ones. The word before it is 0, 1 or 4 (`model_table`). Full-transform rows are 96 bytes, in model order, just before the packed block. Word 15 is 1.0 and words 3, 7 and 11 are 0, and plant rows keep a tint in words 16 to 18. The gaps between blocks vary, so `placed_blocks` finds rows by those words and matches runs of rows to the records in order, skipping stray matches. Barriers and fences only exist here. Colorado: 114,926 read, 240 files mismatched. Words 1, 3 and 5 of a model entry are its LOD id counts.
 
-Known failures, whole map: 37 packed files fail `groups_of`, all `Models_`, `AModels_` or `pAModels_Ungrouped`, 13,578 instances, about 3%. 9 ungrouped files have an id step that goes wrong partway. A placed set (`__R00G06349.pgeo`, M=2, groups [3, 2]) is unreadable. These are counted in the build's `pgeo files` line.
+Packed files with size 0 hold only full-transform rows, such as the chain-link fence sets `__R00G06531` and `__R00G06839`.
+
+Known failures, whole map: none known in `read_pgeo` after `model_ids`, trailer counts and size-0 files were fixed (2,318 files, 530,952 instances). Failures are still counted in the build's `pgeo files` line.
 
 ## `FilenameMap_00.dat`
 
@@ -141,15 +167,23 @@ Positions use the same z sign as `colorado.nav`.
 
 FSB4 holding XMA (mode 0x1000000). Read by `ambience.py`, which wraps each sample in an XMA2 RIFF header for ffmpeg. FFmpeg can't open the banks directly. Bank `fev` event data isn't decoded.
 
-## `animatedobjects.zip` (not decoded)
+## `realtimesky.zip` (partly decoded)
+
+Cloud maps are tiled BC5 `.xds`, read by `sky.py`. `Moon0` to `Moon4.xds` are DXT5 (format 0x54) 256 x 256: 0 is a bare disc, 2 the full moon with glow, 1, 3 and 4 crescents. `Sun.xds` and `SkyDither.xds` are A8R8G8B8 (0x86) 128 x 128. `Stars.bin` is the Yale Bright Star Catalogue, brightest first: 9,096 big-endian float quads (x, y, z, w), y towards the celestial pole, RA = atan2(x, z), w the visual magnitude / 7.8, with the four stars brighter than 0 set to 0. Checked on Vega, Rigel, Betelgeuse and Polaris. `CloudDefs.xml` isn't used. In `TimeOfDayA.xml`, `SunPos` stays at least 17 degrees up all day: night is drawn by colours, `StarFade` and `SunObjectMoon`, not by the sun setting.
+
+## `animatedobjects.zip` (partly decoded)
 
 288 of 290 `.pgeo` files read through `gamezip`, with 361 `.xds` textures. Two fail their checksum or decode: `ANIM_Showcase_Event_Helicopter_Race`, `ANIM_Timed_Event_Biplane`. These are `OEGP` version 44, unlike the version 42 sets above: the payload is a RAD Granny file without its usual magic, holding type definitions by name (`Skeletons`, `Bones`, `VertexDatas`, `TriTopologies`, `TrackGroups`). Curve types seen: `D4nK16uC15u`, `D4nK8uC7u`, `D3K16uC16u`, `D3K8uC8u`, `DaK32fC32f`, `D3Constant32f`, `D4Constant32f`, `DaConstant32f`, `DaIdentity`, `DaKeyframes32f`, and the `D3I1`, `D9I1` and `D9I3` families.
 
-Models sit around a local origin. Track copies exist as `__R00G000xx.pgeo`, for example `__R00G00007` windmill and `__R00G00014` Ferris wheel.
+Models sit around a local origin. The track has its own copies, `__R00G00000` to `__R00G00032`, named `Anim_<model><n>` at 0x60, such as `Anim_ANIM_WaterSprinkler17`. Their bounding box at 0x10 covers the whole animation, route included. Six festival rides, the hot air balloon, the inflatable ship and spray gun and the tube men (`ANIM_Airwalker`) exist only in these, not in `animatedobjects.zip` or as `.rmb.bin` meshes.
 
-Placement is in 202 `anim_proc_*` version 44 sets, also `__R00G*.pgeo`, a few hundred bytes each. The name gives the object group, such as `fx_windmillswood`. The word at 0x44 is the record count. Records are 128 bytes and run to the end of the file. The last record's position is at `len - 0x50`: 12 rotation floats, 3 position floats, 1.0, a model index, 3 LOD distances. Positions use the `.pgeo` z sign. How a set picks its animation file isn't decoded: the names only suggest it.
+Vertices are 12 bytes in most models and 16 in the Ferris wheel (half-float position, then 4 zero bytes and 4 more). No UVs have been found in either: a search of the whole windmill file, at strides 4 to 32 and as half-floats, s16, u16 and f32, found no array that follows the catalog mesh's UVs at the matching vertices. Ride textures aren't in `animatedobjects.zip` either.
+
+Placement is in 202 `anim_proc_*` version 44 sets, also `__R00G*.pgeo`, a few hundred bytes each. The name gives the object group, such as `fx_windmillswood`. The word at 0x44 is the record count. Records are 128 bytes and run to the end of the file. The last record's position is at `len - 0x50`: 12 rotation floats, 3 position floats, 1.0, a model index, 3 LOD distances. Positions use the `.pgeo` z sign. The model index is local to the set, and the set doesn't name its models. But a set's box at 0x10 is exactly the union of its records' model boxes, rotated and moved, so `placed` in `animsets.py` finds each model by fitting them: all 202 sets fit to within 1 mm. Models with the same box can't be told apart this way, such as firework colours, and nor can a small model in a set with a large one: the main stage's 30 extra records read as tube men. One set (`clrd_golf_watersprinklers_001_11`) also holds a stray row that reads as a record at the origin, so records must lie near the set's box. By model, Colorado places about 190 tube men, 38 sprinklers, 8 combines, 6 tractors, 4 balloons, 6 rides, 4 inflatables, 11 wood and 8 metal windmills, 8 turbines, 1 crop duster, 1 geyser, 12 fireworks, stage and autoshow lights and 117 birds. Sets named `heli` and `windymen` hold tube men, not helicopters. No set places a helicopter, banner plane, cable car or camera crane.
 
 These files barely use pointers, so they can't be walked as normal Granny files. `DaK32fC32f` curves are stored as raw big-endian floats: rising knots, then the controls, which `route` in `animated.py` finds by scanning. Granny axes are x, up, z, and z maps to BeamNG local y unflipped. Curve headers start with a format byte, such as 10 for `D3K16uC16u`.
+
+A `D3K16uC16u` header is: format 10, degree, the top 16 bits of a float 1 / knot scale, 3 float scales, 3 float offsets, then the count of u16 values (4 per knot). The values sit elsewhere in the file: knots rising from 0, then 3 controls per knot, each `u16 * scale + offset`. Other u16 runs rise from 0 too, so `quantised_route` takes the run whose controls make the smoothest path. The combine's is 436 knots over 84 s (1 / knot scale 780): rows across a field, x -8.8 to 56.8 m and z 0 to 22.9 m, y constant. With the same quarter turn as the tractor, the route and the turning body fill the model's box to within 0.4 m, which fixes its offset.
 
 Some of the same objects also have static zone records, such as `PLA_FARM_WindmillMetal`, `GLOB_STFN_WindTurbine_02`, `Tractor` and `Gondola`. `ANIM_Cablecars` isn't among the track's model sets.
 

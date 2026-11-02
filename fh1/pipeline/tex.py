@@ -83,3 +83,18 @@ def load(i):
     t=bix(i)
     if not t: return None
     return decode(top_mip(t),t['w'],t['h'],t['fmt']),t
+def bc4(blk):
+    # n x 8 little-endian BC4 blocks -> n x 16 values
+    a0=blk[:,0].astype(int); a1=blk[:,1].astype(int); bits=np.zeros(len(blk),np.uint64)
+    for k in range(6): bits|=blk[:,2+k].astype(np.uint64)<<np.uint64(8*k)
+    sel=np.stack([((bits>>np.uint64(3*i))&np.uint64(7)).astype(int) for i in range(16)],1)
+    tb=np.zeros((len(blk),8),int); tb[:,0]=a0; tb[:,1]=a1; gt=a0>a1
+    for k in range(2,8):
+        tb[:,k]=np.where(gt,((8-k)*a0+(k-1)*a1)//7,(((6-k)*a0+(k-1)*a1)//5 if k<6 else (0 if k==6 else 255)))
+    return np.take_along_axis(tb,sel,1)
+def normal(i):
+    # a 0x71 (Xenos DXN, BC5) normal map -> (h, w, 2) uint8 x and y, and its top mip as plain BC5 blocks. Same handedness as BeamNG's, see docs/formats.md
+    t=bix(i); bw=(t['w']+3)//4; bh=(t['h']+3)//4; b=blocks(i)
+    raw=np.frombuffer(b,'u1').reshape(-1,16)
+    ch=[bc4(raw[:,8*c:8*c+8]).reshape(bh,bw,4,4).transpose(0,2,1,3).reshape(bh*4,bw*4) for c in range(2)]
+    return np.dstack(ch)[:t['h'],:t['w']].astype('u1'),b

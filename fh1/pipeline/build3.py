@@ -34,9 +34,9 @@ IDX, SHADERS = pickle.load(open('../texshader.pkl', 'rb')); DRAW = np.load('../m
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
 PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
 NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
-TERR = re.compile(r'Terrain|^TERR_CLRD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD', re.I)
+TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
-FARQ = []
+FARQ = []; FARBANDS = (5000, 1500, 500, 150)      # far tiers by triangles per km2, finest first
 
 
 def lodkey(n):
@@ -75,11 +75,11 @@ def materials(b, p):
     return out
 
 
-def cooked(path, *args, **kw):
+def cooked(path, *args, save=dds.save, **kw):
     """dds.save through a disk cache: FH1's textures never change, and encoding them is slow"""
     c_ = CACHE / path.name
     if not c_.exists():
-        CACHE.mkdir(exist_ok=True); dds.save(c_, *args, **kw)
+        CACHE.mkdir(exist_ok=True); save(c_, *args, **kw)
     shutil.copyfile(c_, path)
 
 
@@ -109,19 +109,59 @@ class Textures:
         self.info[tid] = dict(name=name, rgb=rgb, cut=cut, src=a)
         return self.info[tid]
 
+    def normal(self, tid):
+        """a 0x71 normal map as a BC5 .normal.dds, kept at FH1's size"""
+        p_ = self.d / f'n{tid:X}.normal.dds'
+        if not p_.exists():
+            rg, b_ = tex.normal(tid); cooked(p_, rg, b_, TEXMAX, save=dds.save_bc5)
+        return f'{rel}/art/textures/{p_.name}'
+
 
 TX = Textures()
 MATS = {}
+NM = {}; PAIR = {}       # NM: the current section's normal map for each colour texture, from section_normals
+
+
+def section_normals(no, slots):
+    """{colour texture: normal map} for a material's 0x71 slots. A normal map goes with the colour layer whose brightness
+    gradients it matches best, or with the first layer when none match, as with the generic road noise normals"""
+    ids = MT[no][0]; col = []; nrm = []
+    for s in slots:
+        if s < 96 and s < len(ids):
+            t = tex.bix(IDX[ids[s]][0])
+            if t:
+                (nrm if t['fmt'] == 0x71 else col).append(IDX[ids[s]][0])
+    out = {}
+    for n_ in nrm:
+        left = [c_ for c_ in col if c_ not in out and not rgmask(c_)]
+        if not left:
+            break
+        k_ = (n_, tuple(left))
+        if k_ not in PAIR:
+            PAIR[k_] = left[0]; rg = tex.normal(n_)[0].astype('f4') / 127.5 - 1; best = .1
+            for c_ in left:
+                g_ = TX.get(c_)
+                if g_ is None:
+                    continue
+                L = ni.gaussian_filter(np.asarray(Image.fromarray(g_['src'][..., :3].mean(2).astype('f4')).resize(rg.shape[1::-1])), 1)
+                with np.errstate(invalid='ignore'):       # a flat texture has no gradients, and scores nan
+                    s_ = min(abs(np.corrcoef(rg[..., 0].ravel(), ni.sobel(L, 1).ravel())[0, 1]), abs(np.corrcoef(rg[..., 1].ravel(), ni.sobel(L, 0).ravel())[0, 1]))
+                if s_ > best:
+                    best = s_; PAIR[k_] = c_
+        out[PAIR[k_]] = n_
+    return out
 
 
 def material(tid, ground=None, alpha=False, translucent=False, two=False):
     t = TX.get(tid)
     if t is None:
         return None
-    use_a = (alpha or translucent) and t['cut'] > 0.002
-    key = f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '')
+    use_a = (alpha or translucent) and t['cut'] > 0.002; n_ = NM.get(tid)
+    key = f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '')
     if key not in MATS:
         st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
+        if n_:
+            st['normalMap'] = TX.normal(n_)
         m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng'}
         if use_a:
             st['opacityMap'] = f"{rel}/art/textures/{t['name']}_o.data.dds"
@@ -144,7 +184,7 @@ def write_dae(path, groups, origin):
 
 def blend_material(tids, masktid, ground):
     """FH1 h_blnd: layer 0 plus layers masked by the red and green channels, on the second UV set"""
-    key = 'fh1_b_' + '_'.join(f'{t:X}' for t in tids) + f'_m{masktid:X}' + (f'_{ground}' if ground else '')
+    key = 'fh1_b_' + '_'.join(f'{t:X}' for t in tids) + f'_m{masktid:X}' + (f'_{ground}' if ground else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
     if key in MATS:
         return key
     info = [TX.get(t) for t in tids]; m_ = TX.get(masktid)
@@ -158,6 +198,9 @@ def blend_material(tids, masktid, ground):
     for k_, i_ in enumerate(info[1:]):
         st.append({'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0,
                    'opacityMap': f"{rel}/art/textures/{m_['name']}_{'rg'[k_]}.data.dds", 'opacityMapUseUV': 1})
+    for t, s_ in zip(tids, st):
+        if t in NM:
+            s_['normalMap'] = TX.normal(NM[t])
     while len(st) < 4:
         st.append({})
     m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng', 'translucentBlendOp': 'None'}
@@ -197,10 +240,15 @@ def rgmask(t):
     return i is None or (i['rgb'][2] < 24 and max(i['rgb'][:2]) > 64)
 
 
+LAKE_NORMALS = (0x1295, 0x1296)      # the lake shader's two ripple normal maps. Its first slot, 0xD9D, isn't in the dump
+
+
 def water():
+    """lake_anim shader meshes. water.py swaps these 'wat' shapes for River objects"""
     if 'fh1_water' not in MATS:
         MATS['fh1_water'] = {'name': 'fh1_water', 'mapTo': 'fh1_water', 'class': 'Material', 'version': 1.5, 'materialTag0': 'beamng', 'translucent': True, 'translucentZWrite': False,
-                             'Stages': [{'baseColorFactor': [.07, .16, .2, .78], 'roughnessFactor': .08, 'metallicFactor': 0}, {}, {}, {}]}
+                             'Stages': [{'baseColorFactor': [.07, .16, .2, .78], 'roughnessFactor': .08, 'metallicFactor': 0, 'normalMap': TX.normal(LAKE_NORMALS[0]),
+                                         'detailNormalMap': TX.normal(LAKE_NORMALS[1]), 'detailNormalMapStrength': .6, 'detailScale': [.3, .3]}, {}, {}, {}]}
     return 'fh1_water'
 
 
@@ -339,8 +387,10 @@ for f, cs in byfile.items():
         if isterr:
             if cube:
                 if 'TERR_CUBE' not in n and l <= best[lodkey(n)]:
-                    # by density: PATCH is as fine as near ground, and TERR_UberLOD_Patch is the coarse shell, 240 tris per km2 against 21,000
-                    FARQ.append((2 if shell_ or 'uber' in n.lower() else 1 if re.search('MIDDIST|_MID_', n, re.I) else 0, no, M, m, p, nr, r0, r1, g))
+                    # tiers by measured density, as names mislead: PATCH is as fine as near ground, TERR_UberLOD_Patch is the coarse shell,
+                    # and a NOLOD tile can be ten times finer than the shell it overlaps. Each tier only fills what finer tiers left
+                    d_ = c['nt'] / max((c['mx'][0] - c['mn'][0]) * (c['mx'][2] - c['mn'][2]) / 1e6, 1e-3)
+                    FARQ.append((int(np.searchsorted(-np.array(FARBANDS), -d_, 'left')), no, M, m, p, nr, r0, r1, g))
                 continue
         have_ = sorted(AV[lodkey(n)]); rel_ = have_.index(l)
         if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
@@ -354,16 +404,16 @@ for f, cs in byfile.items():
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             q_ = MT[no][1]
             if len(T) and s['ints'][2] < len(q_) and SHADERS[q_[s['ints'][2]]].startswith('lake'):      # materials() can't read this shader's record
-                add('vis', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T); raster(Water, g[T])
+                add('wat', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T); raster(Water, g[T])
                 continue
             if not len(T) or s['ints'][2] >= len(M):
                 stats['sec_nomat'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
-            si, slots = M[s['ints'][2]]
+            si, slots = M[s['ints'][2]]; NM = section_normals(no, slots)
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
             uv = box_uv(r0, s['fl'])
             if fx.startswith('lake'):
-                add('vis', water(), p, nr, uv, T); surf['water'] += len(T); raster(Water, g[T])
+                add('wat', water(), p, nr, uv, T); surf['water'] += len(T); raster(Water, g[T])
                 continue
             decal = 'decal' in fx; opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
             road = fx.startswith('h_road') and not re.search(r'sign|barrier|wall|armco', n, re.I)
@@ -420,7 +470,7 @@ for f, cs in byfile.items():
                     raster(Rock, g[T])
             else:
                 add('pro', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
-LV = (0, 1, 2); FIX = None
+LV = (0, 1, 2); FIX = None; NM = {}
 print('dropped sections by mesh', DROPPED.most_common(24))
 shown = np.isfinite(Cov)
 road = np.isfinite(Road)
@@ -457,18 +507,21 @@ def clip_far(A, T, dout, din):
     c_ = togrid(V[:, :3]); ci = np.clip(c_[:, 0].astype(int), 0, N - 1); cj = np.clip(c_[:, 1].astype(int), 0, N - 1)
     k_ = dist[cj, ci] <= 40
     V[k_, 1] = np.minimum(V[k_, 1], limit[cj, ci][k_])
-    if tier_ == 2:
+    if tier_ >= 2:
         V[:, 1] = np.minimum(V[:, 1], lump[cj, ci])
+    k_ = dsink[cj, ci] > 0
+    V[k_, 1] = np.minimum(V[k_, 1], top[cj, ci][k_])      # a coarse mountain side can stand well above the fine ground's edge
     V[:, 1] -= .5 * np.minimum(dsink[cj, ci], LIP)      # only under ground. At a road edge there's nothing above it, so it would show as a ditch
     return V, np.arange(len(V)).reshape(-1, 3)
 
 
-for tier_ in (0, 1, 2):
+for tier_ in range(len(FARBANDS) + 1):
     new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
-    if tier_ == 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
+    if tier_ >= 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
         lab_, n_ = ni.label(~shown); small = np.bincount(lab_.ravel()) * SQ * SQ < 150000; small[0] = False
         lump = np.where(small[lab_], pyramid_fill(Cov) + 1, np.inf)
     dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
+    top = ni.minimum_filter(np.nan_to_num(np.fmax(Cov, Rock), nan=np.inf), 3)      # raster keeps a cell's highest point, so take the lowest nearby
     for t_, no, M, m, p, nr, r0, r1, g in FARQ:
         if t_ != tier_:
             continue
@@ -483,7 +536,7 @@ for tier_ in (0, 1, 2):
             if not len(T):
                 continue
             p_, n_, uv, u1 = V[:, :3], V[:, 3:6], V[:, 6:8], V[:, 8:10]; g_ = togrid(p_)
-            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
+            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''; NM = section_normals(no, slots)
             ts = slot_tex(no, [x for x in slots if x < 96])
             if not ts:
                 continue
@@ -509,6 +562,7 @@ for tier_ in (0, 1, 2):
             raster(new_, g_[T]); raster(Cov, g_[T])
     shown = np.isfinite(Cov)
     print('far tier', tier_, 'shown now', float(shown.mean()))
+NM = {}
 print('statics', dict(stats), dict(surf), f'{time.time() - t0:.0f}s')
 print('sections by road surface', {k: v for k, v in surf.items() if k.startswith('road')})
 
@@ -570,6 +624,27 @@ EVENT = re.compile(r'festival|multiplayer|street|showcase|activation|crowd|_trac
 LAYERS_SEEN = collections.Counter(); LOSTSET = collections.Counter(); PLACED = []
 
 
+def model_ids(b, h_, M):
+    """-> ([mesh number per model, -1 for a model named by a .max path], offset after the id and path lists), or None.
+    Models carry up to three LOD ids, as words 1, 3 and 5 of their header entry say. An entry whose word 8 isn't 0 has no
+    draw id: the word is the byte length of its path, and the paths follow the ids"""
+    E = [struct.unpack_from('>6I', b, h_ + 0x40 * i + 32) for i in range(M)]; q_ = h_ + 0x40 * M; meshes = []
+    for e_ in E:
+        if e_[0]:
+            meshes.append(-1)
+            continue
+        v_ = struct.unpack_from('>I', b, q_)[0]
+        if v_ >= len(DRAW):
+            return None
+        meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
+    for e_ in E:
+        if e_[0]:
+            if b[q_ + e_[0] - 1] != 0:
+                return None
+            q_ += e_[0]
+    return meshes, (q_ + 3) & ~3
+
+
 def read_pgeo(n):
     b = open('../x/' + n, 'rb').read()
     nm_ = re.search(rb'(models_proc|Models_Ungrouped|AModels_Ungrouped)[A-Za-z0-9_]*', b[0x50:0xc0])
@@ -589,29 +664,27 @@ def read_pgeo(n):
         # the header's start moves in some files. Model entries are 64 bytes and the first ids follow the last entry's 'tga' tag
         t_ = b.find(b'tga\0', 0x98, 0xd0 + 0x40 * M + 0x40)
         h_ = t_ + 4 - 0x40 * M if t_ >= 0 else 0xd0
-        q_ = h_ + 0x40 * M; meshes = []
-        for i in range(M):
-            e_ = struct.unpack_from('>6I', b, h_ + 0x40 * i + 32); v_ = struct.unpack_from('>I', b, q_)[0]
-            if v_ >= len(DRAW):
-                stats['proc_bad'] += 1
-                print('proc unreadable', n, M)
-                return None
-            meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
+        ids_ = model_ids(b, h_, M)
+        if ids_ is None:
+            stats['proc_bad'] += 1
+            print('proc unreadable', n, M)
+            return None
+        meshes, q_ = ids_
         w = struct.unpack_from('>%dI' % min((len(b) - q_) // 4, 200), b, q_)
-        G = []
-        for i in range(1, len(w) - 4):            # (k, 0, count, 0, 1) or the older (1, k, count, 0, 1)
+        G = []; TR = []
+        for i in range(1, len(w) - 4):            # (k, 0, count, 0, 1) or the older (1, k, count, 0, trailers)
             if len(G) == M:
                 break
             if w[i - 1] == 0 and w[i] == len(G) and 0 < w[i + 1] < 100000 and w[i + 2] == 0 and w[i + 3] == 1:
-                G.append(w[i + 1])
+                G.append(w[i + 1]); TR.append(1)
             elif w[i] == 1 and w[i + 1] == len(G) and 0 < w[i + 2] + w[i + 3] < 100000 and 1 <= w[i + 4] <= 8:
-                G.append(w[i + 2] + w[i + 3])
+                G.append(w[i + 2] + w[i + 3]); TR.append(w[i + 4])
         tot = sum(G); A = None
-        start = len(b) - 96 * tot - 32 * len(G)        # every model's block ends in a 32 byte trailer
+        start = len(b) - 96 * tot - 32 * sum(TR)        # each model's rows are followed by one 32 byte trailer per LOD distance set
         if len(G) == M and start >= q_:
             parts_ = []; p_ = start
-            for c_n in G:
-                parts_.append(np.frombuffer(b, '>f4', c_n * 24, p_).reshape(-1, 24).astype('f8')); p_ += 96 * c_n + 32
+            for c_n, t_n in zip(G, TR):
+                parts_.append(np.frombuffer(b, '>f4', c_n * 24, p_).reshape(-1, 24).astype('f8')); p_ += 96 * c_n + 32 * t_n
             c_ = np.concatenate(parts_)
             if np.abs(c_[:, 15] - 1).max() < .01 and (np.linalg.norm(c_[:, :3], axis=1) > .01).all():
                 A = c_
@@ -621,7 +694,7 @@ def read_pgeo(n):
             return None
         stats['proc_ok'] += 1
         return 'proc', A, meshes, G
-    if M < 1 or M > 512 or size < 40 or size % 40 or size >= len(b):
+    if M < 1 or M > 512 or size % 40 or size >= len(b):        # size 0: only full-transform instances
         stats['pgeo_badhdr'] += 1
         return None
     h_ = 0xd0 if b[0x98:0xa3] == b'models_proc' else 0x80        # named sets carry a longer header
@@ -633,13 +706,11 @@ def read_pgeo(n):
         return None
     W = [struct.unpack_from('>f', b, h_ + 0x40 * i + 16)[0] - struct.unpack_from('>f', b, h_ + 0x40 * i)[0] for i in range(M)]
     A = np.frombuffer(b, '>u4', size // 4, start).reshape(-1, 10).astype(np.int64)
-    meshes = []; q_ = h_ + 0x40 * M
-    for i in range(M):           # models carry up to three LOD ids, as words 1, 3 and 5 of their header entry say
-        e_ = struct.unpack_from('>6I', b, h_ + 0x40 * i + 32); v_ = struct.unpack_from('>I', b, q_)[0]
-        if v_ >= len(DRAW):
-            stats['pgeo_unreadable'] += 1
-            return None
-        meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
+    ids_ = model_ids(b, h_, M)
+    if ids_ is None:
+        stats['pgeo_unreadable'] += 1
+        return None
+    meshes, q_ = ids_
     blocks = placed_blocks(b, table[0], q_, start)
     if blocks is None:
         stats['pgeo_placed_mismatch'] += 1; LOSTSET[n] = size // 40
@@ -693,6 +764,7 @@ def model_groups(no):
     fs = f'coloradoout.{no:05d}.rmb.bin'
     if not os.path.exists('../x/' + fs):
         return [], None, None, ''
+    global NM
     b = open('../x/' + fs, 'rb').read(); P = rmb.parse(b); M = materials(b, P); groups = []; lo = np.full(3, np.inf); hi = -lo; label = ''
     ids = MT[no][0]; tree = any(SHADERS[q].startswith('tree') for q in MT[no][1] if q < len(SHADERS))
     for m in P['meshes']:
@@ -710,7 +782,7 @@ def model_groups(no):
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(T):
                 continue
-            mi = s['ints'][2]; ts = slot_tex(no, [x for x in M[mi][1] if x < 96]) if mi < len(M) else []
+            mi = s['ints'][2]; ts = slot_tex(no, [x for x in M[mi][1] if x < 96]) if mi < len(M) else []; NM = section_normals(no, M[mi][1]) if mi < len(M) else {}
             if not ts:
                 q = IDX[ids[min(mi, len(ids) - 1)]][0] if ids else None
                 ts = [q] if q is not None and tex.bix(q) and tex.bix(q)['fmt'] != 0x71 else []
@@ -971,7 +1043,7 @@ def detail_sizes(R_, cat):
     """detail sizes follow from a shape's radius, so every shape switches at the same distance from its edge. The engine
     measures from the centre: a kilometre-wide tile group would otherwise show LOD1 to a car on top of it"""
     s0 = max(int(R_ / (LOD_DIST[0] + R_) * PX), 3); s1 = max(min(int(R_ / (LOD_DIST[1] + R_) * PX), s0 - 1), 2)
-    s2 = 1 if cat == 'col' else max(min(int(R_ / (PROP_FAR + R_) * PX), s1 - 1), 1)
+    s2 = 1 if cat in ('col', 'wat') else max(min(int(R_ / (PROP_FAR + R_) * PX), s1 - 1), 1)
     if s2 >= s1:
         s1 = s2 + 1; s0 = max(s0, s1 + 1)
     return s0, s1, s2
@@ -1015,7 +1087,7 @@ POOL.shutdown()
 cam = g2b(np.array([[-5681., 350., 5301.]]))[0]; drawn = [0, 0, 0, 0]; before = 0
 for org, R_, cat, tr in METRIC:
     d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[0] else 1 if d_ < LOD_DIST[1] else 2
-    if cat != 'col' and d_ > PROP_FAR:
+    if cat not in ('col', 'wat') and d_ > PROP_FAR:
         lv = 3
     before += tr[0]
     if lv < 3:
@@ -1083,4 +1155,5 @@ if len(sys.argv) == 1:                  # the wipe at the top also removes the s
     subprocess.run([sys.executable, 'levelinfo.py', LVL], check=True)
     subprocess.run([sys.executable, 'ambience.py', LVL], check=True)
     subprocess.run([sys.executable, 'particles.py', LVL], check=True)
+    subprocess.run([sys.executable, 'water.py', LVL], check=True)
     subprocess.run([sys.executable, 'animated.py', LVL], check=True)
