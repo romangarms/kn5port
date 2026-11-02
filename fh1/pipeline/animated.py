@@ -145,9 +145,14 @@ def height(T, xy):
 
 
 def on_ground(T, xy, yaw):
-    """Height, pitch and roll of a vehicle resting on the ground, from where its wheels stand."""
+    """Height, pitch and roll of a vehicle on one plane fitted to the ground under its route, so FH1's flat route keeps its shape and only tilts.
+    Points far off the plane, such as objects on the ground, are dropped before the second fit."""
+    A = np.c_[xy, np.ones(len(xy))]; h = height(T, xy); keep = np.ones(len(xy), bool)
+    for _ in range(2):
+        coef = np.linalg.lstsq(A[keep], h[keep], rcond=None)[0]; keep = np.abs(h - A @ coef) < 1
+    plane = lambda q: np.c_[q, np.ones(len(q))] @ coef
     a = np.radians(yaw)[:, None]; ahead = np.c_[-np.sin(a), np.cos(a)]; right = np.c_[np.cos(a), np.sin(a)]
-    f, b_ = height(T, xy + AXLES * ahead), height(T, xy - AXLES * ahead); r, l = height(T, xy + TRACK * right), height(T, xy - TRACK * right)
+    f, b_ = plane(xy + AXLES * ahead), plane(xy - AXLES * ahead); r, l = plane(xy + TRACK * right), plane(xy - TRACK * right)
     return (f + b_ + r + l) / 4, np.degrees(np.arctan2(f - b_, 2 * AXLES)), np.degrees(np.arctan2(l - r, 2 * TRACK))
 
 
@@ -214,11 +219,15 @@ def records(group):
         m = re.search(rb'anim_proc_' + group.encode() + rb'_\d', b[:0x200])
         if b[:4] != b'OEGP' or not m:
             continue
-        n = struct.unpack_from('>I', b, 0x44)[0]
-        for i in range(n):
-            o = len(b) - 0x50 - 128 * (n - 1 - i)
-            r = np.array(struct.unpack_from('>16f', b, o - 48), 'f8')
-            out[tuple(np.round(r[12:15], 1))] = r
+        # Counts in the header don't always cover every record, so records are found by shape: rotation rows with a zero fourth value, then position and 1
+        F = np.frombuffer(b[:len(b) // 4 * 4], '>f4').astype('f8')
+        for i in range(0x80 // 4, len(F) - 15):
+            r = F[i:i + 16]
+            if r[3] != 0 or r[7] != 0 or r[11] != 0 or r[15] != 1 or not np.isfinite(r).all() or np.abs(r[12:15]).max() > 9000:
+                continue
+            R = np.array([r[0:3], r[4:7], r[8:11]]); n = np.linalg.norm(R, axis=1)
+            if ((n > .05) & (n < 50)).all() and np.abs((R / n[:, None]) @ (R / n[:, None]).T - np.eye(3)).max() < .02:
+                out[tuple(np.round(r[12:15], 1))] = r
     return list(out.values())
 
 
@@ -284,8 +293,10 @@ for kind, w in VEHICLES.items():
     a_ = granny.vertices(gamezip.read('animatedobjects.zip', w['model']))[2][:, :2]
     start = (np.nanmin(a_, 0) + np.nanmax(a_, 0)) / 2 - (p0[:, :2].min(0) + p0[:, :2].max(0)) / 2
     times = np.arange(0, t[-1], KEY_SECONDS); u = np.c_[np.interp(times, t, c[:, 0]), np.interp(times, t, c[:, 2])] + start
+    # The route is a quarter turn from the placement's frame: Granny x, z becomes -z, x. This fits the bounding boxes in the sets' headers, and puts the laps on fields
+    u = np.c_[-u[:, 1], u[:, 0]]
     times = np.r_[times, t[-1]]; u = np.r_[u, u[:1]]
-    # FH1's route is flat, but the ground under it isn't, so each placement gets its own shape that follows the ground
+    # FH1's route is flat, so each placement gets its own shape, tilted to the ground under it
     for i, r in enumerate(records(w['group'])):
         pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
         xy = pos[:2] + u[:, :1] * [r[0], r[2]] + u[:, 1:] * [r[8], r[10]]
