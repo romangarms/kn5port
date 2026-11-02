@@ -1,4 +1,4 @@
-"""FH1's animated objects, starting with the metal windmills. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
+"""FH1's animated objects: windmills and wind turbines. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
 as West Coast USA's pump jacks do. Fans have no collision.
 Run after build3.py, which wipes the level: python animated.py [fh1_colorado]. Safe to run twice. Needs no rebuild."""
 import glob, json, os, re, struct, sys
@@ -13,11 +13,14 @@ from kn5port import beamng
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); S = np.diag([1., 1., -1.])
-# The shape built for this mesh, the anim_proc set that places it, and the Fan bone from ANIM_FARM_WindmillMetal.pgeo in BeamNG axes.
-# Spin speed isn't read from FH1's curves yet. Parts within radius of the hub and depth along its axis are the fan
-WINDMILLS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -1.174, 9.931), axis=(0, 1, 0), radius=1.75, depth=.6, speed=2.2)}
-# Seconds per turn. Each speed needs its own shape, as the animation lives in the file
-TURN_SECONDS = (2.4, 2.9, 3.5)
+# shape: the built shape for this mesh. group: the anim_proc set that places it. hub and axis: the Fan bone from its ANIM_*.pgeo, checked against the mesh, in BeamNG axes.
+# radius and depth: parts wholly inside this disc are the fan. origin: the point of the shape that a set's position means, where the ANIM model is centred differently.
+# turns: seconds per turn, chosen by eye as FH1's curves aren't decoded. Each speed needs its own shape, as the animation lives in the file.
+# tower_lod and fan_lod: detail sizes, from build3.py's detail_sizes for the object's radius
+OBJECTS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -1.174, 9.931), radius=1.75, depth=.6, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
+           'wood': dict(shape='m6627', group='fx_windmillswood', hub=(-.02, -1.55, 9.94), radius=1.75, depth=.5, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
+           'turbine': dict(shape='m6429', group='fx_maintown', hub=(7.42, -4.6, 82.17), radius=56, depth=1.6, origin=(7.5, -1.35, 0), turns=(5, 6, 7.5), tower_lod=(211, 88, 45), fan_lod=(190, 70, 1))}
+AXIS = (0, 1, 0)
 
 
 def animate(path, seconds):
@@ -104,26 +107,26 @@ for old in out.glob('*'):
     old.unlink()
 rel = f'/levels/{LVL}/art/shapes/fh1_anim'
 rows = []; world = [json.loads(l) for l in (mg / 'fh1' / 'items.level.json').read_text().splitlines() if l.strip()]
-for kind, w in WINDMILLS.items():
+for kind, w in OBJECTS.items():
     src = level / 'art' / 'shapes' / 'fh1' / f"{w['shape']}.dae"
     text = src.read_text(); mat = re.search(r'<material id="([^"]+)"', text).group(1)
-    hub = np.array(w['hub']); axis = np.array(w['axis'], 'f8')
-    lods = [arrays(text, 'g0'), arrays(text, 'g1')]
+    hub = np.array(w['hub']); axis = np.array(AXIS, 'f8'); origin = np.array(w.get('origin', (0, 0, 0)), 'f8')
+    lods = [arrays(text, 'g0'), arrays(text, 'g1' if '<geometry id="g1"' in text else 'g0')]     # some shapes have one LOD
     masks = [split(a[0], a[3], hub, axis, w['radius'], w['depth']) for a in lods]
     print(kind, 'fan triangles', [int(m.sum()) for m in masks], 'of', [len(a[3]) for a in lods])
     tower = [piece(a, ~m) for a, m in zip(lods, masks)]; fan = [piece(a, m) for a, m in zip(lods, masks)]
-    write_lod(out / f'{kind}_tower.dae', [((mat, (0,)),) + tower[0], ((mat, (1, FARCUT)),) + tower[1]], np.zeros(3), (25, 9, 3), 2)
+    write_lod(out / f'{kind}_tower.dae', [((mat, (0,)),) + tower[0], ((mat, (1, FARCUT)),) + tower[1]], np.zeros(3), w['tower_lod'], 2)
     # The fan shape is centred on the hub, with its axis along Y
     def centred(g):
         p, n, uv, tri, u2 = g
         return p - hub, n, uv, tri, u2
-    for v, seconds in enumerate(TURN_SECONDS):
+    for v, seconds in enumerate(w['turns']):
         path = out / f'{kind}_fan_{v}.dae'
-        write_lod(path, [((mat, (0,)),) + centred(fan[0]), ((mat, (1,)),) + centred(fan[1])], np.zeros(3), (20, 6, 1), None)
+        write_lod(path, [((mat, (0,)),) + centred(fan[0]), ((mat, (1,)),) + centred(fan[1])], np.zeros(3), w['fan_lod'], None)
         animate(path, seconds)
     places = []
     for r in records(w['group']):
-        places.append((np.array([r[12] - CX, r[14] + CZ, r[13]]), yaw_matrix(r)))
+        Rm = yaw_matrix(r); places.append((np.array([r[12] - CX, r[14] + CZ, r[13]]) - Rm @ origin, Rm))
     for o in world:
         if o.get('shapeName', '').endswith(f"/{w['shape']}.dae") or o.get('shapeName', '').endswith(f'/{kind}_tower.dae'):
             o['shapeName'] = f'{rel}/{kind}_tower.dae'
@@ -135,7 +138,7 @@ for kind, w in WINDMILLS.items():
             rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_tower_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_tower.dae', 'position': [round(float(v), 3) for v in pos],
                          'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'Collision Mesh', 'decalType': 'Collision Mesh'})
         at = pos + Rm @ hub
-        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_fan_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_fan_{int(rng.integers(len(TURN_SECONDS)))}.dae', 'position': [round(float(v), 3) for v in at],
+        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_fan_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_fan_{int(rng.integers(len(w['turns'])))}.dae', 'position': [round(float(v), 3) for v in at],
                      'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     print(kind, len(places), 'placed', [[round(float(v)) for v in (p[0] if p[0] is not None else p[2])] for p in places][:8])
 (mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in world))

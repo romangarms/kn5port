@@ -22,7 +22,7 @@ LANE_OFFSET = 1.8
 SPAWNS = [('Carson', 'spawn_carson', -3954, 879), ('Horizon Festival', 'spawn_festival', -919, -247), ('Gladstone', 'spawn_gladstone', -421, -1388),
           ('Clear Springs', 'spawn_clear_springs', 1028, -3102), ('Kettle Hills', 'spawn_kettle_hills', 2916, -3876), ('The Rockies', 'spawn_rockies', 4616, 1717),
           ('Finley Dam', 'spawn_finley_dam', 6617, 263), ('Beaumont', 'spawn_beaumont', 3491, 3150), ('Montano Plains', 'spawn_montano', -3524, -1868),
-          ('Steelworks', 'spawn_steelworks', -1517, 2779)]
+          ('Steelworks', 'spawn_steelworks', -1517, 2779), ('Windmill test', 'spawn_windmill_test', -1457, -1612)]
 # area_type to FH1's own name, from the matching lists in Environments.str and Map.str. FH1's `lakes` regions are mostly forest, so they aren't named
 ZONES = {'festival': 'Horizon Festival', 'maintown': 'Carson', 'redrock': 'Red Rock', 'plains': 'Montano Plains', 'foothills': 'Kettle Hills',
          'mountains': 'The Rockies', 'canyons': 'Canyons', 'reservoir': 'Clear Springs', 'lake': 'Lake'}

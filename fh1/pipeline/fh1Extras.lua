@@ -8,6 +8,7 @@ local FADE_SECONDS = 4
 local UPDATE_SECONDS = 0.5
 local ROAD_SEARCH_METRES = 30
 local AMBIENCE_VOLUME = 0.6
+local SHOW_COORDS = true -- adds the camera's map position to the minimap's location line
 local PARTICLE_SECONDS = 2
 local MAX_PARTICLE_NODES = 60
 
@@ -146,8 +147,13 @@ end
 
 local function zoneWithRoad(pos)
   local zone = originalZone(pos)
-  if not roadName then return zone end
-  local name = zone and (roadName .. ', ' .. zone.name) or roadName
+  local name = zone and zone.name
+  if roadName then name = name and (roadName .. ', ' .. name) or roadName end
+  if SHOW_COORDS then
+    local where = string.format('%d, %d', math.floor(pos.x), math.floor(pos.y))
+    name = name and (name .. ' (' .. where .. ')') or where
+  end
+  if not name then return zone end
   return setmetatable({ name = name }, { __index = zone or {} })
 end
 

@@ -31,7 +31,7 @@ python grade.py fh1_colorado          # saturation and contrast baked into the m
 python levelinfo.py fh1_colorado      # freeroam menu text and previews, spawn points, location zones, HUD road names. Run the same way
 python ambience.py fh1_colorado       # FH1's regional ambient loops, needs ffmpeg. Run the same way
 python particles.py fh1_colorado      # FH1's water and smoke particles. Run the same way, after levelinfo.py
-python animated.py fh1_colorado       # FH1's animated objects, metal windmills so far. Run the same way
+python animated.py fh1_colorado       # FH1's windmills and wind turbines. Run the same way
 ```
 
 The build writes to `mods/unpacked/<level>`, or pass an output folder. Then fully restart BeamNG. Python needs numpy, scipy, numba, pillow.
