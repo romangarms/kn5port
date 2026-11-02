@@ -7,7 +7,8 @@ from pathlib import Path
 from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
-import dds, rmb, tex
+from scipy.spatial import cKDTree
+import dds, hexzones, rmb, tex
 from daewrite import FARCUT, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -36,7 +37,7 @@ PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and
 NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
 TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
-FARQ = []; FARBANDS = (5000, 1500, 500, 150)      # far tiers by triangles per km2, finest first
+FARQ = []; ZBANDS = (150.0, 400.0, 800.0, 1500.0)      # far ground's tiers: how close FH1 draws it from, in metres. See far_tiers
 
 
 def lodkey(n):
@@ -387,10 +388,9 @@ for f, cs in byfile.items():
         if isterr:
             if cube:
                 if 'TERR_CUBE' not in n and l <= best[lodkey(n)]:
-                    # tiers by measured density, as names mislead: PATCH is as fine as near ground, TERR_UberLOD_Patch is the coarse shell,
-                    # and a NOLOD tile can be ten times finer than the shell it overlaps. Each tier only fills what finer tiers left
+                    # coarse by measured density, as names mislead: TERR_UberLOD_Patch is the coarse shell, at 240 tris per km2 against PATCH's 21,000
                     d_ = c['nt'] / max((c['mx'][0] - c['mn'][0]) * (c['mx'][2] - c['mn'][2]) / 1e6, 1e-3)
-                    FARQ.append((int(np.searchsorted(-np.array(FARBANDS), -d_, 'left')), no, M, m, p, nr, r0, r1, g))
+                    FARQ.append((d_ < 1500, no, M, m, p, nr, r0, r1, g))
                 continue
         have_ = sorted(AV[lodkey(n)]); rel_ = have_.index(l)
         if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
@@ -507,7 +507,7 @@ def clip_far(A, T, dout, din):
     c_ = togrid(V[:, :3]); ci = np.clip(c_[:, 0].astype(int), 0, N - 1); cj = np.clip(c_[:, 1].astype(int), 0, N - 1)
     k_ = dist[cj, ci] <= 40
     V[k_, 1] = np.minimum(V[k_, 1], limit[cj, ci][k_])
-    if tier_ >= 2:
+    if coarse_:
         V[:, 1] = np.minimum(V[:, 1], lump[cj, ci])
     k_ = dsink[cj, ci] > 0
     V[k_, 1] = np.minimum(V[k_, 1], top[cj, ci][k_])      # a coarse mountain side can stand well above the fine ground's edge
@@ -515,20 +515,47 @@ def clip_far(A, T, dout, din):
     return V, np.arange(len(V)).reshape(-1, 3)
 
 
-for tier_ in range(len(FARBANDS) + 1):
+def far_tiers():
+    """A far triangle's tier: how close to it FH1 ever draws its mesh, then coarse after fine. Each zone hex lists what FH1 draws from it,
+    so the distance to the nearest hex listing any LOD of the mesh is the closest it's ever seen from. The Uber shell isn't drawn within
+    1 km of itself, and a fine tile is drawn from every hex within 300 m. Finer tiers claim the ground first, so a shell can't cover them.
+    -> per FARQ entry, per section, a tier for each triangle"""
+    HX, HR = hexzones.hexes(); zn = sorted(HX); ZC = np.array([HX[z] for z in zn]); seen = defaultdict(list)
+    for k_, z in enumerate(zn):
+        for d in hexzones.drawn(z):
+            if d < len(DRAW):
+                seen[lodkey(NAMEOF.get(int(DRAW['t'][d]), ''))].append(k_)
+    trees = {k: cKDTree(ZC[sorted(set(v))]) for k, v in seen.items()}; out = []; unseen = 0
+    for coarse, no, M, m, p, *_ in FARQ:
+        t_ = trees.get(lodkey(NAMEOF.get(no, ''))); unseen += t_ is None; secs = []
+        for s in m['secs']:
+            T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
+            c_ = p[T].mean(1) if len(T) else np.zeros((0, 3))
+            d_ = np.maximum(t_.query(np.c_[c_[:, 0], -c_[:, 2]])[0] - HR, 0) if t_ is not None else np.full(len(T), 1e9)
+            secs.append(np.searchsorted(ZBANDS, d_) * 2 + coarse)
+        out.append(secs)
+    print('far meshes no zone draws', unseen, 'of', len(FARQ))
+    return out
+
+
+TIERS = far_tiers(); NT = 2 * len(ZBANDS) + 2
+for tier_ in range(NT):
+    if not any((t__ == tier_).any() for e_ in TIERS for t__ in e_):
+        continue
     new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
-    if tier_ >= 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
+    if tier_ % 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
         lab_, n_ = ni.label(~shown); small = np.bincount(lab_.ravel()) * SQ * SQ < 150000; small[0] = False
         lump = np.where(small[lab_], pyramid_fill(Cov) + 1, np.inf)
     dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
     top = ni.minimum_filter(np.nan_to_num(np.fmax(Cov, Rock), nan=np.inf), 3)      # raster keeps a cell's highest point, so take the lowest nearby
-    for t_, no, M, m, p, nr, r0, r1, g in FARQ:
-        if t_ != tier_:
-            continue
+    for (coarse_, no, M, m, p, nr, r0, r1, g), tiers_ in zip(FARQ, TIERS):
         ids = MT[no][0]
-        for s in m['secs']:
+        for s, ti_ in zip(m['secs'], tiers_):
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(T) or s['ints'][2] >= len(M):
+                continue
+            T = T[ti_ == tier_]
+            if not len(T):
                 continue
             uv = box_uv(r0, s['fl'])
             u1 = (r1 + 1) / 2 if r1 is not None else uv
@@ -1156,4 +1183,5 @@ if len(sys.argv) == 1:                  # the wipe at the top also removes the s
     subprocess.run([sys.executable, 'ambience.py', LVL], check=True)
     subprocess.run([sys.executable, 'particles.py', LVL], check=True)
     subprocess.run([sys.executable, 'water.py', LVL], check=True)
+    subprocess.run([sys.executable, 'nightlights.py', LVL], check=True)
     subprocess.run([sys.executable, 'animated.py', LVL], check=True)

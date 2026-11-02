@@ -48,6 +48,10 @@ Lake shader sections go in `wat` shapes: no collision, never culled, with FH1's 
 
 BeamNG 0.40 crashes on level load (integer divide by zero, `BeamNG.drive.x64.exe` + 0x9def55) in two particle cases. With `animateTexture`, `preload` reads `animTexTiling` as 0 0, although `"4 4"` passes `onAdd`, and the frame list divides by it. No stock content animates particle textures, so `particles.py` cuts each tile into its own particle. An emitter's `particles` list over 255 characters is dropped at load ("particle string too long"), which silently removed birds and campfire flames, so tiles are capped at 16 (`MAX_TILES`) under short `fh1q<crc>_<i>` names, and the script refuses longer lists. Separately, `preload` divides by `ejectionPeriodMS - periodVarianceMS`, and the validator clamps both to 2047 without keeping the variance below the period.
 
+## Night lights
+
+`nightlights.py` (run by `build3.py` after `water.py`) writes the lightmap overlays (`fh1_night`, glowing through stock `nightEmissive`, hidden by day by `fh1Extras.lua`) and point lights (`fh1_lamps`). Lights are PointLights shaped like West Coast's street bounce lights: `intensity` 5000 scaled by the pool's peak, `brightness` = intensity / 20000 pi as stock files carry, radius 10 to 22 m, `castShadows` false, `useColorTemperature` false, `isEnabled` false. Stock `nightLight` isn't used, as it would light all 2533 at once. `fh1Extras.lua` reads `fh1_lamps.json` and enables the nearest `MAX_LAMPS` (20) within 250 m of the camera from 18:00 to 6:00 with `setLightEnabled`, as stock `core_environment` does.
+
 ## Static LODs
 
 - 250 m cells (`CELL`), one shape per cell and category.

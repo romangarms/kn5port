@@ -14,6 +14,11 @@ local MAX_PARTICLE_NODES = 80
 -- Particles alive at once across running emitters, from each entry's count. Nearer emitters win. Set after the user saw fps drop
 local PARTICLE_BUDGET = 4000
 local SKY_SECONDS = 2
+-- nightlights.py's point lights at FH1's lamps: at night only the nearest MAX_LAMPS within LAMP_FAR metres of the camera are on, as every lit light costs.
+-- Not stock nightLight, which would switch all of them on at once
+local LAMP_SECONDS = 2
+local MAX_LAMPS = 20
+local LAMP_FAR = 250
 
 local data
 local levelDir
@@ -29,6 +34,9 @@ local sinceParticles = 0
 local sky -- fh1_sky.json: the baked skies and which one each quarter hour shows
 local skyBake -- index of the bake on show
 local sinceSky = 0
+local lamps -- fh1_lamps.json: { name, x, y } per light
+local lampsOn = {} -- light name -> true
+local sinceLamps = 0
 local clock = 0
 local shots = {} -- playing one-shots: { id, ends }
 local nextShot = {} -- one-shot group -> clock time
@@ -189,6 +197,33 @@ local function updateNightLights()
   end
 end
 
+local function setLamp(name, on)
+  local obj = scenetree.findObject(name)
+  if obj and obj.setLightEnabled then obj:setLightEnabled(on) end
+end
+
+local function updateLamps(x, y)
+  local hour = hourNow()
+  local near = {}
+  if hour and (hour >= NIGHT_FROM or hour < NIGHT_TO) then
+    for _, l in ipairs(lamps) do
+      local dx, dy = x - l[2], y - l[3]
+      local d = dx * dx + dy * dy
+      if d < LAMP_FAR * LAMP_FAR then table.insert(near, { name = l[1], d = d }) end
+    end
+    table.sort(near, function(a, b) return a.d < b.d end)
+  end
+  local want = {}
+  for i = 1, math.min(#near, MAX_LAMPS) do want[near[i].name] = true end
+  for name in pairs(lampsOn) do
+    if not want[name] then setLamp(name, false) end
+  end
+  for name in pairs(want) do
+    if not lampsOn[name] then setLamp(name, true) end
+  end
+  lampsOn = want
+end
+
 local function updateSky()
   local hour = hourNow()
   if not hour then return end
@@ -283,6 +318,9 @@ local function start()
   skyBake = nil
   nightShown = nil
   sinceSky = SKY_SECONDS
+  lamps = FS:fileExists(levelDir .. 'fh1_lamps.json') and jsonReadFile(levelDir .. 'fh1_lamps.json') or nil
+  lampsOn = {}
+  sinceLamps = LAMP_SECONDS
   ambienceOn = true
   shotsOn = true
 end
@@ -293,6 +331,7 @@ local function onUpdate(dtReal)
   clock = clock + dtReal
   sinceParticles = sinceParticles + dtReal
   sinceSky = sinceSky + dtReal
+  sinceLamps = sinceLamps + dtReal
   if sky and sinceSky >= SKY_SECONDS then
     sinceSky = 0
     local ok, err = pcall(updateSky)
@@ -302,6 +341,15 @@ local function onUpdate(dtReal)
     end
     local okNight, errNight = pcall(updateNightLights)
     if not okNight then log('E', logTag, tostring(errNight) .. ', night lights stay as they are') end
+  end
+  if lamps and sinceLamps >= LAMP_SECONDS then
+    sinceLamps = 0
+    local x, y = core_camera.getPositionXYZ()
+    local ok, err = pcall(updateLamps, x, y)
+    if not ok then
+      log('E', logTag, tostring(err) .. ', lamps are off')
+      lamps = nil
+    end
   end
   if emitters and sinceParticles >= PARTICLE_SECONDS then
     sinceParticles = 0
@@ -328,6 +376,8 @@ end
 
 local function onClientEndMission()
   data = nil
+  lamps = nil
+  lampsOn = {}
   stopAmbience()
   unpatchCity()
 end

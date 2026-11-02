@@ -1,5 +1,6 @@
 """FH1's night lightmaps as glowing overlays: a copy of each lit ground triangle, lifted a little, with the lightmap as an additive emissive map.
 Stock core_environment turns them on at night: the TSStatics carry nightEmissive and the materials instanceEmissive, as Italy's lamps do.
+Point lights at FH1's lamp heads and unclaimed pool centres go in fh1_lamps, and fh1Extras.lua switches on the nearest few at night.
 Every town, or one with TOWN. Run after build3.py, which wipes the level: python nightlights.py [fh1_colorado]. Safe to run twice. Needs no rebuild.
 Layout of the lightmaps is in docs/formats.md: slot 7, a top-down view over the box of the ground that shares it."""
 import json, os, pickle, re, struct, sys
@@ -8,6 +9,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage as ni
+from scipy.spatial import cKDTree
 import dds, rmb, tex
 from daewrite import write_lod
 sys.path.insert(0, os.path.abspath('../..'))
@@ -22,6 +24,17 @@ LM_SLOT = 7; LM = re.compile(r'_lm(\d|_|$)')
 LIT = 8; FIT = .6
 # Chosen by eye: how bright a full-white lightmap texel glows (20 looked a little dim in-game), how far above the ground the overlay sits, and how far it draws
 NITS = 40; LIFT = .04; FAR = 600.0; PX = 1250.0
+# Pool centres: local maxima at least POOL_GAP metres apart and brighter than POOL_MIN of 255, used to place and colour the lamps' lights
+POOL_GAP = 6.0; POOL_MIN = 40
+# Point lights, so cars, walls and props are lit too. FH1's lamp props carry one at the head: LAMPS gives each shape's head in its own axes, measured
+# from the built .dae (m6533 OBJ_CLRD_LampPost, light at the end of its arm; m6559 OBJ_CLRD_StreetLight). A pool within MATCH metres of a head colours it;
+# pools with no lamp near (lamps on walls, or meshes not listed) get a light POOL_HEIGHT above the ground. Placement rotation is applied transposed:
+# that put lamp-post heads a median 3.4 m from pool centres, against 4.0 m the other way and 3.8 m for the bases
+LAMPS = {'m6533': (0.0, 2.0, 7.9), 'm6559': (0.0, 0.0, 4.2)}
+MATCH = 10.0; POOL_HEIGHT = 6.0
+# Like West Coast's street bounce lights (intensity 5000, radius 14, warm, no shadows), scaled by the pool's peak against the median peak.
+# Radius covers the pool plus the drop from the head, within RADIUS. fh1Extras.lua switches on only the nearest few at night
+INTENSITY = 5000.0; PEAK = .72; RADIUS = (10.0, 22.0)
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX, SH = pickle.load(open('../texshader.pkl', 'rb'))
 
 
@@ -44,6 +57,20 @@ def materials(b, p):
 
 def g2b(p):
     return np.stack([p[:, 0] - CX, -(p[:, 2] - CZ), p[:, 1]], 1)
+
+
+def pools(lum, img, lo, span):
+    """Light pools in one lightmap: (BeamNG x, y, peak 0-1, linear rgb, radius in metres) at each local maximum above POOL_MIN.
+    The radius is that of the area above half the peak, around the maximum."""
+    h, w = lum.shape; texel = float(np.mean(span / (w, h))); sm = ni.gaussian_filter(lum, 1)
+    win = max(3, int(round(POOL_GAP / texel)) | 1)
+    out = []
+    for r, c in np.argwhere((sm == ni.maximum_filter(sm, win)) & (sm > POOL_MIN)):
+        v = sm[r, c]; lab, _ = ni.label(sm > v / 2); area = lab == lab[r, c]
+        rgb = (img[area].astype('f4') / 255) ** 2.2
+        fx = lo[0] + (c + .5) / w * span[0]; fz = lo[1] + (r + .5) / h * span[1]
+        out.append((fx - CX, -(fz - CZ), float(v) / 255, rgb.mean(0) / max(rgb.mean(0).max(), 1e-3), float(np.sqrt(area.sum() / np.pi)) * texel))
+    return out
 
 
 def n2b(n):
@@ -82,7 +109,7 @@ out = level / 'art' / 'shapes' / 'fh1_night'; out.mkdir(parents=True, exist_ok=T
 for old in out.glob('*'):
     old.unlink()
 rel = f'/levels/{LVL}/art/shapes/fh1_night'
-mats = {}; rows = []; stats = defaultdict(int)
+mats = {}; rows = []; stats = defaultdict(int); found = []
 for tid, parts in sorted(geo.items()):
     r = tex.load(tid)
     if not r or r[0] is None:
@@ -108,6 +135,10 @@ for tid, parts in sorted(geo.items()):
         stats['unfit' if keep else 'unlit'] += 1
         continue
     P_ = g2b(np.concatenate([k[0] for k in keep])); N_ = n2b(np.concatenate([k[1] for k in keep])); UV = np.concatenate([k[2] for k in keep])
+    # Each pool centre takes the height of the nearest lit ground
+    near = pools(lum, img, lo, span)
+    if near:
+        _, j = cKDTree(P_[:, :2]).query([q[:2] for q in near]); found += [(x, y, float(P_[k, 2]), *rest) for (x, y, *rest), k in zip(near, j)]
     P_ = P_ + N_ * LIFT; ctr = (P_.min(0) + P_.max(0)) / 2; R_ = float(np.linalg.norm(P_.max(0) - P_.min(0)) / 2)
     name = f'lm{tid:X}'; mat = f'fh1_night_{name}'
     dds.save(out / f'{name}.color.dds', img)
@@ -123,8 +154,53 @@ for tid, parts in sorted(geo.items()):
 (out / 'main.materials.json').write_text(json.dumps(mats, indent=1))
 mg = items.parent; (mg / 'fh1_night').mkdir(exist_ok=True)
 (mg / 'fh1_night' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
+
+# Pool centres from overlapping lightmaps: the brightest within POOL_GAP stands for all
+order = sorted(range(len(found)), key=lambda i: -found[i][3]); taken = np.zeros(len(found), bool); pool = []
+tree = cKDTree([q[:2] for q in found]) if found else None
+for i in order:
+    if not taken[i]:
+        pool.append(found[i]); taken[tree.query_ball_point(found[i][:2], POOL_GAP)] = True
+heads = []
+for f in mg.rglob('items.level.json'):
+    if f.parent.name in ('fh1_night', 'fh1_lamps'):
+        continue
+    for l in f.read_text().splitlines():
+        if '"TSStatic"' in l and any(k in l for k in LAMPS):
+            o = json.loads(l); k = Path(o['shapeName']).stem
+            if k in LAMPS:
+                R = np.array(o.get('rotationMatrix', np.eye(3).ravel())).reshape(3, 3)
+                heads.append((np.array(o['position']) + R.T @ np.array(LAMPS[k]), LAMPS[k][2]))
+if TOWN:
+    heads = [h for h in heads if np.hypot(*(h[0][:2] - TOWN[:2])) < TOWN[2]]
+WARM = np.array([1.0, .75, .45])
+lights = []; used = np.zeros(len(pool), bool)
+ptree = cKDTree([q[:2] for q in pool]) if pool else None
+for p, rise in heads:
+    d, j = ptree.query(p[:2]) if ptree else (np.inf, 0)
+    if d < MATCH:
+        used[j] = True; _, _, _, peak, rgb, rad = pool[j]
+    else:
+        peak, rgb, rad = PEAK, WARM, 6.0
+    lights.append((p, peak, rgb, rad + rise)); stats['lamp_matched' if d < MATCH else 'lamp_unmatched'] += 1
+htree = cKDTree([h[0][:2] for h in heads]) if heads else None
+for q, u in zip(pool, used):
+    if u or (htree is not None and htree.query(q[:2])[0] < MATCH):
+        continue
+    x, y, z, peak, rgb, rad = q; lights.append((np.array([x, y, z + POOL_HEIGHT]), peak, rgb, rad + POOL_HEIGHT)); stats['pool_lights'] += 1
+lamp_rows = []; lua = []
+for i, (p, peak, rgb, reach) in enumerate(lights):
+    I = INTENSITY * float(np.clip(peak / PEAK, .4, 1.5)); name = f'fh1_lamp_{i}'
+    lamp_rows.append({'class': 'PointLight', 'name': name, '__parent': 'fh1_lamps', 'position': [round(float(v), 2) for v in p],
+                      'color': [round(float(c), 3) for c in rgb] + [1], 'intensity': round(I, 1), 'brightness': I / (20000 * np.pi),
+                      'radius': round(float(np.clip(reach, *RADIUS)), 1), 'isEnabled': False, 'castShadows': False, 'useColorTemperature': 'false'})
+    lua.append([name, round(float(p[0]), 1), round(float(p[1]), 1)])
+(mg / 'fh1_lamps').mkdir(exist_ok=True)
+(mg / 'fh1_lamps' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in lamp_rows))
+(level / 'fh1_lamps.json').write_text(json.dumps(lua))
 top = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-if not any(o.get('name') == 'fh1_night' for o in top):
-    top.append({'name': 'fh1_night', 'class': 'SimGroup', '__parent': 'MissionGroup'})
-    items.write_text(''.join(json.dumps(o) + '\n' for o in top))
-print('done', dict(stats), 'lightmaps', len(geo), '->', level)
+for g in ('fh1_night', 'fh1_lamps'):
+    if not any(o.get('name') == g for o in top):
+        top.append({'name': g, 'class': 'SimGroup', '__parent': 'MissionGroup'})
+items.write_text(''.join(json.dumps(o) + '\n' for o in top))
+print('done', dict(stats), 'lightmaps', len(geo), 'pools', len(pool), 'lights', len(lights), '->', level)
