@@ -1,15 +1,17 @@
 """Red Rock chunk, second pass: FH1's own meshes, textures and placed models in a BeamNG level."""
-import sys, os, re, json, math, pickle, struct, time, glob, collections
+import sys, os, re, json, math, pickle, shutil, struct, subprocess, time, glob, collections
 import numpy as np
 from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
 import dds, rmb, tex
+from daewrite import FARCUT, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
-from kn5port.level import _fmt, safe
+from kn5port.level import safe
 from kn5port.terrain import pyramid_fill
 
 Image.MAX_IMAGE_PIXELS = None
@@ -17,21 +19,30 @@ Image.MAX_IMAGE_PIXELS = None
 CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
           'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
 LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
-CELL = 250.0; TEXMAX = 1024
+CELL = 250.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE after changing dds.py or TEXMAX
 # LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
 IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
 HALF = N * SQ / 2; X0, X1, Z0, Z1 = CX - HALF, CX + HALF, CZ - HALF, CZ + HALF
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(beamng.find_mods()) / 'unpacked' / LVL
 level = root / 'levels' / LVL; rel = f'/levels/{LVL}'
+shutil.rmtree(level, ignore_errors=True)        # everything here is generated, and a stale shape would still load
 inst = beamng.find_install()
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb'))
 IDX, SHADERS = pickle.load(open('../texshader.pkl', 'rb')); DRAW = np.load('../mt.npy')
 
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
-TERR = re.compile(r'Terrain|^TERR_CLRD|PATCH|MIDDIST|UberLOD|Area\d+[AB]?_LOD', re.I)
-FAR = re.compile(r'TERR_CUBE|MIDDIST|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
+PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
+NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
+TERR = re.compile(r'Terrain|^TERR_CLRD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD', re.I)
+FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
 FARQ = []
+
+
+def lodkey(n):
+    """the name shared by a mesh's LODs. Exports vary: X_LOD00_ against X_LOD02, X_LOD00 against XLOD01.
+    A number after the LOD is a tile, as in X_LOD02_12, so it stays. UberLOD24 is a name, not a level"""
+    return re.sub(r'_?(?<!Uber)LOD\d+_*(\d*).*$', r'_\1', n).rstrip('_')
 
 
 def lod(n):
@@ -64,6 +75,14 @@ def materials(b, p):
     return out
 
 
+def cooked(path, *args, **kw):
+    """dds.save through a disk cache: FH1's textures never change, and encoding them is slow"""
+    c_ = CACHE / path.name
+    if not c_.exists():
+        CACHE.mkdir(exist_ok=True); dds.save(c_, *args, **kw)
+    shutil.copyfile(c_, path)
+
+
 class Textures:
     def __init__(self):
         self.d = level / 'art' / 'textures'; self.d.mkdir(parents=True, exist_ok=True)
@@ -79,10 +98,10 @@ class Textures:
             self.missing[tid] += 1; self.info[tid] = None
             return None
         a = r[0]; name = f'd{tid:X}'     # pre-cooked, so BeamNG loads FH1's sizes. The d prefix can't match PNG-era cached textures
-        dds.save(self.d / f'{name}.color.dds', a, tex.blocks(tid) if t['fmt'] == 0x52 else None, TEXMAX)
+        cooked(self.d / f'{name}.color.dds', a, tex.blocks(tid) if t['fmt'] == 0x52 else None, TEXMAX)
         al = a[..., 3]; cut = float((al < 128).mean())
         if cut > 0.002:
-            dds.save(self.d / f'{name}_o.data.dds', al, limit=TEXMAX)
+            cooked(self.d / f'{name}_o.data.dds', al, limit=TEXMAX)
         rgb = a[..., :3].reshape(-1, 3).mean(0)
         self.info[tid] = dict(name=name, rgb=rgb, cut=cut, src=a)
         return self.info[tid]
@@ -117,48 +136,7 @@ def material(tid, ground=None, alpha=False, translucent=False, two=False):
 
 def write_dae(path, groups, origin):
     """kn5port's writer plus a second UV set: groups are (material, pos, normal, uv, idx, uv2)."""
-    return write_lod(path, [((g[0], (0,)),) + tuple(g[1:]) for g in groups], origin, (1,), False)
-
-
-def write_lod(path, groups, origin, sizes, collide, extra=()):
-    """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2).
-    A trailing number on those node names is the detail size. Level 0 geometry is reused as Colmesh_<i>-1."""
-    mats = sorted({g[0][0] for g in groups}); out = []; w = out.append
-    w('<?xml version="1.0" encoding="utf-8"?>\n<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n')
-    w('<asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>\n<library_effects>\n')
-    for m in mats:
-        w(f'<effect id="{m}-fx"><profile_COMMON><technique sid="common"><lambert><diffuse><color>0.8 0.8 0.8 1</color></diffuse></lambert></technique></profile_COMMON></effect>\n')
-    w('</library_effects>\n<library_materials>\n')
-    for m in mats:
-        w(f'<material id="{m}" name="{m}"><instance_effect url="#{m}-fx"/></material>\n')
-    w('</library_materials>\n<library_geometries>\n'); nodes = []; col = False
-    ident = '<matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>'
-    for gi, g_ in enumerate(groups):
-        (mat, levels), pos, nrm, uv, idx = g_[:5]; uv1 = g_[5] if len(g_) > 5 and g_[5] is not None else uv
-        g = f'g{gi}'; n = len(pos); local = pos - origin
-        w(f'<geometry id="{g}" name="{g}"><mesh>\n')
-        for sid, arr, fmt, params in ((f'{g}-p', local, '%.4f', 'XYZ'), (f'{g}-n', nrm, '%.3f', 'XYZ'),
-                                      (f'{g}-t', np.c_[uv[:, 0], 1 - uv[:, 1]], '%.5f', 'ST'), (f'{g}-u', np.c_[uv1[:, 0], 1 - uv1[:, 1]], '%.5f', 'ST')):
-            w(f'<source id="{sid}"><float_array id="{sid}-a" count="{arr.size}">'); w(_fmt(arr, fmt))
-            w(f'</float_array><technique_common><accessor source="#{sid}-a" count="{n}" stride="{len(params)}">')
-            w(''.join(f'<param name="{c}" type="float"/>' for c in params)); w('</accessor></technique_common></source>\n')
-        w(f'<vertices id="{g}-v"><input semantic="POSITION" source="#{g}-p"/></vertices>\n')
-        w(f'<triangles material="{mat}" count="{len(idx) // 3}"><input semantic="VERTEX" source="#{g}-v" offset="0"/><input semantic="NORMAL" source="#{g}-n" offset="0"/>'
-          f'<input semantic="TEXCOORD" source="#{g}-t" offset="0" set="0"/><input semantic="TEXCOORD" source="#{g}-u" offset="0" set="1"/><p>')
-        w(' '.join(map(str, idx.tolist()))); w('</p></triangles>\n</mesh></geometry>\n')
-        inst = f'<instance_geometry url="#{g}"><bind_material><technique_common><instance_material symbol="{mat}" target="#{mat}"/></technique_common></bind_material></instance_geometry>'
-        for lv in levels:
-            if lv < len(sizes):
-                nm_ = f'o{gi}_a{sizes[lv]}'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
-        if collide and 0 in levels:
-            col = True; nm_ = f'Colmesh_{gi}-1'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
-    w('</library_geometries>\n<library_visual_scenes><visual_scene id="Scene" name="Scene">\n')
-    w(f'<node id="base00" name="base00" type="NODE">{ident}<node id="start01" name="start01" type="NODE">{ident}\n'); out.extend(nodes); w('</node>\n')
-    for e_ in (list(extra) + (['collision-1'] if col else [])):
-        w(f'<node id="{e_}" name="{e_}" type="NODE">{ident}</node>\n')
-    w('</node></visual_scene></library_visual_scenes>\n<scene><instance_visual_scene url="#Scene"/></scene>\n</COLLADA>\n')
-    path.parent.mkdir(parents=True, exist_ok=True); path.write_text(''.join(out), encoding='utf-8')
-    return col
+    return write_lod(path, [((g[0], (0,)),) + tuple(g[1:]) for g in groups], origin, (1,), None)
 
 
 def blend_material(tids, masktid, ground):
@@ -172,7 +150,7 @@ def blend_material(tids, masktid, ground):
     for ch, nm in ((0, 'r'), (1, 'g')):
         p_ = TX.d / f"{m_['name']}_{nm}.data.dds"
         if not p_.exists():
-            dds.save(p_, m_['src'][..., ch], limit=TEXMAX)
+            cooked(p_, m_['src'][..., ch], limit=TEXMAX)
     st = [{'baseColorMap': f"{rel}/art/textures/{info[0]['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0}]
     for k_, i_ in enumerate(info[1:]):
         st.append({'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0,
@@ -202,6 +180,25 @@ def uv_sets(m):
     r0 = np.frombuffer(a[:, 16:20].tobytes(), '>i2').reshape(-1, 2).astype('f8') / 32767
     r1 = np.frombuffer(a[:, 20:24].tobytes(), '>i2').reshape(-1, 2).astype('f8') / 32767 if m['sd'] >= 24 else None
     return r0, r1
+
+
+def box_uv(r, fl):
+    """s16 UVs are quantised to the mesh's UV box: fl[4:6] is its low corner and fl[6:8] its high corner"""
+    lo = np.array(fl[4:6]); hi = np.array(fl[6:8])
+    return lo + (r + 1) / 2 * (hi - lo)
+
+
+def rgmask(t):
+    """blend masks are pure red and green. Some far sections list one where a colour layer should be"""
+    i = TX.get(t)
+    return i is None or (i['rgb'][2] < 24 and max(i['rgb'][:2]) > 64)
+
+
+def water():
+    if 'fh1_water' not in MATS:
+        MATS['fh1_water'] = {'name': 'fh1_water', 'mapTo': 'fh1_water', 'class': 'Material', 'version': 1.5, 'materialTag0': 'beamng', 'translucent': True, 'translucentZWrite': False,
+                             'Stages': [{'baseColorFactor': [.07, .16, .2, .78], 'roughnessFactor': .08, 'metallicFactor': 0}, {}, {}, {}]}
+    return 'fh1_water'
 
 
 def role_ground(s):
@@ -240,7 +237,7 @@ def togrid(p):
 cells = defaultdict(lambda: defaultdict(list)); stats = collections.Counter(); surf = collections.Counter(); start_ = t0 = time.time()
 
 
-LV = (0,)
+LV = (0,); FIX = None
 
 
 def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
@@ -252,7 +249,7 @@ def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
     c = b[T].mean(1); ins = (np.abs(c[:, :2]) < HALF - 4).all(1); T = T[ins]; c = c[ins]
     if not len(T):
         return
-    key = np.floor((c[:, :2] + HALF) / CELL).astype(int); k = key[:, 0] * 1000 + key[:, 1]
+    key = np.floor((c[:, :2] + HALF) / CELL).astype(int); k = key[:, 0] * 1000 + key[:, 1] if FIX is None else np.full(len(T), FIX)
     for u in np.unique(k):
         sel = T[k == u]; idx, inv = np.unique(sel, return_inverse=True)
         cells[(int(u), cat)][(mat, LV)].append((b[idx], nb[idx], uv[idx], inv.reshape(-1, 3).astype(np.int64), uv1[idx] if uv1 is not None else uv[idx]))
@@ -261,12 +258,49 @@ def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
 
 # ---- world meshes
 sel = [c for c in F if c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 and c['mn'][2] < Z1
-       and max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 and not NOUSE.search(c['name'])]
-best = defaultdict(lambda: 99); AV = defaultdict(set)
+       and (max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 or 'UberLOD' in c['name']) and not NOUSE.search(c['name'])]
+# Origin-local meshes only belong where a zone record puts them, so they must not also go in raw at (0, 0).
+# Any record away from the origin marks a whole LOD group as local. World-space meshes have records at the origin.
+ZREC = pickle.load(open('../zonerec.pkl', 'rb')); NAMEOF = {int(c['f'].split('.')[1]): c['name'] for c in F}
+GENERIC = re.compile(r'(Plane|Box|Line|Object|Mesh|Rectangle)\d+', re.I)        # exporter default names, shared by unrelated meshes
+moved = set(); movedno = set(); atzero = set()
+for (did, p_), r_ in ZREC.items():
+    t = int(DRAW['t'][did]); n_ = lodkey(NAMEOF.get(t, ''))
+    if abs(r_['pos'][0]) + abs(r_['pos'][2]) >= 1:
+        movedno.add(t)
+        if not GENERIC.match(n_):
+            moved.add(n_)
+    elif not (r_['lst'] or r_['name']):
+        atzero.add(t)
+
+
+def world_mesh(c):
+    """The game only draws a world-space mesh through a free-roam record at the origin. A mesh with no record is never loaded,
+    and a placeholder texture marks FH1's blocked-out ground"""
+    no = int(c['f'].split('.')[1])
+    if no in movedno or lodkey(c['name']) in moved or no not in atzero:
+        return False
+    return not (no < len(MT) and any(IDX[i][0] == PLACEHOLDER for i in MT[no][0]))
+
+
+n_ = len(sel); sel = [c for c in sel if world_mesh(c)]
+print('meshes left out of the world path', n_ - len(sel))
+best = defaultdict(lambda: 99); AV = defaultdict(set); BOX = {}
 for c in sel:
-    k = re.sub(r'_LOD\d+', '', c['name']); best[k] = min(best[k], lod(c['name'])); AV[k].add(lod(c['name']))
+    k = lodkey(c['name']); best[k] = min(best[k], lod(c['name'])); AV[k].add(lod(c['name']))
+    b_ = BOX.setdefault(k, [c['mn'][0], c['mx'][0], c['mn'][2], c['mx'][2]])
+    b_[0] = min(b_[0], c['mn'][0]); b_[1] = max(b_[1], c['mx'][0]); b_[2] = min(b_[2], c['mn'][2]); b_[3] = max(b_[3], c['mx'][2])
+
+
+def group_cell(k):
+    """All of a mesh's LODs share one shape, so its detail switches as a unit. Split by triangle, a cell could drop LOD0 with its coarse triangles held by a nearer cell."""
+    b_ = BOX[k]
+    if max(b_[1] - b_[0], b_[3] - b_[2]) > 1000:
+        return None
+    q_ = np.floor((g2b(np.array([[(b_[0] + b_[1]) / 2, 0, (b_[2] + b_[3]) / 2]]))[0, :2] + HALF) / CELL).astype(int)
+    return int(np.clip(q_[0], 0, 999)) * 1000 + int(np.clip(q_[1], 0, 999))
 print(len(sel), 'meshes in box')
-Hs = [np.full((N, N), np.nan, 'f8') for _ in range(4)]; Road = np.full((N, N), np.nan, 'f8'); Cov = np.full((N, N), np.nan, 'f8'); Rock = np.full((N, N), np.nan, 'f8')
+Road = np.full((N, N), np.nan, 'f8'); Cov = np.full((N, N), np.nan, 'f8'); Rock = np.full((N, N), np.nan, 'f8')
 byfile = defaultdict(list)
 for c in sel:
     byfile[c['f']].append(c)
@@ -280,34 +314,38 @@ for f, cs in byfile.items():
             stats['stride16'] += 1
             continue
         p, nr, _ = rmb.verts(m); r0, r1 = uv_sets(m)
-        cube = bool(FAR.search(n))
-        isterr = (bool(TERR.search(n)) or cube) and not re.search(r'_rocks?(_|$)|armco|barrier|_road', n, re.I)
+        cube = bool(FAR.search(n)) and 'water' not in n.lower()
+        isterr = (bool(TERR.search(n)) or cube) and not re.search(r'_rocks?(_|$)|armco|barrier|_road|water', n, re.I)
         g = togrid(p)
         if isterr:
-            tier = 3 if cube else min(l, 2)
-            for s in m['secs']:
-                T = rmb.tris(s['ib'], m['nv'])
-                if len(T):
-                    raster(Hs[tier], g[T])
             if cube:
-                if 'TERR_CUBE' not in n and l <= best[re.sub(r'_LOD\d+', '', n)]:
-                    FARQ.append((0 if 'PATCH' in n.upper() else 1 if 'MIDDIST' in n.upper() else 2, no, M, m, p, nr, r0, r1, g))
+                if 'TERR_CUBE' not in n and l <= best[lodkey(n)]:
+                    # by density: PATCH is as fine as near ground, and TERR_UberLOD_Patch is the coarse shell, 240 tris per km2 against 21,000
+                    FARQ.append((2 if 'uber' in n.lower() else 1 if re.search('MIDDIST|_MID_', n, re.I) else 0, no, M, m, p, nr, r0, r1, g))
                 continue
-        have_ = sorted(AV[re.sub(r'_LOD\d+', '', n)]); rel_ = have_.index(l)
-        if rel_ > 2:
+        have_ = sorted(AV[lodkey(n)]); rel_ = have_.index(l)
+        if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
             stats['lod_dropped'] += 1
             continue
         # a group's coarsest mesh also stands in for any lower LODs it lacks
-        LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 else (rel_,)
+        LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 or isterr and rel_ == 1 else (rel_,)
+        FIX = group_cell(lodkey(n))
         near_ = rel_ == 0
         for s in m['secs']:
             T = rmb.tris(s['ib'], m['nv'])
+            q_ = MT[no][1]
+            if len(T) and s['ints'][2] < len(q_) and SHADERS[q_[s['ints'][2]]].startswith('lake'):      # materials() can't read this shader's record
+                add('vis', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T)
+                continue
             if not len(T) or s['ints'][2] >= len(M):
                 stats['sec_nomat'] += 1
                 continue
             si, slots = M[s['ints'][2]]
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
-            f4 = s['fl'][4:8]; uv = r0 * np.array(f4[2:]) * 0.49999
+            uv = box_uv(r0, s['fl'])
+            if fx.startswith('lake'):
+                add('vis', water(), p, nr, uv, T); surf['water'] += len(T)
+                continue
             decal = 'decal' in fx; opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
             road = fx.startswith('h_road') and not re.search(r'sign|barrier|wall|armco', n, re.I)
             ts = slot_tex(no, [x for x in slots if x < 96])
@@ -324,6 +362,7 @@ for f, cs in byfile.items():
                         tid = IDX[ids[slots[q]]][0]
                         if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71:
                             layers.append(tid)
+                layers = [x for x in layers if not rgmask(x)]; ts = [x for x in ts if not rgmask(x)] or ts
                 mask = None
                 if fx.startswith('h_blnd') and r1 is not None and len(slots) > 2 and slots[2] < len(ids):
                     mt = tex.bix(IDX[ids[slots[2]]][0])
@@ -343,27 +382,65 @@ for f, cs in byfile.items():
             if decal:
                 add('vis', material(tid, translucent=True), p, nr, uv, T, lift=.02); surf['decal'] += len(T)
             elif road:
-                if near_:
-                    raster(Road, g[T])
                 rgb = info['rgb']; brown = rgb[0] - rgb[2] > 14
                 gnd = 'DIRT' if brown else 'ASPHALT'
+                if near_:
+                    raster(Road, g[T])
                 add('col', material(tid, gnd), p, nr, uv, T); surf[f'road:{gnd}'] += len(T)
             elif re.search(r'cable|tether', n, re.I):
                 add('vis', material(tid, alpha=opac), p, nr, uv, T); surf['cable'] += len(T)
             elif re.search(r'armco|barrier|fence|rail', n, re.I):
-                add('pro', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T)
+                lv_ = LV; LV = tuple(FARCUT if x == 2 else x for x in LV)      # barriers stop at 800 m, and their copies add up
+                add('pro', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T); LV = lv_
             elif re.search(r'rock|wall|cliff', n, re.I) or 'vblnd' in fx:
                 add('col', material(tid, 'ROCK', alpha=opac), p, nr, uv, T); surf['rock'] += len(T)
                 if near_:
                     raster(Rock, g[T])
             else:
                 add('pro', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
-LV = (0, 1, 2)
-blocked = ni.binary_dilation(np.isfinite(Road) | np.isfinite(Rock), iterations=4)
+LV = (0, 1, 2); FIX = None
 shown = np.isfinite(Cov)
+road = np.isfinite(Road)
+if road.any():
+    RF = pyramid_fill(np.where(road, Road, np.nan)); dist = ni.distance_transform_edt(~road) * SQ
+else:
+    RF = np.zeros((N, N)); dist = np.full((N, N), 1e9)
+limit = RF - .2 + np.maximum(dist - SQ, 0)
+LIP = 16.0      # far ground runs this far under nearer ground, sloping down, so a height mismatch at the seam can't open a crack
 BARY = np.array([[a_, b_, 8 - a_ - b_] for a_ in range(9) for b_ in range(9 - a_)], 'f8') / 8
+
+
+def clip_far(A, T, dout, din):
+    """Split far terrain triangles and keep the parts outside the mask and its lip, so a coarse triangle clipping a road only loses that corner.
+    A: vertices (position, normal, uv, uv1). dout and din: metres to the mask from outside and from inside it."""
+    S = A[T]; keep = []
+    while len(S):
+        c_ = togrid(S[:, :, :3].reshape(-1, 3)).reshape(-1, 3, 3)[:, :, :2]
+        L = np.sqrt(((c_ - c_[:, [1, 2, 0]]) ** 2).sum(2)).max(1) * SQ
+        Q_ = np.einsum('ij,kjl->kil', BARY, c_)
+        ci = np.clip(Q_[..., 0].astype(int), 0, N - 1); cj = np.clip(Q_[..., 1].astype(int), 0, N - 1)
+        gap = L / 8                                # samples are this far apart, so a distance above it proves the whole triangle
+        gone = din[cj, ci].min(1) > gap + LIP
+        near = (dist[cj, ci].min(1) < 40 + gap) & (L > 32)        # small enough to follow the road height
+        clear = (dout[cj, ci].min(1) > gap) & ~near & ~gone
+        tiny = (L <= LIP) & ~clear & ~gone
+        keep.append(S[clear]); keep.append(S[tiny & (din[cj, ci].mean(1) < LIP)])
+        s_ = S[~(clear | gone | tiny)]
+        if not len(s_):
+            break
+        a_, b_, c2 = s_[:, 0], s_[:, 1], s_[:, 2]; ab = (a_ + b_) / 2; bc = (b_ + c2) / 2; ca = (c2 + a_) / 2
+        S = np.concatenate([np.stack(v, 1) for v in ((a_, ab, ca), (ab, b_, bc), (ca, bc, c2), (ab, bc, ca))])
+    V = np.concatenate(keep).reshape(-1, A.shape[1]) if keep else A[:0]
+    c_ = togrid(V[:, :3]); ci = np.clip(c_[:, 0].astype(int), 0, N - 1); cj = np.clip(c_[:, 1].astype(int), 0, N - 1)
+    k_ = dist[cj, ci] <= 40
+    V[k_, 1] = np.minimum(V[k_, 1], limit[cj, ci][k_])
+    V[:, 1] -= .5 * np.minimum(din[cj, ci], LIP)
+    return V, np.arange(len(V)).reshape(-1, 3)
+
+
 for tier_ in (0, 1, 2):
-    new_ = np.full((N, N), np.nan, 'f8')
+    new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock)      # road shaders also draw town grass and paving
+    dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ
     for t_, no, M, m, p, nr, r0, r1, g in FARQ:
         if t_ != tier_:
             continue
@@ -372,32 +449,36 @@ for tier_ in (0, 1, 2):
             T = rmb.tris(s['ib'], m['nv'])
             if not len(T) or s['ints'][2] >= len(M):
                 continue
-            Q_ = np.einsum('ij,kjl->kil', BARY, g[T][:, :, :2])
-            ci = np.clip(Q_[..., 0].astype(int), 0, N - 1); cj = np.clip(Q_[..., 1].astype(int), 0, N - 1)
-            T = T[~(shown | blocked)[cj, ci].any(1)]
+            uv = box_uv(r0, s['fl'])
+            u1 = (r1 + 1) / 2 if r1 is not None else uv
+            V, T = clip_far(np.c_[p, nr, uv, u1], T, dout, din)
             if not len(T):
                 continue
+            p_, n_, uv, u1 = V[:, :3], V[:, 3:6], V[:, 6:8], V[:, 8:10]; g_ = togrid(p_)
             si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
             ts = slot_tex(no, [x for x in slots if x < 96])
             if not ts:
                 continue
-            f4 = s['fl'][4:8]; uv = r0 * np.array(f4[2:]) * 0.49999; gnd = role_ground(s['name']); layers = []
+            gnd = role_ground(s['name']); layers = []
             for q in (0, 1, 5):
                 if q < len(slots) and slots[q] < len(ids):
                     tid = IDX[ids[slots[q]]][0]
                     if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71:
                         layers.append(tid)
+            layers = [x for x in layers if not rgmask(x)]; ts = [x for x in ts if not rgmask(x)]
+            if not layers and not ts:
+                continue
             mask = None
             if fx.startswith('h_blnd') and r1 is not None and len(slots) > 2 and slots[2] < len(ids):
                 mt_ = tex.bix(IDX[ids[slots[2]]][0])
                 if mt_ and mt_['fmt'] == 0x52:
                     mask = TX.get(IDX[ids[slots[2]]][0])
             if mask is not None and len(layers) > 1:
-                add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd), p, nr, uv, T, uv1=(r1 + 1) / 2)
+                add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd), p_, n_, uv, T, uv1=u1)
             else:
-                add('col', material(layers[0] if layers else ts[0], gnd), p, nr, uv, T)
+                add('col', material(layers[0] if layers else ts[0], gnd), p_, n_, uv, T)
             surf[f'far{tier_}'] += len(T)
-            raster(new_, g[T]); raster(Cov, g[T])
+            raster(new_, g_[T]); raster(Cov, g_[T])
     shown = np.isfinite(Cov)
     print('far tier', tier_, 'shown now', float(shown.mean()))
 print('statics', dict(stats), dict(surf), f'{time.time() - t0:.0f}s')
@@ -557,7 +638,7 @@ def model_groups(no):
     if not os.path.exists('../x/' + fs):
         return [], None, None, ''
     b = open('../x/' + fs, 'rb').read(); P = rmb.parse(b); M = materials(b, P); groups = []; lo = np.full(3, np.inf); hi = -lo; label = ''
-    ids = MT[no][0]
+    ids = MT[no][0]; tree = any(SHADERS[q].startswith('tree') for q in MT[no][1] if q < len(SHADERS))
     for m in P['meshes']:
         label = label or m['name']
         a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
@@ -579,18 +660,24 @@ def model_groups(no):
                 ts = [q] if q is not None and tex.bix(q) and tex.bix(q)['fmt'] != 0x71 else []
             if not ts:
                 continue
-            f4 = s['fl'][4:8]
+            if tree and len(ids) > 1:        # the slot list can be bark first, which puts opaque bark on the leaf cards
+                cut_ = sorted((TX.get(IDX[i][0])['cut'], IDX[i][0]) for i in ids if TX.get(IDX[i][0]))
+                c0_ = TX.get(ts[0])['cut'] if TX.get(ts[0]) else 0
+                if card and c0_ < .05 and cut_:
+                    ts = [cut_[-1][1]]
+                elif not card and c0_ >= .05 and cut_:
+                    ts = [cut_[0][1]]
             mt = material(ts[0], alpha=True, two=True)
             if mt is None:
                 continue
             if card:
-                uv = r0 * np.array(f4[2:]) / 65535
+                uv = box_uv(r0 / 32767, s['fl'])
                 e1 = pb[T[:, 1]] - pb[T[:, 0]]; e2 = pb[T[:, 2]] - pb[T[:, 0]]; fn_ = np.cross(e1, e2)
                 fn_ /= np.maximum(np.linalg.norm(fn_, axis=1, keepdims=True), 1e-9); nb = nb.copy(); nb[T.ravel()] = fn_.repeat(3, 0)
             else:
-                uv = r0 * np.array(f4[2:]) * 0.49999
+                uv = box_uv(r0, s['fl'])
             idx, inv = np.unique(T, return_inverse=True)
-            groups.append((mt, pb[idx], nb[idx], uv[idx], inv.astype(np.int64)))
+            groups.append((mt, pb[idx], nb[idx], uv[idx], inv.astype(np.int64).ravel()))
             lo = np.minimum(lo, pb.min(0)); hi = np.maximum(hi, pb.max(0))
     return groups, lo, hi, label
 
@@ -608,7 +695,7 @@ def model_item(no):
     item = re.sub(r'[^A-Za-z0-9_]', '_', label) + f'_{no}'
     lv0 = (0,) if low else (0, 1)
     shape = [((g[0], lv0),) + tuple(g[1:]) for g in groups] + [((g[0], (1,)),) + tuple(g[1:]) for g in low]
-    write_lod(adir / f'{item}.dae', shape, np.zeros(3), (120, 40 if IMPOSTERS else 1), False, ['bb_autobillboard25'] if IMPOSTERS else [])
+    write_lod(adir / f'{item}.dae', shape, np.zeros(3), (120, 40 if IMPOSTERS else 1), None, ['bb_autobillboard25'] if IMPOSTERS else [])
     d = dict(tmpl); d.update({'name': item, 'internalName': item, 'shapeFile': f'{rel}/art/forest/models/{item}.dae', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0, 'windScale': 0})
     d.pop('persistentId', None)
     tri = (sum(len(g[4]) // 3 for g in groups), sum(len(g[4]) // 3 for g in (low or groups)))
@@ -721,7 +808,7 @@ for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
     if not (X0 < x < X1 and Z0 < z < Z1):
         continue
-    if not nm_ or NOUSE.search(nm_) or PLANT_RE.search(nm_) or re.match(r'S_|C_|.*Debri', nm_) or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
+    if not nm_ or t in NOMESH or NOUSE.search(nm_) or PLANT_RE.search(nm_) or re.match(r'S_|C_|.*Debri', nm_) or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
         skip['not placed here'] += 1
         continue
     base = re.sub(r'_LOD\d+.*$', '', nm_)
@@ -747,14 +834,18 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
 PLANT = re.compile(r'tree|bush|shrub|pinion|sage|grass|cactus|weed|fern', re.I)
-solid = 0; SOLIDS = collections.Counter()
+solid = 0; SOLIDS = collections.Counter(); INST = defaultdict(list)
 for no, it in list(defs.items()):
     if not it or PLANT.search(it['item']) or it['item'] not in rows:
         continue
     for o in rows.pop(it['item']):
         SOLIDS[it['item']] += 1
         Rm = np.array(o['rotationMatrix']).reshape(3, 3) * o['scale']; pos = np.array(o['pos'])
-        for lvl_, (mat, pb, nb, uv, t) in [(((0,) if it['low'] else (0, 1, 2)), g) for g in it['groups']] + [((1, 2), g) for g in it['low']]:
+        if np.linalg.det(Rm) > 0 and (np.abs(pos[:2]) < HALF - 4).all():       # one shape per model. Mirrored objects stay baked
+            INST[no].append(o); solid += 1
+            continue
+        far_ = FARCUT if max(it['h'], it['w']) < 15 else 2                       # small objects stop at 800 m
+        for lvl_, (mat, pb, nb, uv, t) in [(((0,) if it['low'] else (0, 1, far_)), g) for g in it['groups']] + [((1, far_), g) for g in it['low']]:
             P = pb @ Rm.T + pos; N_ = nb @ Rm.T; N_ = N_ / np.maximum(np.linalg.norm(N_, axis=1, keepdims=True), 1e-9)
             c = P.mean(0)
             if (np.abs(c[:2]) >= HALF - 4).any():
@@ -770,58 +861,63 @@ for item, r in rows.items():
 for v in defs.values():
     if v and v['item'] not in rows:
         p_ = adir / f"{v['item']}.dae"
-        if p_.exists():
-            p_.unlink()
+        for try_ in range(20):           # sync tools and indexers can hold a new file for a moment
+            try:
+                p_.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                time.sleep(.5)
 print('card meshes', stats['card_meshes'], 'mean opaque coverage %', stats['card_fit_pct'] / max(stats['card_meshes'], 1))
 print('forest', len(rows), 'items', stats['instances'], 'instances; no model', stats['inst_nomodel'], 'no mesh', stats['inst_nomesh'])
 print('top items', sorted(((len(v), k) for k, v in rows.items()), reverse=True)[:12])
 
-# ---- heightfield safety floor under the game's terrain meshes
-H = Hs[0].copy()
-print('terrain coverage tier0', float(np.isfinite(H).mean()))
-for k in (1, 2, 3):
-    a = np.isnan(H); H[a] = Hs[k][a]
-holes = np.isnan(H); H = pyramid_fill(H)
-H[holes] = ni.gaussian_filter(H, 6)[holes]
-covered = np.isfinite(Cov); print('terrain meshes shown on', float(covered.mean()), 'of the square')
-road = np.isfinite(Road)
-if road.any():
-    RF = pyramid_fill(np.where(road, Road, np.nan)); dist = ni.distance_transform_edt(~road) * SQ
-    limit = RF - .2 + np.maximum(dist - SQ, 0); cut = (dist <= 40) & (H > limit); H[cut] = limit[cut]
-# the game's meshes are the ground: keep the heightfield far enough under them that it can never poke through
-under = ni.binary_erosion(covered, iterations=3)
-low = ni.minimum_filter(H, size=31) - 8.0
-w_ = ni.gaussian_filter(under.astype('f4'), 2)
-w_ = np.where(under, w_, 0.0)
-H = H * (1 - w_) + low * w_
-level.mkdir(parents=True, exist_ok=True); tdir = level / 'art' / 'terrains'; tdir.mkdir(parents=True, exist_ok=True)
-name = pal['terrain']['dirt']; LAYERS = [name]
-zmin = float(H.min()) - 1; zmax = float(H.max()) + 1; maxh = zmax - zmin
-q = np.clip(np.rint((H - zmin) / maxh * 65535), 0, 65535).astype('<u2')
-with open(level / 'theTerrain.ter', 'wb') as f:
-    f.write(bytes([9])); f.write(np.uint32(N).tobytes()); f.write(q.tobytes()); f.write(np.zeros((N, N), 'u1').tobytes())
-    f.write(np.uint32(1).tobytes()); e = name.encode(); f.write(bytes([len(e)])); f.write(e)
+# ---- map art, for the preview. FH1's meshes are the whole ground: the level has no TerrainBlock
+print('terrain meshes shown on', float(np.isfinite(Cov).mean()), 'of the square')
+level.mkdir(parents=True, exist_ok=True)
 r = json.load(open('../reg.json')); src = Image.open('../ui/New_Map_MapGameReady.jpg').convert('RGB')
 box = (X0 / r['sx'] + r['ox'], Z0 / r['sz'] + r['oz'], X1 / r['sx'] + r['ox'], Z1 / r['sz'] + r['oz'])
-base = src.transform((BASE, BASE), Image.EXTENT, box, Image.BICUBIC); base.save(tdir / 't_terrain_base_b.color.png')
-for fn, c_ in {'t_terrain_base_nm.normal.png': (128, 128, 255), 't_terrain_base_ao.data.png': (255, 255, 255), 't_terrain_base_r.data.png': (230, 230, 230), 't_terrain_base_h.data.png': (128, 128, 128)}.items():
-    Image.new('RGB', (BASE, BASE), c_).save(tdir / fn, optimize=True)
-trel = f'{rel}/art/terrains/'; tset = f'{LVL}TerrainMaterialTextureSet'
-tm = {tset: {'name': tset, 'class': 'TerrainMaterialTextureSet', 'baseTexSize': [BASE, BASE], 'detailTexSize': [1024, 1024], 'macroTexSize': [1024, 1024]}}
-bn = {'baseColorBaseTex': 't_terrain_base_b.color.png', 'normalBaseTex': 't_terrain_base_nm.normal.png', 'aoBaseTex': 't_terrain_base_ao.data.png', 'roughnessBaseTex': 't_terrain_base_r.data.png', 'heightBaseTex': 't_terrain_base_h.data.png'}
-v = dict(pal['terrain_defs'][name]); v.pop('persistentId', None); v.pop('name', None); v['internalName'] = name
-for k in list(v):
-    if k.endswith('BaseTex'):
-        v[k] = trel + bn.get(k, 't_terrain_base_h.data.png')
-    if k.endswith('BaseTexSize'):
-        v[k] = 2 * HALF
-tm[f'{name}_{LVL}'] = v
-(tdir / 'main.materials.json').write_text(json.dumps(tm, indent=2))
+base = src.transform((BASE, BASE), Image.EXTENT, box, Image.BICUBIC)
 
 # ---- shapes, materials, scene
 sdir = level / 'art' / 'shapes'; sdir.mkdir(parents=True, exist_ok=True)
 (sdir / f'{LVL}.materials.json').write_text(json.dumps(MATS, indent=2))
 items = []; METRIC = []
+sys.modules['__main__'].__file__ = os.path.abspath('daewrite.py')      # Windows workers re-import the main module, which must not be this script
+POOL = ProcessPoolExecutor(min(6, os.cpu_count() or 1)); PENDING = set()
+
+
+def queue_lod(*job):
+    """write_lod in a worker. The queue is short, because each job holds a copy of its geometry"""
+    global PENDING
+    while len(PENDING) >= 24:
+        done_, PENDING = wait(PENDING, return_when=FIRST_COMPLETED)
+        for f_ in done_:
+            f_.result()
+    PENDING.add(POOL.submit(write_lod, *job))
+    return has_col(job[1], job[4])
+
+
+
+def detail_sizes(R_, cat):
+    """detail sizes follow from a shape's radius, so every shape switches at the same distance from its edge. The engine
+    measures from the centre: a kilometre-wide tile group would otherwise show LOD1 to a car on top of it"""
+    s0 = max(int(R_ / (LOD_DIST[0] + R_) * PX), 3); s1 = max(min(int(R_ / (LOD_DIST[1] + R_) * PX), s0 - 1), 2)
+    s2 = 1 if cat == 'col' else max(min(int(R_ / (PROP_FAR + R_) * PX), s1 - 1), 1)
+    if s2 >= s1:
+        s1 = s2 + 1; s0 = max(s0, s1 + 1)
+    return s0, s1, s2
+
+
+for no, objs in INST.items():
+    it = defs[no]; far_ = FARCUT if max(it['h'], it['w']) < 15 else 2
+    shape = [((g[0], (0,) if it['low'] else (0, 1, far_)),) + tuple(g[1:]) for g in it['groups']] + [((g[0], (1, far_)),) + tuple(g[1:]) for g in it['low']]
+    allp = np.concatenate([g[1] for g in shape]); R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
+    col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), 2)
+    ct = 'Collision Mesh' if col else 'None'
+    for i_, o in enumerate(objs):
+        items.append({'class': 'TSStatic', 'name': f'fh1_m{no}_{i_}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
+                      'rotationMatrix': o['rotationMatrix'], 'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct})
+print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
 for (u, cat), mm in cells.items():
     groups = []
     for mat, parts in mm.items():
@@ -831,17 +927,15 @@ for (u, cat), mm in cells.items():
         groups.append((mat, np.concatenate(ps), np.concatenate(ns), np.concatenate(uv), np.concatenate(ix), np.concatenate(u2)))
     allp = np.concatenate([g[1] for g in groups]); org = np.round((allp.min(0) + allp.max(0)) / 2)
     R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
-    # detail sizes follow from this shape's radius, so every cell switches at the same distance
-    s0 = max(int(R_ / LOD_DIST[0] * PX), 3); s1 = max(min(int(R_ / LOD_DIST[1] * PX), s0 - 1), 2)
-    s2 = 1 if cat == 'col' else max(min(int(R_ / PROP_FAR * PX), s1 - 1), 1)
-    if s2 >= s1:
-        s1 = s2 + 1; s0 = max(s0, s1 + 1)
     fn = f'c{u}_{cat}'
-    col = write_lod(sdir / 'fh1' / f'{fn}.dae', groups, org, (s0, s1, s2), cat != 'vis')
+    col = queue_lod(sdir / 'fh1' / f'{fn}.dae', groups, org, detail_sizes(R_, cat), {'col': 2, 'pro': 2}.get(cat))
     ct = 'Collision Mesh' if col else 'None'
     items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
                   'position': [float(x) for x in org], 'collisionType': ct, 'decalType': ct})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
+for f_ in PENDING:
+    f_.result()
+POOL.shutdown()
 cam = g2b(np.array([[-5681., 350., 5301.]]))[0]; drawn = [0, 0, 0, 0]; before = 0
 for org, R_, cat, tr in METRIC:
     d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[0] else 1 if d_ < LOD_DIST[1] else 2
@@ -895,9 +989,7 @@ obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup'
        {'class': 'TimeOfDay', 'name': 'tod', '__parent': 'MissionGroup', 'time': .1, 'play': False, 'azimuthOverride': 0, 'startTime': .1},
        {'class': 'ScatterSky', 'name': 'sunsky', '__parent': 'MissionGroup', 'position': [0, 0, 0], 'shadowDistance': 1600, 'shadowSoftness': .2, 'brightness': 1.0},
        spawn, {'name': 'fh1', 'class': 'SimGroup', '__parent': 'MissionGroup'},
-       {'name': 'theForest', 'class': 'Forest', '__parent': 'MissionGroup', 'position': [0, 0, 0]},
-       {'name': 'theTerrain', 'class': 'TerrainBlock', '__parent': 'MissionGroup', 'position': [-HALF, -HALF, zmin], 'squareSize': SQ, 'maxHeight': maxh,
-        'baseTexSize': BASE, 'materialTextureSet': tset, 'terrainFile': f'{rel}/theTerrain.ter'}]
+       {'name': 'theForest', 'class': 'Forest', '__parent': 'MissionGroup', 'position': [0, 0, 0]}]
 (mg / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in obj))
 (mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in items))
 base.resize((1024, 1024)).save(level / f'{LVL}.jpg', quality=90)
@@ -908,3 +1000,7 @@ base.resize((1024, 1024)).save(level / f'{LVL}.jpg', quality=90)
     'spawnPoints': [{'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': f'{LVL}.jpg'}], 'defaultSpawnPointName': 'spawn_redrock'}, indent=2))
 pickle.dump({k: v for k, v in surf.items()}, open('../surf.pkl', 'wb'))
 print('done', f'{time.time() - start_:.0f}s ->', level)
+if len(sys.argv) == 1:                  # the wipe at the top also removes the sky. sky.py only patches installed levels
+    subprocess.run([sys.executable, 'sky.py', LVL], check=True)
+    subprocess.run([sys.executable, 'navmap.py', LVL], check=True)
+    subprocess.run([sys.executable, 'grade.py', LVL], check=True)

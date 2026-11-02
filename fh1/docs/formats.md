@@ -25,7 +25,7 @@ Read by `rmb.py`, catalogued by `r4.py` into `cat2.pkl`.
 - Positions are world space or origin-local. The header holds the mesh count (`hdr[4]`). Each file can hold several meshes.
 - Each mesh: name, vertex count, stride, vertices, then sections (name, 8 ints, 8 floats, index width and count, strips with 0xFFFF restart). Materials follow the last mesh.
 - Vertices: 3 float position, 10:10:10 normal, s16 UV. Stride 16 means tree cards (position plus UV), not normal meshes.
-- UV is `s * scale / 65535`, with scale from the section's `fl[6:8]`. There is no offset. An older formula with an offset only looked right on tiling textures, so don't bring it back.
+- s16 UVs are quantised to a per-mesh box: `uv = lo + (s / 32767 + 1) / 2 * (hi - lo)`, with `lo` from `fl[4:6]` and `hi` from `fl[6:8]`. Stored values span almost the full s16 range (median 0.97), and signs and poles land inside 0 to 1. Tree cards use the same box. The older `s * scale / 65535` form only looked right on tiling textures.
 - `pv.py` and `v2.py` are a small software renderer for comparing UV formulas against textures.
 
 ## Textures: `*.bix` plus `*_B.bix` (proven)

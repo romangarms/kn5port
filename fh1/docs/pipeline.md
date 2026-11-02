@@ -52,6 +52,8 @@ One 900-line script run top to bottom:
 
 Output categories are in the `statics` and `sections by road surface` lines. `pgeo files` reports parser skips.
 
+Shapes are written by worker processes (`daewrite.py`), and cooked textures are cached in `../ddscache`. Delete that folder after changing `dds.py` or `TEXMAX`.
+
 ## Checks
 
 ```

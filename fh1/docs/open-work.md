@@ -20,10 +20,10 @@ Only the user can test in BeamNG, and only one of BeamNG or Xenia can run at a t
 | Replace `.pgeo` name filter with data | `EVENT` | Weak spot of the free-roam logic |
 | Barnfind default state | `free-roam.md` | Barns are dropped by the owner rule |
 | 7 failed live checks | `formats.md`, zones | Gantries, water tower, barn |
-| Normal maps | `p8.py`, `material` | Not read yet. Likely helps low-res terrain |
+| Normal maps | `tex.py`, `dds.py`, `material` | Not used yet. 41 BC5 textures (format 0x71) on road and some terrain shaders, centred on 127, 128. `h_blnd*_norm` and `h_vblnd_norm` meshes often have no 0x71 slot, so their normals may be stored as DXT1 |
 | Terrain texture resolution | `TEXMAX`, `blend_material` | User noticed low-res terrain |
 | Lightmaps, water | Not started | |
-| `.fiz` collision | Not started | Collision mesh works, so low priority |
+| `.fiz` collision | Tried and reverted, `fiz.py` reads it | Mixed winding made cars crumple: see `beamng-output.md`. Flags are not decoded |
 | Semi wheels | `model_groups` | Wheels wrong, rest of the semi fine |
 
 ## What the user has said
