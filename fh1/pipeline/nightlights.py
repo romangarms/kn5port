@@ -34,8 +34,9 @@ LAMPS = {'m6533': (0.0, 2.0, 7.9), 'm6559': (0.0, 0.0, 4.2)}
 MATCH = 10.0; POOL_HEIGHT = 6.0
 # Like West Coast's street bounce lights (intensity 5000, radius 14, warm, no shadows), scaled by the pool's peak against the median peak.
 # Radius covers the pool plus the drop from the head, within RADIUS. fh1Extras.lua switches on only the nearest few at night
-# 5000 and up to 22 m looked quite dim in-game
-INTENSITY = 12000.0; PEAK = .72; RADIUS = (12.0, 28.0)
+# 5000 and up to 22 m looked quite dim in-game. At 12-28 m BeamNG's clustered lighting dropped lamps as too small on screen half a block away,
+# so radius is 40-60 m: light still falls off with distance, so pools look the same, and lamps stay large enough on screen to be kept
+INTENSITY = 12000.0; PEAK = .72; RADIUS = (40.0, 60.0)
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX, SH = pickle.load(open('../texshader.pkl', 'rb'))
 
 

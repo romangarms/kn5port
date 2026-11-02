@@ -20,10 +20,6 @@ local LAMP_SECONDS = 2
 -- 20 within 250 m showed about 6 lamps at a time; the user saw 90 fps in Carson at night with that, and asked for at least 200
 local MAX_LAMPS = 250
 local LAMP_FAR = 1000
--- ClusterShading drops lights smaller on screen than minLightScreenSize (0.01 to 0.04 by quality), which hid lamps a short way off.
--- While an FH1 level runs it's lowered to this, and the player's own value comes back when the level ends
-local LAMP_SCREEN_SIZE = 0.002
-local savedScreenSize = nil
 
 local data
 local levelDir
@@ -307,13 +303,7 @@ local function refresh()
   updateShots(x, y)
 end
 
-local function restoreScreenSize()
-  if savedScreenSize and ClusterShading then ClusterShading.minLightScreenSize = savedScreenSize end
-  savedScreenSize = nil
-end
-
 local function start()
-  restoreScreenSize()
   stopAmbience()
   unpatchCity()
   data = nil
@@ -332,10 +322,6 @@ local function start()
   lamps = FS:fileExists(levelDir .. 'fh1_lamps.json') and jsonReadFile(levelDir .. 'fh1_lamps.json') or nil
   lampsOn = {}
   sinceLamps = LAMP_SECONDS
-  if lamps and ClusterShading then
-    savedScreenSize = ClusterShading.minLightScreenSize
-    ClusterShading.minLightScreenSize = math.min(savedScreenSize or LAMP_SCREEN_SIZE, LAMP_SCREEN_SIZE)
-  end
   ambienceOn = true
   shotsOn = true
 end
@@ -390,7 +376,6 @@ local function onUpdate(dtReal)
 end
 
 local function onClientEndMission()
-  restoreScreenSize()
   data = nil
   lamps = nil
   lampsOn = {}
