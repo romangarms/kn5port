@@ -1,4 +1,4 @@
-"""FH1's animated objects: windmills, wind turbines and tractors. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
+"""FH1's animated objects: windmills, wind turbines, tractors and the crop duster. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
 as West Coast USA's pump jacks do. Vehicles follow the route in their ANIM_*.pgeo the same way. Moving parts have no collision.
 Run after build3.py, which wipes the level: python animated.py [fh1_colorado]. Safe to run twice. Needs no rebuild."""
 import glob, json, os, pickle, re, struct, sys
@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 from daewrite import FARCUT, write_lod
-import gamezip, rmb
+import gamezip, granny, rmb
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -25,6 +26,9 @@ AXIS = (0, 1, 0)
 # mesh: the source meshes for LOD0 and LOD1. model: the file holding the route. group: the anim_proc set that places it. lod: detail sizes
 VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1))}
 KEY_SECONDS = 1.0; STOPPED = .05
+# Planes come from Granny meshes, which have no decoded UVs, so colour is the median of their texture. The route is level in FH1 once its tilted frame is removed
+FLYERS = {'cropduster': dict(model='ANIM_CropDuster_Zone_05_001.pgeo', group='cropduster_zone_05_001', colour=(117, 16, 10), lod=(60, 20, 1))}
+FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; GRAVITY = 9.81
 
 
 def channel(node, target, param, times, values):
@@ -89,6 +93,32 @@ def route(name):
         else:
             i += 1
     return best
+
+
+def level_route(c):
+    """Route in BeamNG axes with the tilt of its best-fit plane removed. FH1's frame for it is tilted, but the flight is flat in that plane. Compass direction is kept as far as a plain tilt keeps it."""
+    n = np.linalg.svd(c - c.mean(0), full_matrices=False)[2][2]; n = -n if n[1] < 0 else n
+    v = np.cross(n, (0, 1, 0)); k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    w = c @ (np.eye(3) + k + k @ k / (1 + n[1])).T
+    return np.c_[w[:, 0], w[:, 2], w[:, 1]]
+
+
+def flight(t, q):
+    """Keys through a route, with the plane's heading, pitch and bank taken from its motion, as FH1's rotation curves aren't decoded."""
+    times = np.arange(0, t[-1], FLY_KEY_SECONDS); p = np.c_[[np.interp(times, t, q[:, i]) for i in range(3)]].T
+    times = np.r_[times, t[-1]]; p = np.r_[p, p[:1]]
+    d = np.gradient(p, times, axis=0); flat = np.hypot(d[:, 0], d[:, 1])
+    yaw = np.unwrap(np.arctan2(-d[:, 0], d[:, 1]))
+    rate = np.convolve(np.gradient(yaw, times), np.ones(7) / 7, 'same')
+    bank = np.clip(np.degrees(np.arctan(flat * rate / GRAVITY)), -MAX_BANK, MAX_BANK)
+    return times, p, np.degrees(yaw), np.degrees(np.arctan2(d[:, 2], flat)), -bank
+
+
+def ground_samples():
+    """Points on the ground. The level has no TerrainBlock, as FH1's meshes are the ground, so this uses what stands on them: forest items and road waypoints."""
+    pts = [o['pos'] for f in (level / 'forest').glob('*.json') for o in map(json.loads, filter(str.strip, f.read_text().splitlines()))]
+    pts += [o['position'] for o in map(json.loads, filter(str.strip, (mg / 'fh1_nav' / 'items.level.json').read_text().splitlines())) if 'position' in o]
+    return np.array(pts, 'f8')
 
 
 def mesh_groups(nos):
@@ -231,6 +261,25 @@ for kind, w in VEHICLES.items():
         rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
                      'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
         print(kind, i, [round(float(v)) for v in pos], 'route end', np.round(Rm @ np.array([x[len(x) // 2], y[len(y) // 2], 0]) + pos, 0).tolist())
+g = ground_samples()
+for kind, w in FLYERS.items():
+    q, tri = granny.mesh(w['model']); t, c = route(w['model'])
+    path = out / f'{kind}.dae'; mat = f'fh1_{kind}'
+    write_lod(path, [((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, tri), np.zeros((len(q), 2)), tri.ravel(), np.zeros((len(q), 2)))], np.zeros(3), w['lod'], None)
+    r = records(w['group'])[0]; pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
+    times, p, yaw, pitch, bank = flight(t, level_route(c))
+    near = cKDTree(g[:, :2]).query_ball_point(pos[:2] + p[:, :2], GROUND_RADIUS)
+    lift = max(g[i, 2].max() - pos[2] - p[k, 2] for k, i in enumerate(near) if i) + CLEARANCE; p[:, 2] += lift
+    lo = p.min(0) - 8; hi = p.max(0) + 8
+    animate(path, [('location.X', 'X', times, p[:, 0]), ('location.Y', 'Y', times, p[:, 1]), ('location.Z', 'Z', times, p[:, 2]), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
+                   ('rotationY.ANGLE', 'ANGLE', times, bank), ('rotationX.ANGLE', 'ANGLE', times, pitch)], bounds(lo, hi))
+    (out / 'main.materials.json').write_text(json.dumps({mat: {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'doubleSided': True,
+                                                               'Stages': [{'baseColorFactor': [v / 255 for v in w['colour']] + [1], 'roughnessFactor': .55, 'metallicFactor': 0}]}}))
+    rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
+                 'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+    world_p = pos + p
+    print(kind, len(q), 'verts', len(tri), 'tris, lift', round(float(lift), 1), 'x', np.round([world_p[:, 0].min(), world_p[:, 0].max()]).tolist(), 'y', np.round([world_p[:, 1].min(), world_p[:, 1].max()]).tolist(),
+          'z', np.round([world_p[:, 2].min(), world_p[:, 2].max()]).tolist(), 'max bank', round(float(np.abs(bank).max())), 'max pitch', round(float(np.abs(pitch).max())))
 (mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in world))
 (mg / 'fh1_anim').mkdir(exist_ok=True)
 (mg / 'fh1_anim' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
