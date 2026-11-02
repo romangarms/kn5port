@@ -275,7 +275,7 @@ for kind, w in FLYERS.items():
                    ('rotationY.ANGLE', 'ANGLE', times, bank), ('rotationX.ANGLE', 'ANGLE', times, pitch)], bounds(lo, hi))
     (out / 'main.materials.json').write_text(json.dumps({mat: {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'doubleSided': True,
                                                                'Stages': [{'baseColorFactor': [v / 255 for v in w['colour']] + [1], 'roughnessFactor': .55, 'metallicFactor': 0}]}}))
-    rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
+    rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_0', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
                  'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     world_p = pos + p
     print(kind, len(q), 'verts', len(tri), 'tris, lift', round(float(lift), 1), 'x', np.round([world_p[:, 0].min(), world_p[:, 0].max()]).tolist(), 'y', np.round([world_p[:, 1].min(), world_p[:, 1].max()]).tolist(),
