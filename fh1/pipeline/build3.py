@@ -120,6 +120,11 @@ class Textures:
 
 TX = Textures()
 MATS = {}
+# Lamp glass that glows at night, as West Coast's floodlights do: FH1's h_diff_spec_ao_2__emissive_lm lamps keep an emissive mask in slot
+# position 3, black except the glass (a yellow globe on the lamp post, tinted glass on the street light). It becomes the material's emissiveMap
+# under instanceEmissive, and the TSStatics carry nightEmissive with a black instanceColor, so stock core_environment lights only the glass from
+# 18:00 to 6:00. GLOW: model name prefixes and the mask's slot position. GLOW_NITS by eye from West Coast's floodlight (4000) and traffic lights (5000)
+GLOW = {'OBJ_CLRD_LampPost': 3, 'OBJ_CLRD_StreetLight': 3}; GLOW_NITS = 3000; GLOWING = set()
 NM = {}; PAIR = {}       # NM: the current section's normal map for each colour texture, from section_normals
 
 
@@ -153,16 +158,19 @@ def section_normals(no, slots):
     return out
 
 
-def material(tid, ground=None, alpha=False, translucent=False, two=False):
-    t = TX.get(tid)
+def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None):
+    """glow: an emissive mask texture, lit at night through the TSStatic's instance colour (see GLOW)"""
+    t = TX.get(tid); g_ = TX.get(glow) if glow is not None else None
     if t is None:
         return None
     use_a = (alpha or translucent) and t['cut'] > 0.002; n_ = NM.get(tid)
-    key = f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '')
+    key = f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '') + (f'_e{glow:X}' if g_ else '')
     if key not in MATS:
         st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
         if n_:
             st['normalMap'] = TX.normal(n_)
+        if g_:
+            st.update({'emissiveMap': f"{rel}/art/textures/{g_['name']}.color.dds", 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': GLOW_NITS, 'instanceEmissive': True})
         m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng'}
         if use_a:
             st['opacityMap'] = f"{rel}/art/textures/{t['name']}_o.data.dds"
@@ -822,9 +830,14 @@ def model_groups(no):
                     ts = [cut_[-1][1]]
                 elif not card and c0_ >= .05 and cut_:
                     ts = [cut_[0][1]]
-            mt = material(ts[0], alpha=True, two=True)
+            gs_ = next((v_ for k_, v_ in GLOW.items() if NAME_.get(no, '').startswith(k_)), None)
+            sl_ = M[mi][1] if mi < len(M) else []
+            glow = IDX[ids[sl_[gs_]]][0] if gs_ is not None and gs_ < len(sl_) and sl_[gs_] < len(ids) else None
+            mt = material(ts[0], alpha=True, two=True, glow=glow)
             if mt is None:
                 continue
+            if glow is not None:
+                GLOWING.add(no)
             if card:
                 uv = box_uv(r0 / 32767, s['fl'])
                 e1 = pb[T[:, 1]] - pb[T[:, 0]]; e2 = pb[T[:, 2]] - pb[T[:, 0]]; fn_ = np.cross(e1, e2)
@@ -1085,7 +1098,8 @@ for no, objs in INST.items():
     for i_, o in enumerate(objs):
         items.append({'class': 'TSStatic', 'name': f'fh1_m{no}_{i_}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
                       'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(),     # a TSStatic lists its axes as rows, measured on stock guardrail chains
-                      'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct})
+                      'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct,
+                      **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if no in GLOWING or lod_sibling(no) in GLOWING else {})})
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
 for (u, cat), mm in cells.items():
     groups = []

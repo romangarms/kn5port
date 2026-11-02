@@ -1,6 +1,6 @@
 """FH1's night lightmaps as glowing overlays: a copy of each lit ground triangle, lifted a little, with the lightmap as an additive emissive map.
 Stock core_environment turns them on at night: the TSStatics carry nightEmissive and the materials instanceEmissive, as Italy's lamps do.
-Point lights at FH1's lamp heads and unclaimed pool centres go in fh1_lamps, and fh1Extras.lua switches on the nearest few at night.
+Spot lights at FH1's lamp heads and unclaimed pool centres go in fh1_lamps, pointing down, and stock core_environment turns them all on at night (nightLight).
 Every town, or one with TOWN. Run after build3.py, which wipes the level: python nightlights.py [fh1_colorado]. Safe to run twice. Needs no rebuild.
 Layout of the lightmaps is in docs/formats.md: slot 7, a top-down view over the box of the ground that shares it."""
 import json, os, pickle, re, struct, sys
@@ -26,17 +26,20 @@ LIT = 8; FIT = .6
 NITS = 40; LIFT = .04; FAR = 600.0; PX = 1250.0
 # Pool centres: local maxima at least POOL_GAP metres apart and brighter than POOL_MIN of 255, used to place and colour the lamps' lights
 POOL_GAP = 6.0; POOL_MIN = 40
-# Point lights, so cars, walls and props are lit too. FH1's lamp props carry one at the head: LAMPS gives each shape's head in its own axes, measured
+# Lights, so cars, walls and props are lit too. FH1's lamp props carry one at the head: LAMPS gives each shape's head in its own axes, measured
 # from the built .dae (m6533 OBJ_CLRD_LampPost, light at the end of its arm; m6559 OBJ_CLRD_StreetLight). A pool within MATCH metres of a head colours it;
 # pools with no lamp near (lamps on walls, or meshes not listed) get a light POOL_HEIGHT above the ground. Placement rotation is applied transposed:
 # that put lamp-post heads a median 3.4 m from pool centres, against 4.0 m the other way and 3.8 m for the bases
 LAMPS = {'m6533': (0.0, 2.0, 7.9), 'm6559': (0.0, 0.0, 4.2)}
 MATCH = 10.0; POOL_HEIGHT = 6.0
-# Like West Coast's street bounce lights (intensity 5000, radius 14, warm, no shadows), scaled by the pool's peak against the median peak.
-# Radius covers the pool plus the drop from the head, within RADIUS. fh1Extras.lua switches on only the nearest few at night
-# 5000 and up to 22 m looked quite dim in-game. At 12-28 m BeamNG's clustered lighting dropped lamps as too small on screen half a block away,
-# so radius is 40-60 m: light still falls off with distance, so pools look the same, and lamps stay large enough on screen to be kept
-INTENSITY = 12000.0; PEAK = .72; RADIUS = (40.0, 60.0)
+# Built like West Coast's street lamps (lightemitters_pl_double, _single, _lightcity): a SpotLight at the head pointing straight down (DOWN, the matrix
+# they all use), inner angle 25, outer 150-160, range 45-70 m, intensity in lumens with brightness = intensity / 5000, and stock nightLight, so
+# core_environment switches them all and the clustered renderer culls and budgets them. Point lights switched nearest-first by fh1Extras.lua showed
+# only right by the camera. BRIGHTNESS is what the user approved on those point lights (intensity 12000 / 20000 pi), scaled by the pool's peak.
+# Range and outer angle grow with the head's height, from the 4.2 m street light to the 7.9 m lamp post. Only lamp-post heads cast shadows:
+# pool-only lights may be in the open, where a shadow from nothing would look wrong
+BRIGHTNESS = 12000.0 / (20000 * np.pi); PEAK = .72; LUMENS_PER_BRIGHTNESS = 5000.0
+RANGE = (45.0, 70.0); OUTER = (150.0, 160.0); INNER = 25.0; HEIGHTS = (4.2, 7.9); DOWN = [1, 0, 0, 0, 0, -1, 0, 1, 0]
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX, SH = pickle.load(open('../texshader.pkl', 'rb'))
 
 
@@ -184,22 +187,24 @@ for p, rise in heads:
         used[j] = True; _, _, _, peak, rgb, rad = pool[j]
     else:
         peak, rgb, rad = PEAK, WARM, 6.0
-    lights.append((p, peak, rgb, rad + rise)); stats['lamp_matched' if d < MATCH else 'lamp_unmatched'] += 1
+    lights.append((p, peak, rgb, rise, True)); stats['lamp_matched' if d < MATCH else 'lamp_unmatched'] += 1
 htree = cKDTree([h[0][:2] for h in heads]) if heads else None
 for q, u in zip(pool, used):
     if u or (htree is not None and htree.query(q[:2])[0] < MATCH):
         continue
-    x, y, z, peak, rgb, rad = q; lights.append((np.array([x, y, z + POOL_HEIGHT]), peak, rgb, rad + POOL_HEIGHT)); stats['pool_lights'] += 1
-lamp_rows = []; lua = []
-for i, (p, peak, rgb, reach) in enumerate(lights):
-    I = INTENSITY * float(np.clip(peak / PEAK, .4, 1.5)); name = f'fh1_lamp_{i}'
-    lamp_rows.append({'class': 'PointLight', 'name': name, '__parent': 'fh1_lamps', 'position': [round(float(v), 2) for v in p],
-                      'color': [round(float(c), 3) for c in rgb] + [1], 'intensity': round(I, 1), 'brightness': I / (20000 * np.pi),
-                      'radius': round(float(np.clip(reach, *RADIUS)), 1), 'isEnabled': False, 'castShadows': False, 'useColorTemperature': 'false'})
-    lua.append([name, round(float(p[0]), 1), round(float(p[1]), 1)])
+    x, y, z, peak, rgb, rad = q; lights.append((np.array([x, y, z + POOL_HEIGHT]), peak, rgb, POOL_HEIGHT, False)); stats['pool_lights'] += 1
+lamp_rows = []
+for i, (p, peak, rgb, rise, shadows) in enumerate(lights):
+    b = BRIGHTNESS * float(np.clip(peak / PEAK, .4, 1.5)); t = float(np.clip((rise - HEIGHTS[0]) / (HEIGHTS[1] - HEIGHTS[0]), 0, 1))
+    lamp_rows.append({'class': 'SpotLight', 'name': f'fh1_lamp_{i}', '__parent': 'fh1_lamps', 'position': [round(float(v), 2) for v in p], 'rotationMatrix': DOWN,
+                      'color': [round(float(c), 3) for c in rgb] + [1], 'intensity': round(b * LUMENS_PER_BRIGHTNESS, 2), 'intensityUnit': 'lm', 'brightness': b,
+                      'range': round(RANGE[0] + t * (RANGE[1] - RANGE[0]), 1), 'innerAngle': INNER, 'outerAngle': round(OUTER[0] + t * (OUTER[1] - OUTER[0]), 1),
+                      'castShadows': shadows, 'isEnabled': False, 'nightLight': '1', 'useColorTemperature': 'false'})
+    stats['shadowed' if shadows else 'unshadowed'] += 1
 (mg / 'fh1_lamps').mkdir(exist_ok=True)
 (mg / 'fh1_lamps' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in lamp_rows))
-(level / 'fh1_lamps.json').write_text(json.dumps(lua))
+# fh1Extras.lua used to switch the nearest lamps from this list; stock nightLight does it now
+(level / 'fh1_lamps.json').unlink(missing_ok=True)
 top = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
 for g in ('fh1_night', 'fh1_lamps'):
     if not any(o.get('name') == g for o in top):
