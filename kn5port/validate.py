@@ -230,8 +230,10 @@ def main(argv=None):
                 vals = np.array(fa.text.split(), dtype=np.float32)
                 if len(vals) != int(fa.get("count")):
                     errors.append(f"{dae.name}/{geom.get('id')}: float_array count mismatch")
-                arrays[src.get("id").rsplit("-", 1)[1]] = vals
+                arrays[src.get("id").rsplit("-", 1)[-1]] = vals
             tri = geom.find(".//c:triangles", NS)
+            if "p" not in arrays or tri is None:      # a shape from another writer, with its own source ids
+                continue
             idx = np.array(tri.find("c:p", NS).text.split(), dtype=np.int64)
             nv = len(arrays["p"]) // 3
             if len(idx) != 3 * int(tri.get("count")) or (len(idx) and idx.max() >= nv):

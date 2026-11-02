@@ -43,6 +43,7 @@ The user has said terrain looks a little low-res. FH1's sources are mostly 128 t
 - Switch distances: `LOD_DIST = (300, 800)`, from the shape's edge. Props vanish at `PROP_FAR = 1600`. `col` shapes never vanish.
 - Detail sizes are computed from each shape's radius and `PX = 1250` (pixels of radius per radius/distance at 1440p), so all cells switch at the same distance. The engine measures from the centre, so `detail_sizes` adds the radius: tile groups can be 1 km wide. A name like `o0_a71` means detail size 71.
 - Shape tree: `base00 > start01 > o<i>_a<size>`, as in stock shapes.
+- Each LOD and `Colmesh` node is a full copy in the `.cdae`: size fits 56.1 bytes per instantiated vertex and 11.8 per triangle, R2 0.9999. `write_lod` welds vertices that would write the same text, which took Colorado's predicted cooked shapes from 2.80 GB to 1.91 GB.
 
 ## Collision
 
@@ -91,3 +92,5 @@ Far ground is hidden over water, and only sinks under near ground, not at road e
 ## Cooked shapes
 
 Stock levels ship a `.cdae` beside every `.dae`. `cookship.py` copies BeamNG's cooked shapes from `temp/` into the level, after one load. A rebuild wipes them.
+
+The Uber shell has festival tents baked in as lumps. In a small hole in finer ground (under 0.15 km²), shell vertices are held to 1 m above that ground (`lump`).

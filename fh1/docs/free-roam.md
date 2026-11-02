@@ -40,8 +40,10 @@ Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), an
 
 Name allow-lists (`KEEP`, `NOTKEEP`, `ONROAD_OK`), a 1 m gameplay-node rule, and zone voting (`zonevote.pkl`) all came first. The zone reader replaced them, and they're gone from `build3.py`.
 
-## Roadside barriers
+## Barriers
 
-Zone record owners are real event ids. `FR05` is `Events.HorizonEventID` in `media/db/gamedb.slt`, and `FESTIVAL_FIRST_001` is `Tracks.DevName`. Barrier records with an owner are therefore never kept (2,669 `OBJ_FEST_BarrierMetal`).
+Road fences and barriers are permanent scenery in `Models_Ungrouped` files: `MetalFarmFence`, `BrickMetalFence`, `STFT_Chain_Linked_Fence`, `OBJ_BarrierBrand`, `OBJ_FEST_BarrierMetal`. See full-transform instances in `formats.md`. They aren't event props.
 
-`.pgeo` barrier sets can't be proved either way. None has the `[freeroam]` tag, nothing in `gamedb.slt` or the bundles names them, and names like `barriers_moun_005_006_007` look like event numbers. `build3.py` keeps `models_proc_clrd_festival_*_barriers_*` sets, apart from multiplayer, showcase and track sets. A barrier within `LANE_GAP` (6 m) of a road in `colorado.nav` is dropped, because some are event closures: 3,300 of 34,804 on Colorado, a count that still included the owned records. The user has asked whether this check is needed. Set `LANE_GAP` to 0 to turn it off.
+Zone record owners are real event ids. `FR05` is `Events.HorizonEventID` in `media/db/gamedb.slt`, and `FESTIVAL_FIRST_001` is `Tracks.DevName`. A record with an owner is never kept. `models_proc_clrd_*_barriers_*` sets stay out, and `model_item` refuses `BarrierConcrete`: the user reports it never appears in the game and blocks real roads.
+
+Hoardings and `TWALL` covers come back when `0x6e` is in their list. That value was seen on them at the festival, where Xenia shows them in free roam. What the list bytes mean is still not decoded.

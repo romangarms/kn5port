@@ -7,8 +7,7 @@ from pathlib import Path
 from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
-from scipy.spatial import cKDTree
-import dds, nav, rmb, tex
+import dds, rmb, tex
 from daewrite import FARCUT, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -20,7 +19,7 @@ Image.MAX_IMAGE_PIXELS = None
 CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
           'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
 LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
-CELL = 250.0; LANE_GAP = 6.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE after changing dds.py or TEXMAX
+CELL = 250.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE after changing dds.py or TEXMAX
 # LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
 IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
@@ -205,6 +204,13 @@ def water():
     return 'fh1_water'
 
 
+def flat():
+    """for wire whose texture isn't in the dump"""
+    if 'fh1_flat' not in MATS:
+        MATS['fh1_flat'] = {'name': 'fh1_flat', 'mapTo': 'fh1_flat', 'class': 'Material', 'version': 1.5, 'materialTag0': 'beamng', 'Stages': [{'baseColorFactor': [.09, .09, .08, 1], 'roughnessFactor': .6, 'metallicFactor': .5}, {}, {}, {}]}
+    return 'fh1_flat'
+
+
 def role_ground(s):
     s = s.lower()
     if 'sediment' in s or 'rock' in s: return 'ROCK'
@@ -241,7 +247,7 @@ def togrid(p):
 cells = defaultdict(lambda: defaultdict(list)); stats = collections.Counter(); surf = collections.Counter(); start_ = t0 = time.time()
 
 
-LV = (0,); FIX = None
+LV = (0,); FIX = None; DROPPED = collections.Counter()
 
 
 def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
@@ -340,13 +346,13 @@ for f, cs in byfile.items():
         FIX = group_cell(lodkey(n))
         near_ = rel_ == 0
         for s in m['secs']:
-            T = rmb.tris(s['ib'], m['nv'])
+            T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             q_ = MT[no][1]
             if len(T) and s['ints'][2] < len(q_) and SHADERS[q_[s['ints'][2]]].startswith('lake'):      # materials() can't read this shader's record
                 add('vis', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T); raster(Water, g[T])
                 continue
             if not len(T) or s['ints'][2] >= len(M):
-                stats['sec_nomat'] += 1
+                stats['sec_nomat'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
             si, slots = M[s['ints'][2]]
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
@@ -357,8 +363,11 @@ for f, cs in byfile.items():
             decal = 'decal' in fx; opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
             road = fx.startswith('h_road') and not re.search(r'sign|barrier|wall|armco', n, re.I)
             ts = slot_tex(no, [x for x in slots if x < 96])
+            if not ts and 'barbwire' in n.lower():
+                add('vis', flat(), p, nr, box_uv(r0, s['fl']), T); surf['wire'] += len(T)
+                continue
             if not ts:
-                stats['sec_notex'] += 1
+                stats['sec_notex'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
             if isterr:
                 if near_:
@@ -407,6 +416,7 @@ for f, cs in byfile.items():
             else:
                 add('pro', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
 LV = (0, 1, 2); FIX = None
+print('dropped sections by mesh', DROPPED.most_common(24))
 shown = np.isfinite(Cov)
 road = np.isfinite(Road)
 if road.any():
@@ -442,19 +452,24 @@ def clip_far(A, T, dout, din):
     c_ = togrid(V[:, :3]); ci = np.clip(c_[:, 0].astype(int), 0, N - 1); cj = np.clip(c_[:, 1].astype(int), 0, N - 1)
     k_ = dist[cj, ci] <= 40
     V[k_, 1] = np.minimum(V[k_, 1], limit[cj, ci][k_])
+    if tier_ == 2:
+        V[:, 1] = np.minimum(V[:, 1], lump[cj, ci])
     V[:, 1] -= .5 * np.minimum(dsink[cj, ci], LIP)      # only under ground. At a road edge there's nothing above it, so it would show as a ditch
     return V, np.arange(len(V)).reshape(-1, 3)
 
 
 for tier_ in (0, 1, 2):
     new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
+    if tier_ == 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
+        lab_, n_ = ni.label(~shown); small = np.bincount(lab_.ravel()) * SQ * SQ < 150000; small[0] = False
+        lump = np.where(small[lab_], pyramid_fill(Cov) + 1, np.inf)
     dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
     for t_, no, M, m, p, nr, r0, r1, g in FARQ:
         if t_ != tier_:
             continue
         ids = MT[no][0]
         for s in m['secs']:
-            T = rmb.tris(s['ib'], m['nv'])
+            T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(T) or s['ints'][2] >= len(M):
                 continue
             uv = box_uv(r0, s['fl'])
@@ -513,22 +528,34 @@ def axis(w):
     return np.array([s11(w & 2047), s11((w >> 11) & 2047), s10((w >> 22) & 1023)])
 
 
-def groups_of(w, M, total):
-    """model records (flag, k, a, n, lods): model k owns n instances, in model order; empty tail models may have no record"""
-    G = []; i = 1
-    while i < len(w) - 4 and len(G) < M:
-        if w[i] <= 1 and w[i - 1] == 0 and w[i + 1] == len(G) and w[i + 2] < 100000 and w[i + 3] <= total and 1 <= w[i + 4] <= 8:
-            G.append(w[i + 3]); i += 5
-            if sum(G) == total:
-                return G + [0] * (M - len(G))
-        else:
-            i += 1
-    return None
+def model_table(w, M, total):
+    """model records (flag, k, a, n, lods), in model order: model k owns n packed instances and a full-transform ones.
+    Returns ([a], [n]), or None if they don't account for the packed block. Empty tail models may have no record"""
+    a_ = []; n_ = []
+    for i in range(1, len(w) - 4):
+        if len(a_) < M and w[i] <= 1 and w[i - 1] in (0, 4) and w[i + 1] == len(a_) and w[i + 2] < 100000 and w[i + 3] <= total and 1 <= w[i + 4] <= 64:
+            a_.append(w[i + 2]); n_.append(w[i + 3])
+    a_ += [0] * (M - len(a_)); n_ += [0] * (M - len(n_))
+    return (a_, n_) if sum(n_) == total else None
+
+
+def placed_blocks(b, a_, lo, hi):
+    """The full-transform instances of a packed file: 96 byte rows per model, in model order, before the packed block.
+    Word 15 of a row is 1 and words 3, 7 and 11 are 0. What separates the blocks varies in length, so rows are found by that.
+    Returns [(k, rows)], or None if they don't match the records"""
+    w = np.frombuffer(b, '>u4', (hi - lo) // 4, lo)
+    i_ = np.where((w[15:] == 0x3f800000) & (w[3:-12] == 0) & (w[7:-8] == 0) & (w[11:-4] == 0))[0]
+    if len(i_) != sum(a_):
+        return None
+    out = []; o_ = 0
+    for k_, n_ in enumerate(a_):
+        if n_:
+            out.append((k_, np.stack([np.frombuffer(b, '>f4', 24, lo + int(q_) * 4) for q_ in i_[o_:o_ + n_]]).astype('f8'))); o_ += n_
+    return out
 
 
 EVENT = re.compile(r'festival|multiplayer|street|showcase|activation|crowd|_track_|testfest|_fest_|_pr_barriers|ghostmp', re.I)
-ROADSET = re.compile(r'(barr|metalba)(?!.*(multiplayer|showcase|ghostmp))', re.I)      # festival barrier sets are most of the map's roadside barriers
-LAYERS_SEEN = collections.Counter()
+LAYERS_SEEN = collections.Counter(); LOSTSET = collections.Counter(); PLACED = []
 
 
 def read_pgeo(n):
@@ -539,13 +566,13 @@ def read_pgeo(n):
         bb_ = struct.unpack('>8f', b[0x10:0x30])
         if not (bb_[4] < X0 or bb_[0] > X1 or -bb_[2] < Z0 or -bb_[6] > Z1):
             LAYERS_SEEN[('skip ' if EVENT.search(key_) else 'keep ') + key_] += 1
-        if EVENT.search(key_) and not (ROADSET.search(key_) and not re.search('multiplayer|showcase|_track_|_pr_', key_, re.I)):
+        if EVENT.search(key_):
             return None
     if b[:4] != b'OEGP' or struct.unpack_from('>I', b, 4)[0] != 42 or b'odels' not in b[0x50:0xc0]:
         return None
     size, M = struct.unpack_from('>II', b, 0x50); bb = struct.unpack('>8f', b[0x10:0x30])
     if size == 0 and b'models_proc' in b[0x90:0xc0]:       # placed sets: full transforms, 96 bytes each
-        if not 1 <= M <= 16:
+        if not 1 <= M <= 64:
             return None
         # the header's start moves in some files. Model entries are 64 bytes and the first ids follow the last entry's 'tga' tag
         t_ = b.find(b'tga\0', 0x98, 0xd0 + 0x40 * M + 0x40)
@@ -557,7 +584,7 @@ def read_pgeo(n):
                 stats['proc_bad'] += 1
                 print('proc unreadable', n, M)
                 return None
-            meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(e_[1] + (e_[3] if e_[3] < 8 else 0), 1)
+            meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
         w = struct.unpack_from('>%dI' % min((len(b) - q_) // 4, 200), b, q_)
         G = []
         for i in range(1, len(w) - 4):            # (k, 0, count, 0, 1) or the older (1, k, count, 0, 1)
@@ -581,27 +608,34 @@ def read_pgeo(n):
             print('proc unreadable', n, M, G)
             return None
         stats['proc_ok'] += 1
-        return ('roadside' if nm_ and EVENT.search(key_) else 'proc'), A, meshes, G
-    if M < 1 or M > 64 or size < 40 or size % 40 or size >= len(b):
+        return 'proc', A, meshes, G
+    if M < 1 or M > 512 or size < 40 or size % 40 or size >= len(b):
         stats['pgeo_badhdr'] += 1
         return None
     h_ = 0xd0 if b[0x98:0xa3] == b'models_proc' else 0x80        # named sets carry a longer header
     o = h_ + 0x44 * M; start = len(b) - size
     w = struct.unpack_from('>%dI' % ((start - o) // 4), b, o)
-    G = groups_of(w, M, size // 40)
-    if G is None:
-        stats['pgeo_groupmismatch'] += 1
+    table = model_table(w, M, size // 40)
+    if table is None:
+        stats['pgeo_groupmismatch'] += 1; LOSTSET[n] = size // 40
         return None
     W = [struct.unpack_from('>f', b, h_ + 0x40 * i + 16)[0] - struct.unpack_from('>f', b, h_ + 0x40 * i)[0] for i in range(M)]
     A = np.frombuffer(b, '>u4', size // 4, start).reshape(-1, 10).astype(np.int64)
     meshes = []; q_ = h_ + 0x40 * M
-    for i in range(M):           # models carry one or two LOD ids, as their header entry says
+    for i in range(M):           # models carry up to three LOD ids, as words 1, 3 and 5 of their header entry say
         e_ = struct.unpack_from('>6I', b, h_ + 0x40 * i + 32); v_ = struct.unpack_from('>I', b, q_)[0]
         if v_ >= len(DRAW):
             stats['pgeo_unreadable'] += 1
             return None
-        meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(e_[1] + (e_[3] if e_[3] < 8 else 0), 1)
-    return bb, A, meshes, list(zip(G, W))
+        meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
+    blocks = placed_blocks(b, table[0], q_, start)
+    if blocks is None:
+        stats['pgeo_placed_mismatch'] += 1; LOSTSET[n] = size // 40
+    elif blocks:
+        c_ = np.concatenate([c_ for _, c_ in blocks]); c_[:, 16] = 0      # these rows keep a tint there, so scale comes from the axes
+        PLACED.append(('proc', c_, [meshes[k_] for k_, _ in blocks], [len(c_) for _, c_ in blocks]))
+        stats['pgeo_placed_instances'] += sum(len(c_) for _, c_ in blocks)
+    return bb, A, meshes, list(zip(table[1], W))
 
 
 files = []
@@ -615,6 +649,7 @@ for n in names:
     q = read_pgeo(n)
     if q is not None:
         files.append(q)
+files += PLACED
 print('layers', LAYERS_SEEN.most_common(30))
 print('pgeo files', len(files), {k: v for k, v in stats.items() if k.startswith(('pgeo', 'proc'))}, 'instances in them', sum(len(f[1]) for f in files))
 
@@ -660,7 +695,7 @@ def model_groups(no):
             _, nr, _ = rmb.verts(m); r0, _ = uv_sets(m)
         pb = np.stack([p[:, 0], -p[:, 2], p[:, 1]], 1); nb = n2b(nr)
         for s in m['secs']:
-            T = rmb.tris(s['ib'], m['nv'])
+            T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(T):
                 continue
             mi = s['ints'][2]; ts = slot_tex(no, [x for x in M[mi][1] if x < 96]) if mi < len(M) else []
@@ -696,6 +731,8 @@ def model_item(no):
     if no in defs:
         return defs[no]
     defs[no] = None
+    if 'BarrierConcrete' in NAME_.get(no, ''):       # placed all over the event data, across real roads, but never shown in the game
+        return None
     groups, lo, hi, label = model_groups(no)
     if not groups:
         return None
@@ -712,23 +749,6 @@ def model_item(no):
     return defs[no]
 
 
-LANES = []       # points every 2 m along FH1's roads, as (x, north)
-p_, roads_ = nav.read()
-for r_ in roads_.values():
-    if nav.is_road(r_):
-        q_ = p_[r_['nodes'], :2]; l_ = np.linalg.norm(q_[1:] - q_[:-1], axis=1)
-        for a_, b_, n_ in zip(q_[:-1], q_[1:], l_):
-            if n_ < 200:
-                LANES.append(a_ + (b_ - a_) * np.linspace(0, 1, int(n_ / 2) + 2)[:, None])
-LANES = cKDTree(np.concatenate(LANES))
-
-
-def on_lane(x, z):
-    """An event's barrier across a road would close it in free roam. LANE_GAP is about a two-lane road's half width"""
-    hit = LANES.query((x, -z))[0] < LANE_GAP; stats['barrier_on_lane' if hit else 'barrier_kept'] += 1
-    return hit
-
-
 for bb, A, meshes, G in files:
     if isinstance(bb, str):
         o_ = 0
@@ -736,7 +756,7 @@ for bb, A, meshes, G in files:
             no = meshes[k_]
             for i in range(o_, o_ + cnt):
                 r = A[i]; x, y, z = r[12], r[13], -r[14]
-                if not (X0 < x < X1 and Z0 < z < Z1) or bb == 'roadside' and on_lane(x, z):
+                if not (X0 < x < X1 and Z0 < z < Z1):
                     continue
                 it = model_item(no)
                 if it is None:
@@ -827,14 +847,14 @@ names_ = {}
 for c in F:
     names_.setdefault(int(c['f'].split('.')[1]), c['name'])
 skip = collections.Counter(); kept = collections.Counter(); uniq = {}
-ALWAYS = re.compile('FlowerHolder', re.I); ROADSIDE = re.compile('Barrier(?!Brand)', re.I)
+ALWAYS = re.compile('FlowerHolder', re.I); ROADSIDE = re.compile('Barrier(?!Brand)', re.I); HOARDING = re.compile('RoadsideHoarding|TWALL', re.I)      # 0x6e: the festival grounds, seen on Xenia at beam (-516, 135)
 
 
 def event_kept(r_, nm_, x, y, z):
     """Event scenery the map needs in free roam"""
     if r_['name']:          # an owner is an event id: Events.HorizonEventID in gamedb.slt, or Tracks.DevName
         return False
-    return not on_lane(x, z) if ROADSIDE.search(nm_) else bool(ALWAYS.search(nm_))
+    return bool(ALWAYS.search(nm_) or ROADSIDE.search(nm_) or HOARDING.search(nm_) and 0x6e in r_['lst'])
 
 
 for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
@@ -890,7 +910,7 @@ for no, it in list(defs.items()):
             cells[(u, 'pro')][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv))
             stats['pro'] += len(t) // 3
         solid += 1
-print('barriers', stats['barrier_kept'], 'kept', stats['barrier_on_lane'], 'on a lane')
+print('pgeo problems', {k: v for k, v in stats.items() if k.startswith(('pgeo', 'proc'))}, LOSTSET.most_common(8))
 print('solid placed objects', solid, 'plant instances', sum(len(v) for v in rows.values()), 'plant items', len(rows))
 for item, r in rows.items():
     (fdir / f'{item}.forest4.json').write_text(''.join(json.dumps(o) + '\n' for o in r))

@@ -12,6 +12,14 @@ def has_col(groups, collide):
     return any(collide is not None and collide in g[0][1] or collide == 2 and FARCUT in g[0][1] for g in groups)
 
 
+def weld(pos, nrm, uv, uv1, idx):
+    """merge vertices that write the same text. The importer keeps every listed vertex, and clip_far leaves separate triangles.
+    Rounding matches the formats in write_lod"""
+    key = np.rint(np.c_[pos * 1e4, nrm * 1e3, uv * 1e5, uv1 * 1e5]).astype(np.int64)
+    _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    return pos[first], nrm[first], uv[first], uv1[first], inv.ravel()[idx]
+
+
 def write_lod(path, groups, origin, sizes, collide, extra=()):
     """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2).
     A trailing number on those node names is the detail size. Geometry of level `collide` is reused as Colmesh_<i>-1.
@@ -28,7 +36,8 @@ def write_lod(path, groups, origin, sizes, collide, extra=()):
     ident = '<matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>'
     for gi, g_ in enumerate(groups):
         (mat, levels), pos, nrm, uv, idx = g_[:5]; uv1 = g_[5] if len(g_) > 5 and g_[5] is not None else uv
-        g = f'g{gi}'; n = len(pos); local = pos - origin
+        local, nrm, uv, uv1, idx = weld(pos - origin, nrm, uv, uv1, idx)
+        g = f'g{gi}'; n = len(local)
         w(f'<geometry id="{g}" name="{g}"><mesh>\n')
         for sid, arr, fmt, params in ((f'{g}-p', local, '%.4f', 'XYZ'), (f'{g}-n', nrm, '%.3f', 'XYZ'),
                                       (f'{g}-t', np.c_[uv[:, 0], 1 - uv[:, 1]], '%.5f', 'ST'), (f'{g}-u', np.c_[uv1[:, 0], 1 - uv1[:, 1]], '%.5f', 'ST')):

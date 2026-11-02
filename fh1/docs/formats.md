@@ -93,6 +93,8 @@ Read by `read_pgeo` in `build3.py`. Magic `OEGP`, version 42. Bounding box at 0x
 
 The set name carries layer tags such as `[freeroam]`, which appears on 55 sets, the trees plus Red Rock fencing.
 
+**Packed files also hold full-transform instances.** A model record is `(flag, k, a, n, lods)`: `n` packed instances and `a` full-transform ones. The word before it is 0 or 4 (`model_table`). Full-transform rows are 96 bytes, in model order, just before the packed block. Word 15 is 1.0 and words 3, 7 and 11 are 0, and plant rows keep a tint in words 16 to 18. The gaps between blocks vary, so `placed_blocks` finds rows by those words and takes the file only when their count equals the sum of `a`. Barriers and fences only exist here. Colorado: 114,926 read, 240 files mismatched. Words 1, 3 and 5 of a model entry are its LOD id counts.
+
 Known failures, whole map: 37 packed files fail `groups_of`, all `Models_`, `AModels_` or `pAModels_Ungrouped`, 13,578 instances, about 3%. 9 ungrouped files have an id step that goes wrong partway. A placed set (`__R00G06349.pgeo`, M=2, groups [3, 2]) is unreadable. These are counted in the build's `pgeo files` line.
 
 ## `FilenameMap_00.dat`
@@ -147,6 +149,8 @@ Models sit around a local origin. Track copies exist as `__R00G000xx.pgeo`, for 
 
 Placement is in 202 `anim_proc_*` version 44 sets, also `__R00G*.pgeo`, a few hundred bytes each. The name gives the object group, such as `fx_windmillswood`. The word at 0x44 is the record count. Records are 128 bytes and run to the end of the file. The last record's position is at `len - 0x50`: 12 rotation floats, 3 position floats, 1.0, a model index, 3 LOD distances. Positions use the `.pgeo` z sign. How a set picks its animation file isn't decoded: the names only suggest it.
 
+These files barely use pointers, so they can't be walked as normal Granny files. `DaK32fC32f` curves are stored as raw big-endian floats: rising knots, then the controls, which `route` in `animated.py` finds by scanning. Granny axes are x, up, z, and z maps to BeamNG local y unflipped. Curve headers start with a format byte, such as 10 for `D3K16uC16u`.
+
 Some of the same objects also have static zone records, such as `PLA_FARM_WindmillMetal`, `GLOB_STFN_WindTurbine_02`, `Tractor` and `Gondola`. `ANIM_Cablecars` isn't among the track's model sets.
 
 ## Not decoded
@@ -156,3 +160,7 @@ Some of the same objects also have static zone records, such as `PLA_FARM_Windmi
 ## CAFF textures
 
 About 2,400 live textures are `_0x<id>.bin` files with no `.bix`, read by `tex.caff`. Most are 64 by 64 AO bakes, and `0x1EE4` is the 768 by 128 trim atlas that armco and barriers use as their diffuse. Layout: a 0x190 byte header, `.data`, then `.gpu`. Word 0x60 is the `.data` size. In `.data`, 0x18 is the same format word as a BIX, 0x1C the kind (2 is a cube map), and 0x24 the width and height as u16. `.gpu` starts with the top mip, tiled as in a BIX.
+
+## Primitive types
+
+A section's `ints[1]` is the Xenos primitive type: 6 is a triangle strip with restarts, and 4 is a plain triangle list. 174 sections are lists, mostly road blends, road pieces and bridges, plus terrain such as `Mountains_Area04A_Terrain_LOD00_03`. `rmb.tris` takes it as its third argument.

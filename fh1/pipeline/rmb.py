@@ -33,9 +33,13 @@ def parse(b):
         r.o-=4
         meshes.append(dict(name=name,t=t,nv=nv,sd=sd,vb=vb,secs=secs,a=a,hdr=hdr,end=r.o,lo=lo,hi=hi))
     return dict(ver=ver,bbox=bbox,mat=mat,hdr=hdr,meshes=meshes,end=r.o)
-def tris(ib,nv):
-    """triangle-strip with restart -> triangle list, dropping degenerates"""
-    out=[]; ib=np.asarray(ib,dtype=np.int64); rs=(0xffff if ib.dtype else 0)
+def tris(ib,nv,prim=6):
+    """index buffer -> triangle list, dropping degenerates. prim is the section's ints[1]: 6 for strips with restarts, 4 for a plain list"""
+    ib=np.asarray(ib,dtype=np.int64)
+    if prim==4:
+        t=ib[:len(ib)//3*3].reshape(-1,3)
+        return t[(t[:,0]!=t[:,1])&(t[:,1]!=t[:,2])&(t[:,0]!=t[:,2])]
+    out=[]; rs=(0xffff if ib.dtype else 0)
     start=0
     cuts=np.where((ib==0xffff)|(ib==0xffffffff))[0].tolist()+[len(ib)]
     for c in cuts:
