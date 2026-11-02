@@ -25,6 +25,11 @@ Only the user can test in BeamNG, and only one of BeamNG or Xenia can run at a t
 | Lightmaps, water | Not started | |
 | `.fiz` collision | Tried and reverted, `fiz.py` reads it | Mixed winding made cars crumple: see `beamng-output.md`. Flags are not decoded |
 | Semi wheels | `model_groups` | Wheels wrong, rest of the semi fine |
+| FH1 races as BeamNG time trials | `TrackRoute*.xml`, 243 files | Later step, after mesh and collision work. Routes hold checkpoints, up to 50, start grids and finish points. Event names are in `Events.str`. `colorado.nav` also tags race shortcuts |
+| Animated rigid objects | `animatedobjects.zip`, `formats.md` | Windmills, turbines, rides and vehicles. Placement is found in `anim_proc_*` sets. `animated.py` spins the metal windmills, cutting the fan out of the built shape using the Granny bone pivot. Wood windmills, turbines, rides and vehicles are next. FH1's curves aren't decoded, so speed is hand-set. The user has ruled out skinned animals and people, and moving objects need no collision |
+| More particles | `particles.py`, `effects.zip` | Water and smoke are in. Falling leaves, road dust and campfires are next, then birds, which the user ranked last. Emitter orientation and FH1's particle wind aren't used |
+| Canyon and urban reverb | `*.soundscape` | `soundscape.py` only uses tunnel-like zones. Canyon and urban ones have no stock BeamNG snapshot |
+| Ambience zones for loops | `*.soundscape` | FH1's 475 zones could replace the region outlines for choosing loops |
 
 ## What the user has said
 

@@ -77,3 +77,17 @@ Estimates from the outpost:
 | Whole map, LODs | 2.48M, of which 2.1M is LOD2 | 282k |
 
 The whole map has no in-game number yet. If it's slow, first shorten far distance: `visibleDistance`, or drop `col` LOD2 past a limit, because that's where the triangles are. The estimate code ends in the `static tris` and `plant tris` lines.
+
+## Rotation lists
+
+A `TSStatic`'s `rotationMatrix` lists its axes as rows: stock guardrail chains match rows 408 to 43 across 12 levels. `build3.py` works with axes as columns, so it transposes on writing. Forest items are written untransposed and haven't been measured.
+
+## Always-on ground
+
+Any world mesh whose zone record has a first LOD distance of 1e5 or more (`SHELL`) is coarse ground, whatever its name. This covers `Mountains_Area04A_Terrain_05`, which sits over the Finley Dam area and shares a `lodkey` with the fine tile `Terrain_LOD00_05`.
+
+Far ground is hidden over water, and only sinks under near ground, not at road edges.
+
+## Cooked shapes
+
+Stock levels ship a `.cdae` beside every `.dae`. `cookship.py` copies BeamNG's cooked shapes from `temp/` into the level, after one load. A rebuild wipes them.

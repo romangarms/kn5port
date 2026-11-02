@@ -10,7 +10,7 @@ Implemented in `build3.py`, using `zonerec.pkl` from `zones.py`. Keep a record u
 |---|---|---|
 | No owner block | Buildings, telegraph poles, outpost tent | Yes |
 | Block, empty list, no owner | Signs, fences, bins, snow poles | Yes |
-| Block with list | Food trucks, RVs, cones, tyre stacks, grandstands | No |
+| Block with list | Food trucks, RVs, cones, tyre stacks, grandstands | No, except `event_kept`: flower holders, and barriers that are off the road |
 | Block with owner name | `FR22_03`, `flyer_066`, `BF_..._OPEN`, speed camera markers | No |
 
 Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), and `S_`, `C_` or `Debri` prefixes (smashable pieces), plus records near the origin.
@@ -39,3 +39,9 @@ Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), an
 ## History, so nobody rebuilds it
 
 Name allow-lists (`KEEP`, `NOTKEEP`, `ONROAD_OK`), a 1 m gameplay-node rule, and zone voting (`zonevote.pkl`) all came first. The zone reader replaced them, and they're gone from `build3.py`.
+
+## Roadside barriers
+
+Zone record owners are real event ids. `FR05` is `Events.HorizonEventID` in `media/db/gamedb.slt`, and `FESTIVAL_FIRST_001` is `Tracks.DevName`. Barrier records with an owner are therefore never kept (2,669 `OBJ_FEST_BarrierMetal`).
+
+`.pgeo` barrier sets can't be proved either way. None has the `[freeroam]` tag, nothing in `gamedb.slt` or the bundles names them, and names like `barriers_moun_005_006_007` look like event numbers. `build3.py` keeps `models_proc_clrd_festival_*_barriers_*` sets, apart from multiplayer, showcase and track sets. A barrier within `LANE_GAP` (6 m) of a road in `colorado.nav` is dropped, because some are event closures: 3,300 of 34,804 on Colorado, a count that still included the owned records. The user has asked whether this check is needed. Set `LANE_GAP` to 0 to turn it off.

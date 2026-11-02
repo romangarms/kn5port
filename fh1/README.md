@@ -28,6 +28,10 @@ FH1_CHUNK=colorado python build3.py   # whole map, 3.2 GB, 7 minutes, 4 GB of RA
 python sky.py fh1_colorado            # FH1 sky and lighting, a few seconds. build3.py runs this itself unless given an output folder. Each build wipes the level
 python navmap.py fh1_colorado         # FH1 road graph for the minimap and AI, run the same way as sky.py
 python grade.py fh1_colorado          # saturation and contrast baked into the map textures, run the same way. Safe to rerun with new values
+python levelinfo.py fh1_colorado      # freeroam menu text and previews, spawn points, location zones, HUD road names. Run the same way
+python ambience.py fh1_colorado       # FH1's regional ambient loops, needs ffmpeg. Run the same way
+python particles.py fh1_colorado      # FH1's water and smoke particles. Run the same way, after levelinfo.py
+python animated.py fh1_colorado       # FH1's animated objects, metal windmills so far. Run the same way
 ```
 
 The build writes to `mods/unpacked/<level>`, or pass an output folder. Then fully restart BeamNG. Python needs numpy, scipy, numba, pillow.

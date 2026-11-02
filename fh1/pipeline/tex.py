@@ -58,18 +58,28 @@ def decode(d,w,h,fmt):
         al=np.take_along_axis(tb,s3,1).reshape(bh,bw,4,4)
     out[...,3]=al.transpose(0,2,1,3).reshape(bh*4,bw*4)
     return out[:h,:w]
+def caff(i,n):
+    # the other texture container, a .bin: header, .data with the texture's description, .gpu with its mips, top mip first
+    p=f'{X}/{n}.bin'
+    if not os.path.exists(p): return None
+    b=open(p,'rb').read(0x1c0)
+    if b[:4]!=b'CAFF': return None
+    ds=struct.unpack_from('>I',b,0x60)[0]; fw,kind=struct.unpack_from('>II',b,0x190+0x18); w,hh=struct.unpack_from('>HH',b,0x190+0x24)
+    if kind!=0 or fw&0xff not in (0x52,0x53,0x54,0x71): return None    # kind 2 is a cube map
+    return dict(w=w,h=hh,mips=0,fw=fw,fmt=fw&0xff,top=0,tot=0,path=p,bpath=p,off=0x190+ds)
 def bix(i):
     n=f'_0x{i:08X}'
     p=f'{X}/{n}.bix'
-    if not os.path.exists(p): return None
+    if not os.path.exists(p): return caff(i,n)
     h=open(p,'rb').read(); mag,w,hh,mips,fw,tot,top=struct.unpack('>4sIIIIII',h[:28])
-    return dict(w=w,h=hh,mips=mips,fw=fw,fmt=fw&0xff,top=top,tot=tot,path=p,bpath=f'{X}/{n}_B.bix')
+    return dict(w=w,h=hh,mips=mips,fw=fw,fmt=fw&0xff,top=top,tot=tot,path=p,bpath=f'{X}/{n}_B.bix',off=0)
+def top_mip(t):
+    return open(t['bpath'],'rb').read()[t['off']:]
 def blocks(i):
     # the top mip as plain little-endian DXT blocks, ready for a .dds
     t=bix(i); bpb={0x52:8,0x53:16,0x54:16,0x71:16}[t['fmt']]; bw=(t['w']+3)//4; bh=(t['h']+3)//4
-    return np.frombuffer(untile(open(t['bpath'],'rb').read(),bw,bh,bpb),'>u2').astype('<u2').tobytes()
+    return np.frombuffer(untile(top_mip(t),bw,bh,bpb),'>u2').astype('<u2').tobytes()
 def load(i):
     t=bix(i)
     if not t: return None
-    d=open(t['bpath'],'rb').read()
-    return decode(d,t['w'],t['h'],t['fmt']),t
+    return decode(top_mip(t),t['w'],t['h'],t['fmt']),t

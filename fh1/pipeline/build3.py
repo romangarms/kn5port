@@ -7,7 +7,8 @@ from pathlib import Path
 from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
-import dds, rmb, tex
+from scipy.spatial import cKDTree
+import dds, nav, rmb, tex
 from daewrite import FARCUT, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -19,7 +20,7 @@ Image.MAX_IMAGE_PIXELS = None
 CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
           'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
 LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
-CELL = 250.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE after changing dds.py or TEXMAX
+CELL = 250.0; LANE_GAP = 6.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE after changing dds.py or TEXMAX
 # LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
 IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
@@ -98,7 +99,10 @@ class Textures:
             self.missing[tid] += 1; self.info[tid] = None
             return None
         a = r[0]; name = f'd{tid:X}'     # pre-cooked, so BeamNG loads FH1's sizes. The d prefix can't match PNG-era cached textures
-        cooked(self.d / f'{name}.color.dds', a, tex.blocks(tid) if t['fmt'] == 0x52 else None, TEXMAX)
+        w_, h_ = (max(1 << math.ceil(math.log2(v_)), 16) for v_ in a.shape[1::-1]); pot = (w_, h_) == a.shape[1::-1]      # BeamNG needs powers of two, 16 and up. UVs are normalised
+        if not pot:
+            a = np.asarray(Image.fromarray(a).resize((w_, h_), Image.BICUBIC))
+        cooked(self.d / f'{name}.color.dds', a, tex.blocks(tid) if t['fmt'] == 0x52 and pot else None, TEXMAX)
         al = a[..., 3]; cut = float((al < 128).mean())
         if cut > 0.002:
             cooked(self.d / f'{name}_o.data.dds', al, limit=TEXMAX)
@@ -263,7 +267,7 @@ sel = [c for c in F if c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 a
 # Any record away from the origin marks a whole LOD group as local. World-space meshes have records at the origin.
 ZREC = pickle.load(open('../zonerec.pkl', 'rb')); NAMEOF = {int(c['f'].split('.')[1]): c['name'] for c in F}
 GENERIC = re.compile(r'(Plane|Box|Line|Object|Mesh|Rectangle)\d+', re.I)        # exporter default names, shared by unrelated meshes
-moved = set(); movedno = set(); atzero = set()
+moved = set(); movedno = set(); atzero = set(); SHELL = set()      # SHELL: FH1 never culls these. They're the coarse ground behind everything
 for (did, p_), r_ in ZREC.items():
     t = int(DRAW['t'][did]); n_ = lodkey(NAMEOF.get(t, ''))
     if abs(r_['pos'][0]) + abs(r_['pos'][2]) >= 1:
@@ -272,6 +276,8 @@ for (did, p_), r_ in ZREC.items():
             moved.add(n_)
     elif not (r_['lst'] or r_['name']):
         atzero.add(t)
+        if r_['lod'][0] >= 1e5:
+            SHELL.add(t)
 
 
 def world_mesh(c):
@@ -287,6 +293,8 @@ n_ = len(sel); sel = [c for c in sel if world_mesh(c)]
 print('meshes left out of the world path', n_ - len(sel))
 best = defaultdict(lambda: 99); AV = defaultdict(set); BOX = {}
 for c in sel:
+    if int(c['f'].split('.')[1]) in SHELL:
+        continue
     k = lodkey(c['name']); best[k] = min(best[k], lod(c['name'])); AV[k].add(lod(c['name']))
     b_ = BOX.setdefault(k, [c['mn'][0], c['mx'][0], c['mn'][2], c['mx'][2]])
     b_[0] = min(b_[0], c['mn'][0]); b_[1] = max(b_[1], c['mx'][0]); b_[2] = min(b_[2], c['mn'][2]); b_[3] = max(b_[3], c['mx'][2])
@@ -300,7 +308,7 @@ def group_cell(k):
     q_ = np.floor((g2b(np.array([[(b_[0] + b_[1]) / 2, 0, (b_[2] + b_[3]) / 2]]))[0, :2] + HALF) / CELL).astype(int)
     return int(np.clip(q_[0], 0, 999)) * 1000 + int(np.clip(q_[1], 0, 999))
 print(len(sel), 'meshes in box')
-Road = np.full((N, N), np.nan, 'f8'); Cov = np.full((N, N), np.nan, 'f8'); Rock = np.full((N, N), np.nan, 'f8')
+Road = np.full((N, N), np.nan, 'f8'); Water = np.full((N, N), np.nan, 'f8'); Cov = np.full((N, N), np.nan, 'f8'); Rock = np.full((N, N), np.nan, 'f8')
 byfile = defaultdict(list)
 for c in sel:
     byfile[c['f']].append(c)
@@ -314,14 +322,14 @@ for f, cs in byfile.items():
             stats['stride16'] += 1
             continue
         p, nr, _ = rmb.verts(m); r0, r1 = uv_sets(m)
-        cube = bool(FAR.search(n)) and 'water' not in n.lower()
+        cube = (bool(FAR.search(n)) or no in SHELL) and 'water' not in n.lower()
         isterr = (bool(TERR.search(n)) or cube) and not re.search(r'_rocks?(_|$)|armco|barrier|_road|water', n, re.I)
         g = togrid(p)
         if isterr:
             if cube:
                 if 'TERR_CUBE' not in n and l <= best[lodkey(n)]:
                     # by density: PATCH is as fine as near ground, and TERR_UberLOD_Patch is the coarse shell, 240 tris per km2 against 21,000
-                    FARQ.append((2 if 'uber' in n.lower() else 1 if re.search('MIDDIST|_MID_', n, re.I) else 0, no, M, m, p, nr, r0, r1, g))
+                    FARQ.append((2 if no in SHELL or 'uber' in n.lower() else 1 if re.search('MIDDIST|_MID_', n, re.I) else 0, no, M, m, p, nr, r0, r1, g))
                 continue
         have_ = sorted(AV[lodkey(n)]); rel_ = have_.index(l)
         if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
@@ -335,7 +343,7 @@ for f, cs in byfile.items():
             T = rmb.tris(s['ib'], m['nv'])
             q_ = MT[no][1]
             if len(T) and s['ints'][2] < len(q_) and SHADERS[q_[s['ints'][2]]].startswith('lake'):      # materials() can't read this shader's record
-                add('vis', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T)
+                add('vis', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T); raster(Water, g[T])
                 continue
             if not len(T) or s['ints'][2] >= len(M):
                 stats['sec_nomat'] += 1
@@ -344,7 +352,7 @@ for f, cs in byfile.items():
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
             uv = box_uv(r0, s['fl'])
             if fx.startswith('lake'):
-                add('vis', water(), p, nr, uv, T); surf['water'] += len(T)
+                add('vis', water(), p, nr, uv, T); surf['water'] += len(T); raster(Water, g[T])
                 continue
             decal = 'decal' in fx; opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
             road = fx.startswith('h_road') and not re.search(r'sign|barrier|wall|armco', n, re.I)
@@ -434,13 +442,13 @@ def clip_far(A, T, dout, din):
     c_ = togrid(V[:, :3]); ci = np.clip(c_[:, 0].astype(int), 0, N - 1); cj = np.clip(c_[:, 1].astype(int), 0, N - 1)
     k_ = dist[cj, ci] <= 40
     V[k_, 1] = np.minimum(V[k_, 1], limit[cj, ci][k_])
-    V[:, 1] -= .5 * np.minimum(din[cj, ci], LIP)
+    V[:, 1] -= .5 * np.minimum(dsink[cj, ci], LIP)      # only under ground. At a road edge there's nothing above it, so it would show as a ditch
     return V, np.arange(len(V)).reshape(-1, 3)
 
 
 for tier_ in (0, 1, 2):
-    new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock)      # road shaders also draw town grass and paving
-    dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ
+    new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
+    dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
     for t_, no, M, m, p, nr, r0, r1, g in FARQ:
         if t_ != tier_:
             continue
@@ -519,6 +527,7 @@ def groups_of(w, M, total):
 
 
 EVENT = re.compile(r'festival|multiplayer|street|showcase|activation|crowd|_track_|testfest|_fest_|_pr_barriers|ghostmp', re.I)
+ROADSET = re.compile(r'(barr|metalba)(?!.*(multiplayer|showcase|ghostmp))', re.I)      # festival barrier sets are most of the map's roadside barriers
 LAYERS_SEEN = collections.Counter()
 
 
@@ -530,7 +539,7 @@ def read_pgeo(n):
         bb_ = struct.unpack('>8f', b[0x10:0x30])
         if not (bb_[4] < X0 or bb_[0] > X1 or -bb_[2] < Z0 or -bb_[6] > Z1):
             LAYERS_SEEN[('skip ' if EVENT.search(key_) else 'keep ') + key_] += 1
-        if EVENT.search(key_):
+        if EVENT.search(key_) and not (ROADSET.search(key_) and not re.search('multiplayer|showcase|_track_|_pr_', key_, re.I)):
             return None
     if b[:4] != b'OEGP' or struct.unpack_from('>I', b, 4)[0] != 42 or b'odels' not in b[0x50:0xc0]:
         return None
@@ -572,7 +581,7 @@ def read_pgeo(n):
             print('proc unreadable', n, M, G)
             return None
         stats['proc_ok'] += 1
-        return 'proc', A, meshes, G
+        return ('roadside' if nm_ and EVENT.search(key_) else 'proc'), A, meshes, G
     if M < 1 or M > 64 or size < 40 or size % 40 or size >= len(b):
         stats['pgeo_badhdr'] += 1
         return None
@@ -703,6 +712,23 @@ def model_item(no):
     return defs[no]
 
 
+LANES = []       # points every 2 m along FH1's roads, as (x, north)
+p_, roads_ = nav.read()
+for r_ in roads_.values():
+    if nav.is_road(r_):
+        q_ = p_[r_['nodes'], :2]; l_ = np.linalg.norm(q_[1:] - q_[:-1], axis=1)
+        for a_, b_, n_ in zip(q_[:-1], q_[1:], l_):
+            if n_ < 200:
+                LANES.append(a_ + (b_ - a_) * np.linspace(0, 1, int(n_ / 2) + 2)[:, None])
+LANES = cKDTree(np.concatenate(LANES))
+
+
+def on_lane(x, z):
+    """An event's barrier across a road would close it in free roam. LANE_GAP is about a two-lane road's half width"""
+    hit = LANES.query((x, -z))[0] < LANE_GAP; stats['barrier_on_lane' if hit else 'barrier_kept'] += 1
+    return hit
+
+
 for bb, A, meshes, G in files:
     if isinstance(bb, str):
         o_ = 0
@@ -710,7 +736,7 @@ for bb, A, meshes, G in files:
             no = meshes[k_]
             for i in range(o_, o_ + cnt):
                 r = A[i]; x, y, z = r[12], r[13], -r[14]
-                if not (X0 < x < X1 and Z0 < z < Z1):
+                if not (X0 < x < X1 and Z0 < z < Z1) or bb == 'roadside' and on_lane(x, z):
                     continue
                 it = model_item(no)
                 if it is None:
@@ -794,21 +820,31 @@ for item, r_ in rows.items():
     for o in r_:
         if o.pop('size', None):
             o['scale'] = round(float(np.clip(o['scale'] / m_, .4, 2.5)), 3) if o['scale'] > 0 else 1.0
-PLANT_RE = re.compile(r'tree|bush|shrub|pinion|sage|grass|cactus|weed|fern', re.I)
+PLANT_RE = re.compile(r'(?<!s)tree(?!stump|cutting)|bush|shrub|pinion|(?<![a-z])sage|grass|cactus|weed|fern', re.I)      # not StreetLight or Message
 # every static object comes from the zone files (zones.py). Free roam shows records with no owner block, plus smashable scenery,
 # whose block has an empty list and no owner. A block with a list or an owner ties the object to those events.
 names_ = {}
 for c in F:
     names_.setdefault(int(c['f'].split('.')[1]), c['name'])
 skip = collections.Counter(); kept = collections.Counter(); uniq = {}
+ALWAYS = re.compile('FlowerHolder', re.I); ROADSIDE = re.compile('Barrier(?!Brand)', re.I)
+
+
+def event_kept(r_, nm_, x, y, z):
+    """Event scenery the map needs in free roam"""
+    if r_['name']:          # an owner is an event id: Events.HorizonEventID in gamedb.slt, or Tracks.DevName
+        return False
+    return not on_lane(x, z) if ROADSIDE.search(nm_) else bool(ALWAYS.search(nm_))
+
+
 for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
-    if r_['lst'] or r_['name']:
+    t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
+    if (r_['lst'] or r_['name']) and not event_kept(r_, nm_, x, y, z):
         skip['event only'] += 1
         continue
-    t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
     if not (X0 < x < X1 and Z0 < z < Z1):
         continue
-    if not nm_ or t in NOMESH or NOUSE.search(nm_) or PLANT_RE.search(nm_) or re.match(r'S_|C_|.*Debri', nm_) or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
+    if not nm_ or t in NOMESH or NOUSE.search(nm_) or PLANT_RE.search(nm_) or re.match(r'S_|C_(?!CLRD)|.*Debri', nm_) or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
         skip['not placed here'] += 1
         continue
     base = re.sub(r'_LOD\d+.*$', '', nm_)
@@ -833,7 +869,7 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
     rows[it['item']].append(dict(ctxid=0, pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=[round(float(q), 5) for q in Rm.ravel()], scale=round(float(np.clip(sc, .2, 5)), 3), type=it['item']))
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
-PLANT = re.compile(r'tree|bush|shrub|pinion|sage|grass|cactus|weed|fern', re.I)
+PLANT = PLANT_RE
 solid = 0; SOLIDS = collections.Counter(); INST = defaultdict(list)
 for no, it in list(defs.items()):
     if not it or PLANT.search(it['item']) or it['item'] not in rows:
@@ -854,6 +890,7 @@ for no, it in list(defs.items()):
             cells[(u, 'pro')][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv))
             stats['pro'] += len(t) // 3
         solid += 1
+print('barriers', stats['barrier_kept'], 'kept', stats['barrier_on_lane'], 'on a lane')
 print('solid placed objects', solid, 'plant instances', sum(len(v) for v in rows.values()), 'plant items', len(rows))
 for item, r in rows.items():
     (fdir / f'{item}.forest4.json').write_text(''.join(json.dumps(o) + '\n' for o in r))
@@ -916,7 +953,8 @@ for no, objs in INST.items():
     ct = 'Collision Mesh' if col else 'None'
     for i_, o in enumerate(objs):
         items.append({'class': 'TSStatic', 'name': f'fh1_m{no}_{i_}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
-                      'rotationMatrix': o['rotationMatrix'], 'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct})
+                      'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(),     # a TSStatic lists its axes as rows, measured on stock guardrail chains
+                      'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct})
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
 for (u, cat), mm in cells.items():
     groups = []
@@ -1004,3 +1042,7 @@ if len(sys.argv) == 1:                  # the wipe at the top also removes the s
     subprocess.run([sys.executable, 'sky.py', LVL], check=True)
     subprocess.run([sys.executable, 'navmap.py', LVL], check=True)
     subprocess.run([sys.executable, 'grade.py', LVL], check=True)
+    subprocess.run([sys.executable, 'levelinfo.py', LVL], check=True)
+    subprocess.run([sys.executable, 'ambience.py', LVL], check=True)
+    subprocess.run([sys.executable, 'particles.py', LVL], check=True)
+    subprocess.run([sys.executable, 'animated.py', LVL], check=True)

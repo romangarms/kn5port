@@ -62,7 +62,7 @@ python -m kn5port validate <level folder>            # run from the repo root
 python t5.py                                         # missing shapes and textures
 ```
 
-`t5.py` still has its level path hard-coded at the top: edit it first. Red Rock's expected counts are 464 solid objects, 69,069 plants, 23 plant items, 370 shapes. Run that build after parser changes as a regression test.
+`t5.py` still has its level path hard-coded at the top: edit it first. Red Rock's expected counts are 571 solid objects, 69,069 plants, 23 plant items. Run that build after parser changes as a regression test.
 
 Whole-map results as of the last build: 4,771 shapes, 12,536 solid objects, 387,174 plants, 60 plant items, 4,028 materials, 2,055 textures, no missing shapes or textures, and all checks passing.
 

@@ -8,4 +8,5 @@ docs/*
 !pipeline/
 pipeline/*
 !pipeline/*.py
+!pipeline/*.lua
 !pipeline/lzx.c
