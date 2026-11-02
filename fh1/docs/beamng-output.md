@@ -50,7 +50,7 @@ BeamNG 0.40 crashes on level load (integer divide by zero, `BeamNG.drive.x64.exe
 
 ## Night lights
 
-`nightlights.py` (run by `build3.py` after `water.py`) writes the lightmap overlays (`fh1_night`, glowing through stock `nightEmissive`, hidden by day by `fh1Extras.lua`) and point lights (`fh1_lamps`). Lights are PointLights shaped like West Coast's street bounce lights: `intensity` 5000 scaled by the pool's peak, `brightness` = intensity / 20000 pi as stock files carry, radius 10 to 22 m, `castShadows` false, `useColorTemperature` false, `isEnabled` false. Stock `nightLight` isn't used, as it would light all 2533 at once. `fh1Extras.lua` reads `fh1_lamps.json` and enables the nearest `MAX_LAMPS` (20) within 250 m of the camera from 18:00 to 6:00 with `setLightEnabled`, as stock `core_environment` does.
+`nightlights.py` (run by `build3.py` after `water.py`) writes the lightmap overlays (`fh1_night`, glowing through stock `nightEmissive`, hidden by day by `fh1Extras.lua`) and point lights (`fh1_lamps`). Lights are PointLights shaped like West Coast's street bounce lights: `intensity` 12000 scaled by the pool's peak, `brightness` = intensity / 20000 pi as stock files carry, radius 12 to 28 m, `castShadows` false, `useColorTemperature` false, `isEnabled` false. Stock `nightLight` isn't used, as it would light all 2533 at once. `fh1Extras.lua` reads `fh1_lamps.json` and enables the nearest `MAX_LAMPS` (250) within 1000 m of the camera from 18:00 to 6:00 with `setLightEnabled`, as stock `core_environment` does.
 
 ## Static LODs
 

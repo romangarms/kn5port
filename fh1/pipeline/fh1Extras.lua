@@ -17,8 +17,9 @@ local SKY_SECONDS = 2
 -- nightlights.py's point lights at FH1's lamps: at night only the nearest MAX_LAMPS within LAMP_FAR metres of the camera are on, as every lit light costs.
 -- Not stock nightLight, which would switch all of them on at once
 local LAMP_SECONDS = 2
-local MAX_LAMPS = 20
-local LAMP_FAR = 250
+-- 20 within 250 m showed about 6 lamps at a time; the user saw 90 fps in Carson at night with that, and asked for at least 200
+local MAX_LAMPS = 250
+local LAMP_FAR = 1000
 
 local data
 local levelDir
