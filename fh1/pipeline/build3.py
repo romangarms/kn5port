@@ -273,7 +273,7 @@ sel = [c for c in F if c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 a
 # Any record away from the origin marks a whole LOD group as local. World-space meshes have records at the origin.
 ZREC = pickle.load(open('../zonerec.pkl', 'rb')); NAMEOF = {int(c['f'].split('.')[1]): c['name'] for c in F}
 GENERIC = re.compile(r'(Plane|Box|Line|Object|Mesh|Rectangle)\d+', re.I)        # exporter default names, shared by unrelated meshes
-moved = set(); movedno = set(); atzero = set(); SHELL = set()      # SHELL: FH1 never culls these. They're the coarse ground behind everything
+moved = set(); movedno = set(); atzero = set(); SHELL = set(); COARSE = set()      # SHELL: FH1 never culls these. They're the coarse ground behind everything
 for (did, p_), r_ in ZREC.items():
     t = int(DRAW['t'][did]); n_ = lodkey(NAMEOF.get(t, ''))
     if abs(r_['pos'][0]) + abs(r_['pos'][2]) >= 1:
@@ -298,8 +298,12 @@ def world_mesh(c):
 n_ = len(sel); sel = [c for c in sel if world_mesh(c)]
 print('meshes left out of the world path', n_ - len(sel))
 best = defaultdict(lambda: 99); AV = defaultdict(set); BOX = {}
+for c in sel:      # a large, sparse terrain mesh is coarse ground too: fine tiles are 7,000 tris per km2 and up
+    a_ = (c['mx'][0] - c['mn'][0]) * (c['mx'][2] - c['mn'][2]) / 1e6
+    if TERR.search(c['name']) and not FAR.search(c['name']) and a_ > .3 and c['nt'] < 1000 * a_:
+        COARSE.add((c['f'], c['mi']))
 for c in sel:
-    if int(c['f'].split('.')[1]) in SHELL:
+    if int(c['f'].split('.')[1]) in SHELL or (c['f'], c['mi']) in COARSE:
         continue
     k = lodkey(c['name']); best[k] = min(best[k], lod(c['name'])); AV[k].add(lod(c['name']))
     b_ = BOX.setdefault(k, [c['mn'][0], c['mx'][0], c['mn'][2], c['mx'][2]])
@@ -328,14 +332,15 @@ for f, cs in byfile.items():
             stats['stride16'] += 1
             continue
         p, nr, _ = rmb.verts(m); r0, r1 = uv_sets(m)
-        cube = (bool(FAR.search(n)) or no in SHELL) and 'water' not in n.lower()
+        shell_ = no in SHELL or (c['f'], c['mi']) in COARSE
+        cube = (bool(FAR.search(n)) or shell_) and 'water' not in n.lower()
         isterr = (bool(TERR.search(n)) or cube) and not re.search(r'_rocks?(_|$)|armco|barrier|_road|water', n, re.I)
         g = togrid(p)
         if isterr:
             if cube:
                 if 'TERR_CUBE' not in n and l <= best[lodkey(n)]:
                     # by density: PATCH is as fine as near ground, and TERR_UberLOD_Patch is the coarse shell, 240 tris per km2 against 21,000
-                    FARQ.append((2 if no in SHELL or 'uber' in n.lower() else 1 if re.search('MIDDIST|_MID_', n, re.I) else 0, no, M, m, p, nr, r0, r1, g))
+                    FARQ.append((2 if shell_ or 'uber' in n.lower() else 1 if re.search('MIDDIST|_MID_', n, re.I) else 0, no, M, m, p, nr, r0, r1, g))
                 continue
         have_ = sorted(AV[lodkey(n)]); rel_ = have_.index(l)
         if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
@@ -533,7 +538,7 @@ def model_table(w, M, total):
     Returns ([a], [n]), or None if they don't account for the packed block. Empty tail models may have no record"""
     a_ = []; n_ = []
     for i in range(1, len(w) - 4):
-        if len(a_) < M and w[i] <= 1 and w[i - 1] in (0, 4) and w[i + 1] == len(a_) and w[i + 2] < 100000 and w[i + 3] <= total and 1 <= w[i + 4] <= 64:
+        if len(a_) < M and w[i] <= 1 and w[i - 1] in (0, 1, 4) and w[i + 1] == len(a_) and w[i + 2] < 100000 and w[i + 3] <= total and 1 <= w[i + 4] <= 64:
             a_.append(w[i + 2]); n_.append(w[i + 3])
     a_ += [0] * (M - len(a_)); n_ += [0] * (M - len(n_))
     return (a_, n_) if sum(n_) == total else None
@@ -542,15 +547,22 @@ def model_table(w, M, total):
 def placed_blocks(b, a_, lo, hi):
     """The full-transform instances of a packed file: 96 byte rows per model, in model order, before the packed block.
     Word 15 of a row is 1 and words 3, 7 and 11 are 0. What separates the blocks varies in length, so rows are found by that.
-    Returns [(k, rows)], or None if they don't match the records"""
+    Returns [(k, rows)], or None if the runs can't supply the records"""
     w = np.frombuffer(b, '>u4', (hi - lo) // 4, lo)
     i_ = np.where((w[15:] == 0x3f800000) & (w[3:-12] == 0) & (w[7:-8] == 0) & (w[11:-4] == 0))[0]
-    if len(i_) != sum(a_):
-        return None
-    out = []; o_ = 0
-    for k_, n_ in enumerate(a_):
-        if n_:
-            out.append((k_, np.stack([np.frombuffer(b, '>f4', 24, lo + int(q_) * 4) for q_ in i_[o_:o_ + n_]]).astype('f8'))); o_ += n_
+    runs = [list(r_) for r_ in np.split(i_, np.where(np.diff(i_) != 24)[0] + 1)] if len(i_) else []
+    out = []; ri = 0
+    for k_, n_ in enumerate(a_):         # runs in model order. A longer run is neighbouring blocks that touch; a run that fits nothing is a stray match
+        if not n_:
+            continue
+        while ri < len(runs) and len(runs[ri]) < n_:
+            ri += 1
+        if ri == len(runs):
+            return None
+        out.append((k_, np.stack([np.frombuffer(b, '>f4', 24, lo + int(q_) * 4) for q_ in runs[ri][:n_]]).astype('f8')))
+        runs[ri] = runs[ri][n_:]
+        if not runs[ri]:
+            ri += 1
     return out
 
 
@@ -985,11 +997,17 @@ for (u, cat), mm in cells.items():
         groups.append((mat, np.concatenate(ps), np.concatenate(ns), np.concatenate(uv), np.concatenate(ix), np.concatenate(u2)))
     allp = np.concatenate([g[1] for g in groups]); org = np.round((allp.min(0) + allp.max(0)) / 2)
     R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
-    fn = f'c{u}_{cat}'
-    col = queue_lod(sdir / 'fh1' / f'{fn}.dae', groups, org, detail_sizes(R_, cat), {'col': 2, 'pro': 2}.get(cat))
-    ct = 'Collision Mesh' if col else 'None'
-    items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
-                  'position': [float(x) for x in org], 'collisionType': ct, 'decalType': ct})
+    # a mesh drawn at every LOD is cooked once per detail level, so those go in a one-detail shape: one copy instead of three
+    whole = [((g[0][0], (0,)),) + tuple(g[1:]) for g in groups if {0, 1, 2} <= set(g[0][1])]
+    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 2, 'pro': 2}.get(cat)
+    for fn, gs, single in ((f'c{u}_{cat}', lods, False), (f'c{u}_{cat}f', whole, True)):
+        if not gs:
+            continue
+        p_ = np.concatenate([g[1] for g in gs]); o_ = np.round((p_.min(0) + p_.max(0)) / 2); sizes = detail_sizes(float(np.linalg.norm(p_.max(0) - p_.min(0))) / 2, cat)
+        col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide)
+        ct = 'Collision Mesh' if col else 'None'
+        items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
+                      'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
 for f_ in PENDING:
     f_.result()
