@@ -127,6 +127,6 @@ Far ground is hidden over water, and only sinks under near ground, not at road e
 
 ## Cooked shapes
 
-Stock levels ship a `.cdae` beside every `.dae`. `cookship.py` copies BeamNG's cooked shapes from `temp/` into the level, after one load. A rebuild wipes them.
+Stock levels ship a `.cdae` beside every `.dae`. `cookship.py` copies BeamNG's cooked shapes from `temp/` into the level, after one load. A rebuild wipes them. First run on the whole map on 2026-11-02: 6,481 of 6,761 shapes, 1.5 GB. The 280 left are `wat` shapes, which `water.py` replaces with Rivers so they never load, and 3 instanced shapes that weren't drawn during the load. Not yet confirmed in-game that the next load skips the import.
 
 The Uber shell has festival tents baked in as lumps. In a small hole in finer ground (under 0.15 km²), shell vertices are held to 1 m above that ground (`lump`).
