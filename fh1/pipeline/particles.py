@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import gamezip, tex
+import gamezip, mission, tex
 from animsets import placed as anim_placed
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
@@ -256,9 +256,6 @@ for name, w, axis, dist, when in (s for s in scene if s[0] in amb):
     lua.append([f'fh1_fx_{i}_{label(name)}', round(float(w[0]), 1), round(float(w[1]), 1), dist, live(f'fh1ae_{name}')] + (when or own or []))
 (items.parent / 'fh1_fx').mkdir(exist_ok=True)
 (items.parent / 'fh1_fx' / 'items.level.json').write_text(''.join(json.dumps(n) + '\n' for n in nodes))
-rows = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-if not any(o.get('name') == 'fh1_fx' for o in rows):
-    rows.append({'name': 'fh1_fx', 'class': 'SimGroup', '__parent': 'MissionGroup'})
-    items.write_text(''.join(json.dumps(o) + '\n' for o in rows))
+mission.add_groups(items, 'fh1_fx')
 (level / 'fh1_particles.json').write_text(json.dumps(lua))
 print('done', len(nodes), 'nodes', sum(v['class'] == 'ParticleEmitterData' for v in blocks.values()), 'effects', sum(f * c for _, f, c in images), 'textures ->', level)

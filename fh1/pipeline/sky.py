@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ni
-import dds, gamezip, tex
+import dds, gamezip, mission, tex
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -202,10 +202,9 @@ for minute, tag, _ in BAKES:
     print(tag, minute, 'stars', round(float(C['StarFade'][0]), 2), 'moon', round(float(C['SunObjectMoon'][0] * C['SunObjectAlpha'][0]), 2))
 (out / 'main.materials.json').write_text(json.dumps(materials, indent=2))
 (level / 'fh1_sky.json').write_text(json.dumps({'bakes': bakes, 'quarterHours': table()}))
-rows = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-for o in rows:
-    o.update(SCENE.get(o.get('name'), {}))
-if not any(o.get('name') == SKYBOX['name'] for o in rows):
-    rows.append(SKYBOX)
-items.write_text(''.join(json.dumps(o) + '\n' for o in rows))
+with mission.edit(items) as rows:
+    for o in rows:
+        o.update(SCENE.get(o.get('name'), {}))
+    if not any(o.get('name') == SKYBOX['name'] for o in rows):
+        rows.append(SKYBOX)
 print('done', out)

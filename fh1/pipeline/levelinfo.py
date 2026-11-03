@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import nav, soundscape
+import mission, nav, soundscape
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
@@ -139,22 +139,22 @@ items = level / 'main' / 'MissionGroup' / 'items.level.json'
 if not items.exists():
     sys.exit(f'{items} is missing: run build3.py first')
 p, roads = nav.read(); pub = public_nodes(p, roads)
-rows = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-rows = [o for o in rows if not (o.get('class') == 'SpawnSphere' and o['name'] != 'spawn_redrock')]
+spawns = []      # rows for the top-level items file, which other scripts change at the same time, so it's edited in one go below
 points = [{'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': 'spawn_redrock_preview.jpg'}]
-red = next(o for o in rows if o.get('name') == 'spawn_redrock')['position']
+red = next(o for o in mission.rows(items) if o.get('name') == 'spawn_redrock')['position']
 spawn_preview(red[0] + CX, CZ - red[1], level / 'spawn_redrock_preview.jpg')
 if LVL == 'fh1_colorado':
     for name, obj, x, y in SPAWNS:
         row, point, where = spawn(name, obj, x, y, p, pub)
-        rows.append(row); points.append(point); spawn_preview(*where, level / point['preview'])
+        spawns.append(row); points.append(point); spawn_preview(*where, level / point['preview'])
 objects, reverb_zones = soundscape.read()
 emitters = reverb(reverb_zones, p, roads)
-if not any(o.get('name') == 'fh1_reverb' for o in rows):
-    rows.append({'name': 'fh1_reverb', 'class': 'SimGroup', '__parent': 'MissionGroup'})
 (items.parent / 'fh1_reverb').mkdir(exist_ok=True)
 (items.parent / 'fh1_reverb' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in emitters))
-items.write_text(''.join(json.dumps(o) + '\n' for o in rows))
+with mission.edit(items) as rows:
+    rows[:] = [o for o in rows if not (o.get('class') == 'SpawnSphere' and o['name'] != 'spawn_redrock')] + spawns
+    if not any(o.get('name') == 'fh1_reverb' for o in rows):
+        rows.append({'name': 'fh1_reverb', 'class': 'SimGroup', '__parent': 'MissionGroup'})
 level_preview(level / f'{LVL}_preview.jpg')
 
 info = json.loads((level / 'info.json').read_text())

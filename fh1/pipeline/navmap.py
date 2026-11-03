@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import nav
+import mission, nav
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
@@ -57,10 +57,7 @@ runs = runs_of(p, inside, roads); used = sorted({i for _, r in runs for i in r})
 (mg / 'fh1_nav' / 'items.level.json').write_text(''.join(json.dumps(
     {'name': f'nav{i}', 'class': 'BeamNGWaypoint', '__parent': 'fh1_nav', 'position': [round(float(v), 3) for v in p[i]], 'scale': [RADIUS] * 3}) + '\n' for i in used))
 (level / 'map.json').write_text(json.dumps({'segments': {f'fh1_{k}': {'nodes': [f'nav{i}' for i in r], **segment(roads[rid])} for k, (rid, r) in enumerate(runs)}}))
-rows = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-if not any(o.get('name') == 'fh1_nav' for o in rows):
-    rows.append({'name': 'fh1_nav', 'class': 'SimGroup', '__parent': 'MissionGroup'})
-    items.write_text(''.join(json.dumps(o) + '\n' for o in rows))
+mission.add_groups(items, 'fh1_nav')
 
 # The HUD minimap only draws the graph above. This tile is for UI that still reads info.json, and matches the crop in build3.py
 r = json.load(open('../reg.json')); src = Image.open('../ui/New_Map_MapGameReady.jpg').convert('RGB')

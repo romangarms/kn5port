@@ -54,6 +54,10 @@ Output categories are in the `statics` and `sections by road surface` lines. `pg
 
 Shapes are written by worker processes (`daewrite.py`), and cooked textures are cached in `../ddscache`. Delete that folder after changing `dds.py` or `TEXMAX`.
 
+Without an output folder argument, `build3.py` then runs the post-build scripts, several at once. `AFTER` near the end of `build3.py` lists what each one must wait for: `nightlights.py` reads every items file, `animated.py` rewrites `fh1`'s and reads `fh1_nav`, `levelinfo.py` and `navmap.py` both edit `info.json`, and `grade.py` grades `grass.py`'s textures. The others only share the top-level `MissionGroup/items.level.json`, so they change it through `mission.py`, which holds a lock while reading and writing. A new script that edits that file should do the same, and gets an entry in `AFTER`. Their output lines start with the script's name.
+
+Each build logs to `fh1/logs/<level>-<date>-<time>.log`, post-build scripts included, and ends with a `[time]` summary, slowest first. A post-build script's time there is its own; they overlap, so the wall-clock line is what they cost the build.
+
 ## Checks
 
 ```

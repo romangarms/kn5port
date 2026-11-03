@@ -1,8 +1,8 @@
 """Red Rock chunk, second pass: FH1's own meshes, textures and placed models in a BeamNG level."""
-import sys, os, re, json, math, pickle, shutil, struct, subprocess, time, glob, collections
+import sys, os, re, json, math, pickle, shutil, struct, subprocess, threading, time, glob, collections
 import numpy as np
 from collections import defaultdict
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from pathlib import Path
 from PIL import Image
 from numba import njit
@@ -16,10 +16,41 @@ from kn5port.level import safe
 from kn5port.terrain import pyramid_fill
 
 Image.MAX_IMAGE_PIXELS = None
+T_START = T_LAP = time.time(); TIMES = []
+
+
+def lap(name):
+    """how long the section that just ended took, printed now and again in the summary at the end"""
+    global T_LAP
+    now = time.time(); TIMES.append((name, now - T_LAP)); T_LAP = now
+    print(f'[time] {name} {TIMES[-1][1]:.1f}s', flush=True)
+
+
+class Tee:
+    """the terminal and the build log at once: the terminal a build ran in isn't always around afterwards"""
+    def __init__(self, *s):
+        self.s = s
+
+    def write(self, t):
+        for s_ in self.s:
+            s_.write(t)
+        return len(t)
+
+    def flush(self):
+        for s_ in self.s:
+            s_.flush()
+
+    def __getattr__(self, k):
+        return getattr(self.s[0], k)
+
+
 # FH1_CHUNK picks the area: level name, title, heightfield size, grid spacing, centre, map art size
 CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
           'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
 LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
+LOG = Path('../logs') / f'{LVL}-{time.strftime("%Y%m%d-%H%M%S")}.log'; LOG.parent.mkdir(exist_ok=True)
+LOGF = open(LOG, 'w', encoding='utf8', buffering=1); sys.stdout = Tee(sys.stdout, LOGF); sys.stderr = Tee(sys.stderr, LOGF)
+print('log', LOG.resolve())
 CELL = 250.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE after changing dds.py or TEXMAX
 # LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
@@ -31,6 +62,7 @@ shutil.rmtree(level, ignore_errors=True)        # everything here is generated, 
 inst = beamng.find_install()
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb'))
 IDX, SHADERS = pickle.load(open('../texshader.pkl', 'rb')); DRAW = np.load('../mt.npy')
+lap('wipe and load tables')
 
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
 PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
@@ -480,6 +512,7 @@ for f, cs in byfile.items():
                 add('pro', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
 LV = (0, 1, 2); FIX = None; NM = {}
 print('dropped sections by mesh', DROPPED.most_common(24))
+lap('world meshes')
 shown = np.isfinite(Cov)
 road = np.isfinite(Road)
 if road.any():
@@ -547,6 +580,7 @@ def far_tiers():
 
 
 TIERS = far_tiers(); NT = 2 * len(ZBANDS) + 2
+lap('far tier lookup')
 for tier_ in range(NT):
     if not any((t__ == tier_).any() for e_ in TIERS for t__ in e_):
         continue
@@ -597,6 +631,7 @@ for tier_ in range(NT):
             raster(new_, g_[T]); raster(Cov, g_[T])
     shown = np.isfinite(Cov)
     print('far tier', tier_, 'shown now', float(shown.mean()))
+lap('far tiers')
 NM = {}
 print('statics', dict(stats), dict(surf), f'{time.time() - t0:.0f}s')
 print('sections by road surface', {k: v for k, v in surf.items() if k.startswith('road')})
@@ -770,6 +805,7 @@ for n in names:
 files += PLACED
 print('layers', LAYERS_SEEN.most_common(30))
 print('pgeo files', len(files), {k: v for k, v in stats.items() if k.startswith(('pgeo', 'proc'))}, 'instances in them', sum(len(f[1]) for f in files))
+lap('read pgeo')
 
 fdir = level / 'forest'; fdir.mkdir(parents=True, exist_ok=True); adir = level / 'art' / 'forest' / 'models'; adir.mkdir(parents=True, exist_ok=True)
 pal = donor.analyze(inst, 'utah')
@@ -921,6 +957,7 @@ for bb, A, meshes, G in files:
             rows[it['item']].append(dict(ctxid=0, pos=[round(float(v), 3) for v in pos], rotationMatrix=[round(float(v), 5) for v in Rm.ravel()], scale=sc, size=1, type=it['item']))
             stats['instances'] += 1
         o_ += cnt
+lap('placed models')
 # --- CollObjs: smashable scenery
 RT0 = 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/'
 col = open(RT0 + 'CollObjs.xml', errors='replace').read()
@@ -1013,6 +1050,7 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
     rows[it['item']].append(dict(ctxid=0, pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=[round(float(q), 5) for q in Rm.ravel()], scale=round(float(np.clip(sc, .2, 5)), 3), type=it['item']))
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
+lap('smashables and free-roam objects')
 PLANT = PLANT_RE
 solid = 0; SOLIDS = collections.Counter(); INST = defaultdict(list)
 for no, it in list(defs.items()):
@@ -1051,6 +1089,7 @@ for v in defs.values():
 print('card meshes', stats['card_meshes'], 'mean opaque coverage %', stats['card_fit_pct'] / max(stats['card_meshes'], 1))
 print('forest', len(rows), 'items', stats['instances'], 'instances; no model', stats['inst_nomodel'], 'no mesh', stats['inst_nomesh'])
 print('top items', sorted(((len(v), k) for k, v in rows.items()), reverse=True)[:12])
+lap('solids and forest')
 
 # ---- map art, for the preview. FH1's meshes are the whole ground: the level has no TerrainBlock
 print('terrain meshes shown on', float(np.isfinite(Cov).mean()), 'of the square')
@@ -1058,6 +1097,7 @@ level.mkdir(parents=True, exist_ok=True)
 r = json.load(open('../reg.json')); src = Image.open('../ui/New_Map_MapGameReady.jpg').convert('RGB')
 box = (X0 / r['sx'] + r['ox'], Z0 / r['sz'] + r['oz'], X1 / r['sx'] + r['ox'], Z1 / r['sz'] + r['oz'])
 base = src.transform((BASE, BASE), Image.EXTENT, box, Image.BICUBIC)
+lap('map art')
 
 # ---- shapes, materials, scene
 sdir = level / 'art' / 'shapes'; sdir.mkdir(parents=True, exist_ok=True)
@@ -1122,9 +1162,11 @@ for (u, cat), mm in cells.items():
         items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
                       'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
+lap('shapes queued')
 for f_ in PENDING:
     f_.result()
 POOL.shutdown()
+lap('shape writers finishing')
 cam = g2b(np.array([[-5681., 350., 5301.]]))[0]; drawn = [0, 0, 0, 0]; before = 0
 for org, R_, cat, tr in METRIC:
     d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[0] else 1 if d_ < LOD_DIST[1] else 2
@@ -1188,14 +1230,53 @@ base.resize((1024, 1024)).save(level / f'{LVL}.jpg', quality=90)
     'size': [int(2 * HALF), int(2 * HALF)], 'previews': [f'{LVL}.jpg'],
     'spawnPoints': [{'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': f'{LVL}.jpg'}], 'defaultSpawnPointName': 'spawn_redrock'}, indent=2))
 pickle.dump({k: v for k, v in surf.items()}, open('../surf.pkl', 'wb'))
+lap('scene files')
 print('done', f'{time.time() - start_:.0f}s ->', level)
+# The scripts after the build, each with the ones it must wait for. nightlights reads every items file, animated rewrites fh1's and reads fh1_nav,
+# and levelinfo and navmap both edit info.json. Otherwise they only share the top-level items file, which mission.py locks
+AFTER = {'sky': (), 'navmap': (), 'ambience': (), 'particles': (), 'water': (), 'grade': (), 'levelinfo': ('navmap',),
+         'nightlights': ('sky', 'navmap', 'levelinfo', 'particles', 'water'), 'animated': ('nightlights',)}
+SAY = threading.Lock()      # one whole line at a time from the scripts running side by side
+
+
+def post_script(s_):
+    """one script, its output piped into the log with its name in front -> seconds taken"""
+    t_ = time.time()
+    p_ = subprocess.Popen([sys.executable, '-u', f'{s_}.py', LVL], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          env=dict(os.environ, PYTHONIOENCODING='utf8'), encoding='utf8', errors='replace')
+    for l_ in p_.stdout:
+        with SAY:
+            print(f'[{s_}] {l_.rstrip()}', flush=True)
+    if p_.wait():
+        raise subprocess.CalledProcessError(p_.returncode, f'{s_}.py')
+    return time.time() - t_
+
+
+def post_build():
+    """the AFTER scripts, each started once those it waits for are done. After a failure nothing new starts, and the first error is raised once the rest finish"""
+    done_ = set(); running = {}; failed = []
+    with ThreadPoolExecutor(len(AFTER)) as ex:
+        while True:
+            for s_, need in AFTER.items():
+                if not failed and s_ not in done_ and s_ not in running.values() and all(n in done_ for n in need):
+                    running[ex.submit(post_script, s_)] = s_
+            if not running:
+                break
+            fin, _ = wait(running, return_when=FIRST_COMPLETED)
+            for f_ in fin:
+                s_ = running.pop(f_)
+                try:
+                    TIMES.append((f'{s_}.py, side by side', f_.result())); done_.add(s_)
+                    with SAY:
+                        print(f'[time] {s_}.py {TIMES[-1][1]:.1f}s', flush=True)
+                except Exception as e:
+                    failed.append(e)
+    if failed:
+        raise failed[0]
+
+
 if len(sys.argv) == 1:                  # the wipe at the top also removes the sky. sky.py only patches installed levels
-    subprocess.run([sys.executable, 'sky.py', LVL], check=True)
-    subprocess.run([sys.executable, 'navmap.py', LVL], check=True)
-    subprocess.run([sys.executable, 'grade.py', LVL], check=True)
-    subprocess.run([sys.executable, 'levelinfo.py', LVL], check=True)
-    subprocess.run([sys.executable, 'ambience.py', LVL], check=True)
-    subprocess.run([sys.executable, 'particles.py', LVL], check=True)
-    subprocess.run([sys.executable, 'water.py', LVL], check=True)
-    subprocess.run([sys.executable, 'nightlights.py', LVL], check=True)
-    subprocess.run([sys.executable, 'animated.py', LVL], check=True)
+    post_build(); lap('post-build scripts, wall clock')
+print('[time] summary, slowest first, total', f'{time.time() - T_START:.0f}s')
+for n_, t_ in sorted(TIMES, key=lambda x: -x[1]):
+    print(f'[time] {t_:8.1f}s  {n_}')

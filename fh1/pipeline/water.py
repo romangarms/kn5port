@@ -9,7 +9,7 @@ from numba import njit
 from scipy import ndimage as ni
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
-import dds, tex
+import dds, mission, tex
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -175,9 +175,5 @@ RIVER = {'class': 'River', '__parent': 'fh1_water', 'annotation': 'WATER', 'base
                                        {'waveDir': [.5, .86], 'waveMagnitude': .1, 'waveSpeed': 1}]}
 items_path.write_text(''.join(json.dumps(o) + '\n' for o in items if o not in wat))
 (wdir / 'items.level.json').write_text(''.join(json.dumps(dict(RIVER, name=f'fh1_river_{i}', position=r[0][:3], nodes=r)) + '\n' for i, r in enumerate(rivers)))
-mg = level / 'main' / 'MissionGroup' / 'items.level.json'
-groups = [json.loads(l) for l in mg.read_text().splitlines() if l.strip()]
-if not any(g.get('name') == 'fh1_water' for g in groups):
-    groups.append({'name': 'fh1_water', 'class': 'SimGroup', '__parent': 'MissionGroup'})
-    mg.write_text(''.join(json.dumps(g) + '\n' for g in groups))
+mission.add_groups(level / 'main' / 'MissionGroup' / 'items.level.json', 'fh1_water')
 print('removed', len(wat), 'water shapes')
