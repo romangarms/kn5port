@@ -202,9 +202,13 @@ A `D3K16uC16u` header is: format 10, degree, the top 16 bits of a float 1 / knot
 
 Some of the same objects also have static zone records, such as `PLA_FARM_WindmillMetal`, `GLOB_STFN_WindTurbine_02`, `Tractor` and `Gondola`. `ANIM_Cablecars` isn't among the track's model sets.
 
+## `*.fiz` collision (working)
+
+3,201 tiles of about 100 m, 2.0M triangles, read by `fiz.py`. Offsets count from byte 0x20: reading them from byte 0 shifts every index by two vertices, which made triangles spike to the origin and looked like mixed winding. Read correctly, every stored normal agrees with counter-clockwise winding in game axes. Contents: road surfaces, shoulders, car parks and town streets (about 7% of the Clear Springs square), no terrain, and FH1's invisible walls along every road edge and around the golf course, 50 to 65 m tall (flag groups `0x803`, `0xc03`, `0xc09`, `0xc0f`, `0xc2c`, all steep). Group `0x800` is steep and about 13 m tall, along medians and in towns: not identified. The flags' high 16 bits group triangles; the rest isn't decoded. Header words 16 to 22 describe a 10 m lookup grid after the triangles.
+
 ## Not decoded
 
-`.fiz` collision, normal maps and lightmaps, water, and the owner-block list bytes (see `free-roam.md`).
+Normal maps and lightmaps, water, and the owner-block list bytes (see `free-roam.md`).
 
 ## CAFF textures
 

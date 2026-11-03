@@ -75,7 +75,7 @@ Instanced props collide with simple shapes from `colfit.py` instead of their mes
 
 Smashables have no collision, so the car drives through them as FH1's break on contact. `CollObjs.xml` places FH1's smashables, but its names match catalog meshes poorly (54 of 179 types). Its positions match exactly instead: a free-roam record within 5 cm of an entry (`SMASH`) is smashable. That's 3,831 records over 162 meshes, mostly snow poles, `FenceF`, signs, armco arrows, bins, wooden barriers, flower holders, picnic tables, benches and mailboxes. Their `TSStatic`s get `collisionType: None`, an instanced shape whose objects are all smashable is built without a collision node, and mirrored ones bake into `vis` cells. Not done: making them break or fly off, which would need jbeam props.
 
-FH1's `.fiz` tiles were tried and reverted. Cars behaved as if under 10x gravity and crumpled, and RAM and fps got worse. Their triangles have mixed winding (47% up, 53% down), and BeamNG collision is one-sided, which is the likely cause. Any retry must re-wind them to face up, and must not duplicate vertex arrays. `fiz.py` still reads them.
+FH1's `.fiz` tiles were tried and reverted. Cars behaved as if under 10x gravity and crumpled, and RAM and fps got worse. The reader then had its offsets 0x20 bytes off, so triangles spiked to the world origin and looked mixed-wound; that's fixed (see `formats.md`). `.fiz` can't be the only collision: it holds roads and FH1's invisible road-edge walls, not terrain.
 
 ## Plants
 

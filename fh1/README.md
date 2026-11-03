@@ -47,4 +47,4 @@ Working and tested in-game around Red Rock: real textures, terrain blending, dir
 
 The whole map builds and passes file checks, but hasn't been tested in-game.
 
-Missing: normal maps, lightmaps, water, `.fiz` collision, about 3% of plants. `Grass_Ungrouped` sets are placed by `grass.py`, untested in-game. Semi wheels are wrong.
+Missing: normal maps, lightmaps, water, about 3% of plants. `Grass_Ungrouped` sets are placed by `grass.py`, untested in-game. Semi wheels are wrong.
