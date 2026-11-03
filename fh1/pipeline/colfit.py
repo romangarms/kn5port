@@ -1,7 +1,8 @@
 """Simple collision shapes for placed props, which BeamNG copies into physics once per object at about 41.5 bytes a triangle.
 A shape's own geometry is the model frame, z up. Everything returns a triangle mesh wound outward, as BeamNG collision is one-sided:
     boxes(P)    one box, or two stacked when the bottom is much wider than the top (barrier feet, a pole's crossarm)
-    generic(P)  a convex hull for small near-convex things (rocks, logs), else a skyline of boxes (buildings, tents)"""
+    generic(P)  a convex hull for small near-convex things (rocks, logs), else a skyline of boxes (buildings, tents)
+    rails(tris) chains of turned boxes along world-mesh barriers, guardrails and fences"""
 import numpy as np
 from scipy.spatial import ConvexHull, QhullError
 from daewrite import box_mesh
@@ -13,17 +14,19 @@ HULL_MAX = 8.                   # metres across: a building's hull slopes from t
 MAX_BOXES = 40
 
 
-def points(groups, collide, farcut):
-    """points spread over the triangles that collide today, about 4 per cell of `step` metres, so thin walls and long triangles are seen"""
+def sample(p_):
+    """points over triangles (n, 3, 3), 25 cm apart along each one's longest edge"""
     out = []
-    for g in groups:
-        if collide in g[0][1] or collide == 2 and farcut in g[0][1]:
-            p_ = g[1][np.asarray(g[4]).reshape(-1, 3)]
-            e_ = np.linalg.norm(p_ - p_[:, [1, 2, 0]], axis=2).max(1)
-            for k in np.unique(np.clip(np.ceil(e_ / .25), 1, 40).astype(int)):       # 25 cm apart along the longest edge
-                t_ = p_[np.clip(np.ceil(e_ / .25), 1, 40).astype(int) == k]
-                w_ = np.array([(a, b, k - a - b) for a in range(k + 1) for b in range(k + 1 - a)], 'f8') / k
-                out.append(np.einsum('kj,tjd->tkd', w_, t_).reshape(-1, 3))
+    e_ = np.linalg.norm(p_ - p_[:, [1, 2, 0]], axis=2).max(1); K = np.clip(np.ceil(e_ / .25), 1, 40).astype(int)
+    for k in np.unique(K):
+        w_ = np.array([(a, b, k - a - b) for a in range(k + 1) for b in range(k + 1 - a)], 'f8') / k
+        out.append(np.einsum('kj,tjd->tkd', w_, p_[K == k]).reshape(-1, 3))
+    return np.concatenate(out) if out else np.zeros((0, 3))
+
+
+def points(groups, collide, farcut):
+    """points spread over the triangles that collide today, so thin walls and long triangles are seen"""
+    out = [sample(g[1][np.asarray(g[4]).reshape(-1, 3)]) for g in groups if collide in g[0][1] or collide == 2 and farcut in g[0][1]]
     return np.concatenate(out) if out else np.zeros((0, 3))
 
 
@@ -95,6 +98,46 @@ def skyline(P, cell):
             z0 = zmin[i:i1 + 1, j:j1 + 1].min(); z1 = max(zmax[i:i1 + 1, j:j1 + 1].max(), z0 + BOXMIN)
             out.append((np.array([lo[0] + i * cell, lo[1] + j * cell, z0]), np.array([lo[0] + (i1 + 1) * cell, lo[1] + (j1 + 1) * cell, z1])))
     return out, float(sum((zmax[full] - zmin[full])) * cell * cell)
+
+
+RAIL_W = .5; RAIL_L = 8.; RAIL_MIN = .3      # metres: a box this thin and short follows a curved rail; none thinner, so wheels don't pass through
+
+
+def _rail(P, out, depth=0):
+    xy = P[:, :2]; c = xy.mean(0)
+    w, v = np.linalg.eigh(np.cov((xy - c).T) if len(P) > 2 else np.eye(2))
+    a = v[:, 1]; b = np.array([-a[1], a[0]])          # b is a turned a quarter left, so the frame is a rotation and winding keeps
+    s = (xy - c) @ a; t = (xy - c) @ b
+    if depth < 24 and len(P) > 8 and (np.ptp(t) > RAIL_W and np.ptp(s) > RAIL_MIN or np.ptp(s) > RAIL_L):
+        m = (s.min() + s.max()) / 2
+        for half in (P[s < m], P[s >= m]):
+            if len(half):
+                _rail(half, out, depth + 1)
+        return
+    tc = (t.min() + t.max()) / 2; th = max(np.ptp(t), RAIL_MIN) / 2
+    lo = np.array([s.min() - .05, tc - th, P[:, 2].min()]); hi = np.array([s.max() + .05, tc + th, max(P[:, 2].max(), P[:, 2].min() + BOXMIN)])
+    out.append((c, a, b, lo, hi))
+
+
+def rails(tris):
+    """oriented boxes along barriers, guardrails and fences: triangles (n, 3, 3) in world space, z up, to (vertices, triangle indices).
+    Each connected piece is halved along its long axis until a box is at most RAIL_W thick and RAIL_L long, so chains follow curves"""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    if not len(tris):
+        return np.zeros((0, 3)), np.zeros(0, np.int64)
+    _, inv = np.unique(np.rint(tris.reshape(-1, 3) * 100).astype(np.int64), axis=0, return_inverse=True); inv = inv.reshape(-1, 3)
+    e_ = np.r_[inv[:, [0, 1]], inv[:, [1, 2]]]; n_ = inv.max() + 1
+    _, lab = connected_components(coo_matrix((np.ones(len(e_)), (e_[:, 0], e_[:, 1])), shape=(n_, n_)), directed=False)
+    out = []
+    tl = lab[inv[:, 0]]
+    for k in np.unique(tl):
+        _rail(sample(tris[tl == k]), out)
+    V = []; T = []
+    for c, a, b, lo, hi in out:
+        bp, bi = box_mesh([(lo, hi)])
+        V.append(np.c_[c + bp[:, :1] * a + bp[:, 1:2] * b, bp[:, 2]]); T.append(bi + 8 * len(T))
+    return np.concatenate(V), np.concatenate(T)
 
 
 def generic(P):

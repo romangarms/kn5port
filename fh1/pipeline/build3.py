@@ -439,7 +439,7 @@ def togrid(p):
     return np.stack([(p[:, 0] - X0) / SQ, (p[:, 2] - Z0) / SQ * -1 + N, p[:, 1]], 1)
 
 
-cells = defaultdict(lambda: defaultdict(list)); stats = collections.Counter(); surf = collections.Counter(); start_ = t0 = time.time()
+cells = defaultdict(lambda: defaultdict(list)); RAILS = defaultdict(list); stats = collections.Counter(); surf = collections.Counter(); start_ = t0 = time.time()
 
 
 LV = (0,); FIX = None; DROPPED = collections.Counter()
@@ -489,6 +489,8 @@ def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
     for u in np.unique(k):
         sel = T[k == u]; idx, inv = np.unique(sel, return_inverse=True)
         cells[(int(u), cat)][(mat, LV)].append((b[idx], nb[idx], uv[idx], inv.reshape(-1, 3).astype(np.int64), uv1[idx] if uv1 is not None else uv[idx]))
+        if cat == 'bar' and 0 in LV:
+            RAILS[int(u)].append(b[sel])
     stats[cat] += len(T)
 
 
@@ -752,7 +754,7 @@ for f, cs in byfile.items():
                 add('vis', material(tid, alpha=opac), p, nr, uv, T); surf['cable'] += len(T)
             elif re.search(r'armco|barrier|fence|rail', n, re.I):
                 lv_ = LV; LV = tuple(FARCUT if x == 2 else x for x in LV)      # barriers stop at 800 m, and their copies add up
-                add('pro', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T); LV = lv_
+                add('bar', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T); LV = lv_
             elif re.search(r'rock|wall|cliff', n, re.I) or 'vblnd' in fx:
                 add('col', material(tid, 'ROCK', alpha=opac), p, nr, uv, T); surf['rock'] += len(T)
                 if near_:
@@ -1507,7 +1509,8 @@ def detail_sizes(R_, cat):
 
 # Props collide with simple shapes instead of their mesh, as each colliding object is its own copy in physics at about 41.5 bytes a
 # triangle: fences alone held 2.7M of the 8M instanced collision triangles. Thin and simple props (BOXED) get one or two boxes; the rest
-# a convex hull (rocks, logs) or a skyline of boxes (buildings, tents) from colfit.py, when that saves at least 40%. FH1_COLBOX=0 keeps
+# a convex hull (rocks, logs) or a skyline of boxes (buildings, tents) from colfit.py, even where that isn't fewer triangles, as boxes
+# behave better in a crash than a detailed mesh. FH1_COLBOX=0 keeps
 # the meshes, for comparison. KEEPMESH names surfaces a wheel may roll on, where seams between boxes would be bumps
 COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
 BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
@@ -1524,8 +1527,6 @@ for no, objs in INST.items():
     if COLBOX and collide is not None and not KEEPMESH.search(it['item']):
         P_ = colfit.points(shape, collide, FARCUT); had = sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1])
         kind, cm = ('box', colfit.boxes(P_)) if BOXED.search(it['item']) and 2 * R_ < 16 else (colfit.generic(P_) or (None, None))
-        if cm is not None and len(cm[1]) // 3 > had * .6:
-            kind, cm = None, None                    # not worth it: keep the mesh
         if cm is not None:
             n_ = sum(not o['smash'] for o in objs)
             stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (had - len(cm[1]) // 3)
@@ -1549,16 +1550,25 @@ for (u, cat), mm in cells.items():
     R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
     # a mesh drawn at every LOD is cooked once per detail level, so those go in a one-detail shape: one copy instead of three
     whole = [((g[0][0], (0,)),) + tuple(g[1:]) for g in groups if {0, 1, 2} <= set(g[0][1])]
-    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 2, 'pro': 2}.get(cat)
+    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 0, 'pro': 2}.get(cat)
+    rail = colfit.rails(np.concatenate(RAILS[u])) if cat == 'bar' and COLBOX and RAILS[u] else None
+    if cat == 'bar' and not COLBOX:
+        collide = 2
     for fn, gs, single in ((f'c{u}_{cat}', lods, False), (f'c{u}_{cat}f', whole, True)):
         if not gs:
             continue
         p_ = np.concatenate([g[1] for g in gs]); o_ = np.round((p_.min(0) + p_.max(0)) / 2); sizes = detail_sizes(float(np.linalg.norm(p_.max(0) - p_.min(0))) / 2, cat)
-        col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide)
+        cm = None
+        if rail is not None:        # the first shape of the cell carries all its rail boxes
+            cm = (rail[0] - o_, rail[1]); collide = 0; stats['col_rail_boxes'] += len(rail[0]) // 8; stats['col_rail_tris_was'] += sum(len(t) for t in RAILS[u]); rail = None
+        elif cat == 'bar' and COLBOX:
+            collide = None
+        col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide, colmesh=cm)
         ct = 'Collision Mesh' if col else 'None'
         items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
                       'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
+print('rail collision', stats['col_rail_boxes'], 'boxes for', stats['col_rail_tris_was'], 'barrier triangles at LOD0')
 lap('shapes queued')
 for f_ in PENDING:
     f_.result()

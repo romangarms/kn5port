@@ -62,7 +62,7 @@ One 900-line script run top to bottom:
 
 1. **Material helpers**: `materials`, `material`, `blend_material`, `slot_tex`, `role_ground`.
 2. **Shape writers**: `write_dae`, `write_lod`.
-3. **World meshes** (`# ---- world meshes`): sorts sections into `col` (ground, roads, rock), `pro` (props, barriers), `vis` (decals, no collision). Also rasters heights, roads and coverage. Far terrain tiers fill in where nothing better covers.
+3. **World meshes** (`# ---- world meshes`): sorts sections into `col` (ground, roads, rock), `pro` (props), `bar` (barriers, box collision), `vis` (decals, no collision). Also rasters heights, roads and coverage. Far terrain tiers fill in where nothing better covers.
 4. **Placed models** (`# ---- placed models`): `read_pgeo`, then plants go to the forest, solid models to shapes.
 5. **Static objects**: from `zonerec.pkl`, see `free-roam.md`.
 6. **Heightfield floor** (`# ---- heightfield safety floor`).
