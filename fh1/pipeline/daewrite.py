@@ -7,10 +7,10 @@ from kn5port.level import _fmt
 FARCUT = 3
 
 
-def has_col(groups, collide, boxes=None):
+def has_col(groups, collide, colmesh=None):
     """whether write_lod will give these groups a collision mesh"""
-    if boxes is not None:
-        return collide is not None and len(boxes) > 0
+    if colmesh is not None:
+        return collide is not None and len(colmesh[1]) > 0
     return any(collide is not None and collide in g[0][1] or collide == 2 and FARCUT in g[0][1] for g in groups)
 
 
@@ -33,13 +33,13 @@ def box_mesh(boxes):
     return np.concatenate(P), np.concatenate(T).ravel()
 
 
-def write_lod(path, groups, origin, sizes, collide, extra=(), boxes=None):
+def write_lod(path, groups, origin, sizes, collide, extra=(), colmesh=None):
     """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2).
     A trailing number on those node names is the detail size. Geometry of level `collide` is reused as Colmesh_<i>-1.
     Level FARCUT draws nothing: it keeps a mesh for collision after its LOD2 copy is dropped.
-    boxes: (lo, hi) pairs that collide instead of that geometry, as one more Colmesh geometry that's never drawn"""
-    if boxes is not None and collide is not None:
-        bp, bi = box_mesh(boxes)
+    colmesh: (vertices, triangle indices) that collide instead of that geometry, such as colfit.py's boxes, as one more Colmesh that's never drawn"""
+    if colmesh is not None and collide is not None:
+        bp, bi = colmesh
         groups = list(groups) + [((groups[0][0][0], ('box',)), bp, np.zeros_like(bp), np.zeros((len(bp), 2)), bi)]
         collide = 'box'
     mats = sorted({g[0][0] for g in groups}); out = []; w = out.append

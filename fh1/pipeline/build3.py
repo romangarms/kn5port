@@ -8,7 +8,7 @@ from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
 from scipy.spatial import cKDTree
-import dds, hexzones, rmb, tex
+import colfit, dds, hexzones, rmb, tex
 from daewrite import FARCUT, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -1116,15 +1116,15 @@ sys.modules['__main__'].__file__ = os.path.abspath('daewrite.py')      # Windows
 POOL = ProcessPoolExecutor(min(6, os.cpu_count() or 1)); PENDING = set()
 
 
-def queue_lod(*job, boxes=None):
+def queue_lod(*job, colmesh=None):
     """write_lod in a worker. The queue is short, because each job holds a copy of its geometry"""
     global PENDING
     while len(PENDING) >= 24:
         done_, PENDING = wait(PENDING, return_when=FIRST_COMPLETED)
         for f_ in done_:
             f_.result()
-    PENDING.add(POOL.submit(write_lod, *job, boxes=boxes))
-    return has_col(job[1], job[4], boxes)
+    PENDING.add(POOL.submit(write_lod, *job, colmesh=colmesh))
+    return has_col(job[1], job[4], colmesh)
 
 
 
@@ -1138,59 +1138,31 @@ def detail_sizes(R_, cat):
     return s0, s1, s2
 
 
-# Thin and simple props collide with boxes instead of their mesh: fences alone held 2.7M of the 8M instanced collision triangles.
-# Each colliding object is its own copy in physics, at about 41.5 bytes a triangle. FH1_COLBOX=0 keeps the meshes, for comparison
+# Props collide with simple shapes instead of their mesh, as each colliding object is its own copy in physics at about 41.5 bytes a
+# triangle: fences alone held 2.7M of the 8M instanced collision triangles. Thin and simple props (BOXED) get one or two boxes; the rest
+# a convex hull (rocks, logs) or a skyline of boxes (buildings, tents) from colfit.py, when that saves at least 40%. FH1_COLBOX=0 keeps
+# the meshes, for comparison. KEEPMESH names surfaces a wheel may roll on, where seams between boxes would be bumps
 COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
 BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
                    r'(?<![a-z])bin[a-z]?(?![a-z])|bench|table|container|skip|haybale|crate|rack|hoarding|bollard', re.I)
 NOCOL = re.compile(r'rope', re.I)       # festival bunting, 35 m across, above the cars
-BOXMIN = 0.1                            # metres: flat signs still get a solid slab
+KEEPMESH = re.compile(r'bridge|ramp|jump|stage|platform|deck|road|tunnel|pavement|kerb|curb|car_?park|parking|dam(?![a-z])', re.I)
 
 
-def fit_boxes(groups, collide):
-    """one box around the geometry that collides, or two stacked boxes when the bottom is much wider than the top (barrier feet,
-    a sign on its post). Model frame, z up. Points are sampled inside triangles, so a band cut through a long triangle still sees it"""
-    P = []
-    for g in groups:
-        if collide in g[0][1] or collide == 2 and FARCUT in g[0][1]:
-            p_ = g[1]; T_ = np.asarray(g[4]).reshape(-1, 3)
-            w_ = np.array([(a_, b_, 4 - a_ - b_) for a_ in range(5) for b_ in range(5 - a_)], 'f8') / 4
-            P.append(np.einsum('kj,tjd->tkd', w_, p_[T_]).reshape(-1, 3))
-    if not P:
-        return []
-    P = np.concatenate(P)
-
-    def box(Q):
-        lo = Q.min(0); hi = Q.max(0); c = (lo + hi) / 2; h = np.maximum((hi - lo) / 2, BOXMIN / 2)
-        return c - h, c + h
-
-    def vol(bs):
-        return sum(float(np.prod(hi - lo)) for lo, hi in bs)
-    best = [box(P)]
-    z0, z1 = P[:, 2].min(), P[:, 2].max()
-    for f in np.linspace(.1, .6, 11):
-        zc = z0 + f * (z1 - z0); dn = P[P[:, 2] <= zc]; up = P[P[:, 2] >= zc]
-        if len(dn) < 3 or len(up) < 3:
-            continue
-        bs = [box(dn), box(up)]
-        bs = [(bs[0][0], np.r_[bs[0][1][:2], max(zc, bs[0][0][2] + BOXMIN)]), (np.r_[bs[1][0][:2], zc], bs[1][1])]      # abut at the cut
-        if vol(bs) < vol(best) * (.7 if len(best) == 1 else 1):
-            best = bs
-    return best
-
-
-stats['colbox_shapes'] = stats['colbox_tris_saved'] = 0
 for no, objs in INST.items():
     it = defs[no]; far_ = FARCUT if max(it['h'], it['w']) < 15 else 2
     shape = [((g[0], (0,) if it['low'] else (0, 1, far_)),) + tuple(g[1:]) for g in it['groups']] + [((g[0], (1, far_)),) + tuple(g[1:]) for g in it['low']]
     allp = np.concatenate([g[1] for g in shape]); R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
-    collide = None if all(o['smash'] for o in objs) or NOCOL.search(it['item']) else 2; boxes = None
-    if COLBOX and collide is not None and BOXED.search(it['item']) and 2 * R_ < 16:
-        boxes = fit_boxes(shape, collide)
-        n_ = sum(not o['smash'] for o in objs)
-        stats['colbox_shapes'] += 1
-        stats['colbox_tris_saved'] += n_ * (sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1]) - 12 * len(boxes))
-    col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), collide, boxes=boxes)
+    collide = None if all(o['smash'] for o in objs) or NOCOL.search(it['item']) else 2; cm = None
+    if COLBOX and collide is not None and not KEEPMESH.search(it['item']):
+        P_ = colfit.points(shape, collide, FARCUT); had = sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1])
+        kind, cm = ('box', colfit.boxes(P_)) if BOXED.search(it['item']) and 2 * R_ < 16 else (colfit.generic(P_) or (None, None))
+        if cm is not None and len(cm[1]) // 3 > had * .6:
+            kind, cm = None, None                    # not worth it: keep the mesh
+        if cm is not None:
+            n_ = sum(not o['smash'] for o in objs)
+            stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (had - len(cm[1]) // 3)
+    col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), collide, colmesh=cm)
     ct = 'Collision Mesh' if col else 'None'
     for i_, o in enumerate(objs):
         items.append({'class': 'TSStatic', 'name': f'fh1_m{no}_{i_}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
@@ -1198,7 +1170,7 @@ for no, objs in INST.items():
                       'scale': [o['scale']] * 3, 'collisionType': 'None' if o['smash'] else ct, 'decalType': 'None' if o['smash'] else ct,
                       **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if no in GLOWING or lod_sibling(no) in GLOWING else {})})
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
-print('box collision', stats['colbox_shapes'], 'shapes,', stats['colbox_tris_saved'], 'collision triangles saved')
+print('simple collision', {k[4:-7]: v for k, v in stats.items() if k.startswith('col_') and k.endswith('_shapes')}, 'shapes,', stats['col_tris_saved'], 'collision triangles saved')
 for (u, cat), mm in cells.items():
     groups = []
     for mat, parts in mm.items():
