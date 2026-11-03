@@ -100,6 +100,21 @@ def simplify(P, tol):
     return P[keep]
 
 
+def unfold(P):
+    """Nodes that can't fold over themselves. The centre line steps cell by cell, and a ribbon wider than twice its turn radius folds back:
+    30% of nodes did, which showed as missing water and flat pale slabs across Clear Springs' reservoir. So the line is smoothed in proportion
+    to the width, simplified, then each node is narrowed to fit the turn it sits on. Rows: x, y, z, width"""
+    if len(P) > 4:
+        sg = max(2.0, float(np.median(P[:, 3])) / GRID / 4)
+        P = P.copy(); P[:, :2] = ni.gaussian_filter1d(P[:, :2], sg, axis=0, mode='nearest')
+    P = simplify(P, 2.0)
+    if len(P) > 2:
+        d = np.diff(P[:, :2], axis=0); h = np.arctan2(d[:, 1], d[:, 0]); turn = np.abs((np.diff(h) + np.pi) % (2 * np.pi) - np.pi)
+        seg = np.hypot(d[:, 0], d[:, 1]); R = (seg[:-1] + seg[1:]) / 2 / np.maximum(turn, 1e-6)
+        P[1:-1, 3] = np.minimum(P[1:-1, 3], np.maximum(1.8 * R, 2 * MARGIN))
+    return P
+
+
 items_path = level / 'main' / 'MissionGroup' / 'fh1' / 'items.level.json'
 items = [json.loads(l) for l in items_path.read_text().splitlines() if l.strip()]
 wdir = level / 'main' / 'MissionGroup' / 'fh1_water'; wdir.mkdir(parents=True, exist_ok=True); saved = wdir / 'meshwater.json'
@@ -109,7 +124,8 @@ if wat:
 elif saved.exists():
     wat = json.loads(saved.read_text())
 else:
-    sys.exit('no water shapes: run build3.py first, or this level has no water')
+    print('no water shapes: run build3.py first, or this level has no water')      # Red Rock has none, and the build carries on
+    sys.exit(0)
 W = np.concatenate([triangles(o, True) for o in wat])
 lo = W[:, :, :2].reshape(-1, 2).min(0) - 4 * GRID; hi = W[:, :, :2].reshape(-1, 2).max(0) + 4 * GRID
 shape = tuple((np.ceil((hi - lo) / GRID).astype(int) + 1)[::-1])
@@ -154,7 +170,7 @@ for k in range(1, n + 1):
             if len(P_) < 3:
                 continue
             nodes = []
-            for x, y, zz, wd in simplify(P_, 2.0):
+            for x, y, zz, wd in unfold(P_):
                 j, i = int(round((y - lo[1]) / GRID)), int(round((x - lo[0]) / GRID)); r_ = max(int(wd / 2 / GRID), 1)
                 nodes.append([round(x, 2), round(y, 2), round(zz, 2), round(wd, 1), round(float(np.median(depth[max(j - r_, 0):j + r_ + 1, max(i - r_, 0):i + r_ + 1])), 1), 0, 0, 1])
             rivers.append(nodes)

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ = {'fh1_colorado': (-300.0, 500.0), 'fh1_redrock': (-6000.0, 4250.0)}[LVL]
+CX, CZ = {'fh1_colorado': (-300.0, 500.0), 'fh1_redrock': (-6000.0, 4250.0), 'fh1_clearsprings': (1700.0, 2000.0)}[LVL]
 # None for the whole map, or (x, y, radius) in BeamNG metres to limit it, as the Carson prototype did at (-3670, 1378, 1500). The user confirmed Carson in-game
 TOWN = None
 LM_SLOT = 7; LM = re.compile(r'_lm(\d|_|$)')

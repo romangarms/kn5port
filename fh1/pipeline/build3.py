@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 from numba import njit
 from scipy import ndimage as ni
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 import colfit, dds, hexzones, rmb, tex
 from daewrite import FARCUT, has_col, write_lod
@@ -46,7 +47,8 @@ class Tee:
 
 # FH1_CHUNK picks the area: level name, title, heightfield size, grid spacing, centre, map art size
 CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
-          'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
+          'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096),
+          'clearsprings': ('fh1_clearsprings', 'Colorado: Clear Springs (FH1 chunk)', 2048, 2.0, 1700.0, 2000.0, 2048)}
 LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
 LOG = Path('../logs') / f'{LVL}-{time.strftime("%Y%m%d-%H%M%S")}.log'; LOG.parent.mkdir(exist_ok=True)
 LOGF = open(LOG, 'w', encoding='utf8', buffering=1); sys.stdout = Tee(sys.stdout, LOGF); sys.stderr = Tee(sys.stderr, LOGF)
@@ -55,6 +57,8 @@ CELL = 250.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE af
 # LOD switch distances in metres, and the screen scale (pixels of radius per unit radius/distance) at 1440p
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
 IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
+# FH1's far mountains stand up to 18 km out, beyond the square. The whole map keeps them as a backdrop; a chunk would pull in the rest of the map
+BACKDROP = os.environ.get('FH1_BACKDROP', '1' if LVL == 'fh1_colorado' else '0') != '0'; VISIBLE = 24000 if BACKDROP else 6000
 HALF = N * SQ / 2; X0, X1, Z0, Z1 = CX - HALF, CX + HALF, CZ - HALF, CZ + HALF
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(beamng.find_mods()) / 'unpacked' / LVL
 level = root / 'levels' / LVL; rel = f'/levels/{LVL}'
@@ -67,7 +71,7 @@ lap('wipe and load tables')
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
 PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
 NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
-TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD', re.I)
+TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD|^Mountains_Area\d+_NOLOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
 FARQ = []; ZBANDS = (150.0, 400.0, 800.0, 1500.0)      # far ground's tiers: how close FH1 draws it from, in metres. See far_tiers
 
@@ -251,6 +255,107 @@ def blend_material(tids, masktid, ground):
     return key
 
 
+# FH1 paints road wear, cracks and dirt edges as colour layers weighted per vertex: bytes 1 and 2 of the vertex's last 4 weight the slot 1
+# and slot 5 layers, broken up by slot 2's noise. BeamNG reads layer opacity from a map, not the vertex, so the weights go in UV set 1 and a
+# shared ramp texture turns them back into opacity: interpolated across each triangle as FH1's are. A multiply can't copy FH1's noise exactly
+# (it subtracts), so the ramp is steeper than linear and the noise softer. Both by eye. Decal alpha (byte 0) goes the same way
+RAMP_N = 64; RAMP_GAIN = 1.5; ROAD_NOISE = .5
+
+
+def ramp(axis, gain=RAMP_GAIN, half=False):
+    """A ramp texture: opacity along u (axis 0) or v (axis 1) of UV set 1, for weights put there by ramp_uv. half: as an opacity detail
+    map, whose blend is saturate(1 + (2d - 1)), so storing w / 2 multiplies opacity by exactly w"""
+    name = f"fh1_ramp_{'uv'[axis]}{gain:g}{'h' if half else ''}"; p_ = TX.d / f'{name}.data.dds'
+    if not p_.exists():
+        w = np.clip(np.linspace(0, 1, RAMP_N) * gain, 0, 1) / (2 if half else 1); a = np.tile(w, (RAMP_N, 1))
+        cooked(p_, (np.clip(a if axis == 0 else a.T, 0, 1) * 255 + .5).astype('u1'), limit=TEXMAX)
+    return f'{rel}/art/textures/{p_.name}'
+
+
+def ramp_uv(w):
+    """weights 0..1, shape (n, 2), to UV set 1 at the ramp's texel centres, so bilinear filtering is exact"""
+    return (w * (RAMP_N - 1) + .5) / RAMP_N
+
+
+def grey(tid):
+    """a texture's red channel as a .data.dds, for noise and decal masks"""
+    t = TX.get(tid)
+    if t is None:
+        return None
+    p_ = TX.d / f"{t['name']}_g.data.dds"
+    if not p_.exists():
+        cooked(p_, t['src'][..., 0], limit=TEXMAX)
+    return f'{rel}/art/textures/{p_.name}'
+
+
+def road_material(tids, noise, ground):
+    """h_road diff2 and diff3: layer 0, then slot 1 and slot 5 layers whose opacity is ramp(UV1 u) and ramp(UV1 v) times the noise on UV0"""
+    key = 'fh1_r_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + f'_{ground}' + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+    if key in MATS:
+        return key
+    info = [TX.get(t) for t in tids]
+    if any(i is None for i in info):
+        return None
+    st = [{'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0} for i_ in info]
+    nz = grey(noise) if noise else None
+    for k_, s_ in enumerate(st[1:]):
+        s_.update({'opacityMap': ramp(k_), 'opacityMapUseUV': 1})
+        if nz:
+            s_.update({'opacityDetailMap': nz, 'detailScale': [1, 1], 'detailOpacityMapStrength': ROAD_NOISE})
+    for t, s_ in zip(tids, st):
+        if t in NM:
+            s_['normalMap'] = TX.normal(NM[t])
+    while len(st) < 4:
+        st.append({})
+    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng',
+                 'translucentBlendOp': 'None', 'groundType': ground}
+    return key
+
+
+def vblend_pair(no, slots, fx):
+    """h_vblnd ground: slot 0, and slot 1 faded in by vertex weight 1. Slots 5 and 7 are small light and AO maps. Taking slot 0 alone left
+    Redstone's canyon walls one 256 px grass texture stretched down 10 m triangles, where FH1 blends in rock on half the vertices"""
+    ids = MT[no][0]
+    if not fx.startswith('h_vblnd') or 'decal' in fx or len(slots) < 2 or max(slots[0], slots[1]) >= len(ids):
+        return None
+    t_ = [IDX[ids[slots[q]]][0] for q in (0, 1)]
+    return t_ if all(tex.bix(x) and tex.bix(x)['fmt'] == 0x52 and not rgmask(x) for x in t_) else None
+
+
+def decal_material(tid, mask, alpha):
+    """FH1 decals: the texture's alpha times the vertex alpha, which goes in UV set 1 through a ramp. A masked decal (h_vblnd_decal_mask)
+    has its mask on UV set 1 instead, so its vertex alpha becomes one opacityFactor, the section's mean. Opaque DXT1 patches take their shape
+    from the mask alone; before, they were drawn as solid squares"""
+    t = TX.get(tid)
+    if t is None:
+        return None
+    o_ = f"{rel}/art/textures/{t['name']}_o.data.dds" if t['cut'] > .002 else None
+    key = f"fh1_{t['name']}_dc" + (f'_m{mask:X}_{alpha:.2f}' if mask else '')
+    if key not in MATS:
+        st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
+        if mask:
+            st.update({'opacityMap': grey(mask), 'opacityMapUseUV': 1, 'opacityFactor': alpha})
+            if o_:
+                st.update({'opacityDetailMap': o_, 'detailScale': [1, 1], 'detailOpacityMapStrength': 1})
+        else:
+            if o_:
+                st['opacityMap'] = o_
+            st.update({'opacityDetailMap': ramp(0, 1, half=True), 'opacityDetailMapUseUV': 1, 'detailScale': [1, 1], 'detailOpacityMapStrength': 1})
+        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
+                     'translucent': True, 'translucentZWrite': False, 'translucentRecvShadows': True, 'castShadows': False}
+    return key
+
+
+def slot_at(no, slots, k):
+    """the colour texture at a material's slot position k, or None"""
+    ids = MT[no][0]
+    if k < len(slots) and slots[k] < len(ids):
+        tid = IDX[ids[slots[k]]][0]; t = tex.bix(tid)
+        if t and t['fmt'] != 0x71 and not rgmask(tid):
+            return tid
+    return None
+
+
 def slot_tex(mesh_no, slots, order=None):
     """texture ids of the material's colour slots, skipping unused, missing and normal-map entries"""
     ids = MT[mesh_no][0]; out = []
@@ -338,6 +443,32 @@ cells = defaultdict(lambda: defaultdict(list)); stats = collections.Counter(); s
 
 
 LV = (0,); FIX = None; DROPPED = collections.Counter()
+BACK = []; BPRI = (-1,)      # triangles beyond the square, for backdrop(), with BPRI: (-1,) for fine ground, else (0, the far mesh's median edge)
+
+
+def cell_split(b, nb, uv, uv1, T):
+    """Cut triangles along the cell lines. A group over 1 km has no single cell, and split by centroid, a cell drawing its LOD2 beside one
+    drawing LOD0 left holes where triangles straddled the line, while coarse ones poked through finer ground. Cut, each cell holds exactly its part"""
+    A = np.concatenate([b, nb, uv, uv1], 1); S = A[T]
+    for ax in (0, 1):
+        done = []
+        while len(S):
+            lo_ = S[:, :, ax].min(1); hi_ = S[:, :, ax].max(1)
+            X = (np.floor((lo_ + HALF) / CELL) + 1) * CELL - HALF       # the first line above each triangle's lowest corner
+            cut = X < hi_ - 1e-4
+            done.append(S[~cut]); S = S[cut]; X = X[cut]
+            if not len(S):
+                break
+            s_ = S[:, :, ax] - X[:, None]; pos = s_ > 0
+            lone = np.where(pos.sum(1) == 1, pos.argmax(1), (~pos).argmax(1))      # the corner alone on its side goes first, keeping the winding
+            r_ = (lone[:, None] + np.arange(3)) % 3; S = np.take_along_axis(S, r_[:, :, None], 1); s_ = np.take_along_axis(s_, r_, 1)
+            a_, b_, c_ = S[:, 0], S[:, 1], S[:, 2]
+            p_ = a_ + (b_ - a_) * (s_[:, 0] / (s_[:, 0] - s_[:, 1]))[:, None]; q_ = a_ + (c_ - a_) * (s_[:, 0] / (s_[:, 0] - s_[:, 2]))[:, None]
+            S = np.concatenate([np.stack(v, 1) for v in ((a_, p_, q_), (p_, b_, c_), (p_, c_, q_))])
+        S = np.concatenate(done)
+    S = S[np.linalg.norm(np.cross(S[:, 1, :3] - S[:, 0, :3], S[:, 2, :3] - S[:, 0, :3]), axis=1) > 1e-6]
+    V = S.reshape(-1, A.shape[1]); n_ = V[:, 3:6]; n_ /= np.maximum(np.linalg.norm(n_, axis=1, keepdims=True), 1e-9)
+    return V[:, :3], n_, V[:, 6:8], V[:, 8:10], np.arange(len(V)).reshape(-1, 3)
 
 
 def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
@@ -346,9 +477,14 @@ def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
     b = g2b(p); nb = n2b(n)
     if lift:
         b = b + np.array([0, 0, lift])
-    c = b[T].mean(1); ins = (np.abs(c[:, :2]) < HALF - 4).all(1); T = T[ins]; c = c[ins]
+    c = b[T].mean(1); ins = (np.abs(c[:, :2]) < HALF - 4).all(1)
+    if BACKDROP and 2 in LV and not ins.all():        # the backdrop is one detail level, so it takes what's drawn furthest out
+        BACK.append((BPRI, cat, mat, b, nb, uv, T[~ins], uv1 if uv1 is not None else uv))
+    T = T[ins]; c = c[ins]
     if not len(T):
         return
+    if FIX is None and LV != (0, 1, 2):
+        b, nb, uv, uv1, T = cell_split(b, nb, uv, uv1 if uv1 is not None else uv, T); c = b[T].mean(1)
     key = np.floor((c[:, :2] + HALF) / CELL).astype(int); k = key[:, 0] * 1000 + key[:, 1] if FIX is None else np.full(len(T), FIX)
     for u in np.unique(k):
         sel = T[k == u]; idx, inv = np.unique(sel, return_inverse=True)
@@ -357,19 +493,109 @@ def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
 
 
 # ---- world meshes
-sel = [c for c in F if c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 and c['mn'][2] < Z1
-       and (max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 or 'UberLOD' in c['name']) and not NOUSE.search(c['name'])]
+def lake(c):
+    """Mountains_Water_03, Finley's reservoir, shares a mesh with water 14 km off the map, so it's exempt from the size limit. add() drops the far part"""
+    no = int(c['f'].split('.')[1])
+    return no < len(MT) and any(SHADERS[s].startswith('lake') for s in MT[no][1])
+
+
+sel = [c for c in F if (BACKDROP or c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 and c['mn'][2] < Z1)
+       and (BACKDROP or max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 or 'UberLOD' in c['name'] or lake(c)) and not NOUSE.search(c['name'])]
 # Origin-local meshes only belong where a zone record puts them, so they must not also go in raw at (0, 0).
 # Any record away from the origin marks a whole LOD group as local. World-space meshes have records at the origin.
 ZREC = pickle.load(open('../zonerec.pkl', 'rb')); NAMEOF = {int(c['f'].split('.')[1]): c['name'] for c in F}
 GENERIC = re.compile(r'(Plane|Box|Line|Object|Mesh|Rectangle)\d+', re.I)        # exporter default names, shared by unrelated meshes
+
+
+def lod_rings():
+    """FH1's own LOD groups, from the draw table. p is a signed offset to the next record of the mesh's group, and following it comes
+    back round: rings of 3 (LOD0, 1, 2), 2 (LOD0 and a coarse one) or 1. g bits 12-13 are the level, where 3 is the coarse member
+    of a pair and most lone meshes, and bit 11 marks the top member. Every file sits in one ring at one level.
+    -> {file: ring id}, {file: level}"""
+    n_ = len(DRAW); p_ = DRAW['p'].astype(np.int64); p_ = np.where(p_ >= 32768, p_ - 65536, p_); lv_ = (DRAW['g'].astype(int) >> 12) & 3
+    ring = {}; level = {}
+    for i in range(n_):
+        t = int(DRAW['t'][i])
+        if t in ring:
+            continue
+        out = [i]; j = i
+        for _ in range(8):
+            j += int(p_[j])
+            if j == i or not 0 <= j < n_:
+                break
+            out.append(j)
+        if j != i:      # a few hundred records point elsewhere, into some other hierarchy
+            continue
+        r_ = ('ring', min(int(DRAW['t'][k]) for k in out))
+        for k in out:
+            ring[int(DRAW['t'][k])] = r_; level[int(DRAW['t'][k])] = int(lv_[k])
+    return ring, level
+
+
+RING, LEVEL = lod_rings()
+
+
+def lod_groups(cs, margin=25.0):
+    """A group per mesh: its file's ring in the draw table. Names are only a fallback: they joined every Object025 on the map into one
+    group 12 km wide, and exporters misnamed some LODs (ROAD_CLRD_Mountains_Area03_53_LOD00 has _49_LOD01). The few files with no ring
+    group by lodkey and overlapping boxes"""
+    by = defaultdict(list); out = {}
+    for c in cs:
+        t = int(c['f'].split('.')[1])
+        if t in RING:
+            out[(c['f'], c['mi'])] = RING[t]
+        else:
+            by[lodkey(c['name'])].append(c)
+    for k, g in by.items():
+        lo = np.array([[c['mn'][0], c['mn'][2]] for c in g]) - margin; hi = np.array([[c['mx'][0], c['mx'][2]] for c in g]) + margin
+        ov = ((lo[:, None] < hi[None]) & (lo[None] < hi[:, None])).all(2)
+        _, lab = connected_components(ov, directed=False)
+        for c, l_ in zip(g, lab):
+            out[(c['f'], c['mi'])] = (k, int(l_))
+    return out
+
+
+GID = lod_groups(sel); GFILES = defaultdict(set); FILEMESH = defaultdict(list)
+for c in sel:
+    GFILES[GID[(c['f'], c['mi'])]].add(int(c['f'].split('.')[1])); FILEMESH[int(c['f'].split('.')[1])].append(c)
+print('LOD groups from the draw table', sum(k[0] == 'ring' for k in GID.values()), 'by name', sum(k[0] != 'ring' for k in GID.values()))
+
+
+def gkey(c):
+    return GID[(c['f'], c['mi'])]
+
+
+def lone_copies(cs):
+    """Meshes alone in their ring with a finer LOD of the same name over them: spare LOD2 copies such as Reservoir_Area6_PATCH_01_LOD02 in
+    file 14474 (g 0x7814), beside the real ring 13203-13205. Each is its own group's best, so it went in as close ground over the fine tiles"""
+    ring_n = collections.Counter(RING.values()); by = defaultdict(list); out = set()
+    for c in cs:
+        by[lodkey(c['name'])].append(c)
+    for c in cs:
+        t = int(c['f'].split('.')[1])
+        if t not in RING or ring_n[RING[t]] > 1:
+            continue
+        if any(lod(d['name']) < lod(c['name']) and int(d['f'].split('.')[1]) != t and d['mn'][0] < c['mx'][0] and c['mn'][0] < d['mx'][0]
+               and d['mn'][2] < c['mx'][2] and c['mn'][2] < d['mx'][2] for d in by[lodkey(c['name'])]):
+            out.add((c['f'], c['mi']))
+    return out
+
+
+LONE = lone_copies(sel)
+print('lone LOD copies left out', len(LONE))
+
+
+def lod_level(c):
+    """a mesh's LOD level: 0 is finest, 3 the coarse member of a pair. From the draw table, else the name"""
+    return LEVEL.get(int(c['f'].split('.')[1]), lod(c['name']))
+
+
 moved = set(); movedno = set(); atzero = set(); SHELL = set(); COARSE = set()      # SHELL: FH1 never culls these. They're the coarse ground behind everything
 for (did, p_), r_ in ZREC.items():
-    t = int(DRAW['t'][did]); n_ = lodkey(NAMEOF.get(t, ''))
+    t = int(DRAW['t'][did])
     if abs(r_['pos'][0]) + abs(r_['pos'][2]) >= 1:
         movedno.add(t)
-        if not GENERIC.match(n_):
-            moved.add(n_)
+        moved.update(gkey(c) for c in FILEMESH.get(t, ()) if gkey(c)[0] == 'ring' or not GENERIC.match(lodkey(c['name'])))
     elif not (r_['lst'] or r_['name']):
         atzero.add(t)
         if r_['lod'][0] >= 1e5:
@@ -380,7 +606,7 @@ def world_mesh(c):
     """The game only draws a world-space mesh through a free-roam record at the origin. A mesh with no record is never loaded,
     and a placeholder texture marks FH1's blocked-out ground"""
     no = int(c['f'].split('.')[1])
-    if no in movedno or lodkey(c['name']) in moved or no not in atzero:
+    if no in movedno or gkey(c) in moved or no not in atzero:
         return False
     return not (no < len(MT) and any(IDX[i][0] == PLACEHOLDER for i in MT[no][0]))
 
@@ -395,13 +621,14 @@ for c in sel:      # a large, sparse terrain mesh is coarse ground too: fine til
 for c in sel:
     if int(c['f'].split('.')[1]) in SHELL or (c['f'], c['mi']) in COARSE:
         continue
-    k = lodkey(c['name']); best[k] = min(best[k], lod(c['name'])); AV[k].add(lod(c['name']))
+    k = gkey(c); best[k] = min(best[k], lod_level(c)); AV[k].add(lod_level(c))
     b_ = BOX.setdefault(k, [c['mn'][0], c['mx'][0], c['mn'][2], c['mx'][2]])
     b_[0] = min(b_[0], c['mn'][0]); b_[1] = max(b_[1], c['mx'][0]); b_[2] = min(b_[2], c['mn'][2]); b_[3] = max(b_[3], c['mx'][2])
 
 
 def group_cell(k):
-    """All of a mesh's LODs share one shape, so its detail switches as a unit. Split by triangle, a cell could drop LOD0 with its coarse triangles held by a nearer cell."""
+    """All of a mesh's LODs share one shape, so its detail switches as a unit. Split by triangle, a cell could drop LOD0 with its coarse triangles held by a nearer cell.
+    A group over 1 km gets None: add() then cuts its triangles along the cell lines, so each cell holds exactly its own part of every LOD"""
     b_ = BOX[k]
     if max(b_[1] - b_[0], b_[3] - b_[2]) > 1000:
         return None
@@ -417,29 +644,30 @@ for f, cs in byfile.items():
     if len(M) < 1 + max((s['ints'][2] for m in P['meshes'] for s in m['secs']), default=0):
         stats['file_short_mats'] += 1
     for c in cs:
-        m = P['meshes'][c['mi']]; n = c['name']; l = lod(n)
+        m = P['meshes'][c['mi']]; n = c['name']; l = lod_level(c)
         if m['sd'] < 20:
             stats['stride16'] += 1
             continue
         p, nr, _ = rmb.verts(m); r0, r1 = uv_sets(m)
+        vw = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])[:, -4:].astype('f8') / 255 if m['sd'] >= 28 else None      # alpha, then layer weights
         shell_ = no in SHELL or (c['f'], c['mi']) in COARSE
         cube = (bool(FAR.search(n)) or shell_) and 'water' not in n.lower()
         isterr = (bool(TERR.search(n)) or cube) and not re.search(r'_rocks?(_|$)|armco|barrier|_road|water', n, re.I)
         g = togrid(p)
         if isterr:
             if cube:
-                if 'TERR_CUBE' not in n and l <= best[lodkey(n)]:
+                if 'TERR_CUBE' not in n and l <= best[gkey(c)] and (c['f'], c['mi']) not in LONE:
                     # coarse by measured density, as names mislead: TERR_UberLOD_Patch is the coarse shell, at 240 tris per km2 against PATCH's 21,000
                     d_ = c['nt'] / max((c['mx'][0] - c['mn'][0]) * (c['mx'][2] - c['mn'][2]) / 1e6, 1e-3)
-                    FARQ.append((d_ < 1500, no, M, m, p, nr, r0, r1, g))
+                    FARQ.append((d_ < 1500, no, M, m, p, nr, r0, r1, g, gkey(c)))
                 continue
-        have_ = sorted(AV[lodkey(n)]); rel_ = have_.index(l)
+        have_ = sorted(AV[gkey(c)]); rel_ = have_.index(l)
         if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
             stats['lod_dropped'] += 1
             continue
         # a group's coarsest mesh also stands in for any lower LODs it lacks
         LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 or isterr and rel_ == 1 else (rel_,)
-        FIX = group_cell(lodkey(n))
+        FIX = group_cell(gkey(c))
         near_ = rel_ == 0
         for s in m['secs']:
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
@@ -456,7 +684,7 @@ for f, cs in byfile.items():
             if fx.startswith('lake'):
                 add('wat', water(), p, nr, uv, T); surf['water'] += len(T); raster(Water, g[T])
                 continue
-            decal = 'decal' in fx; opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
+            decal = 'decal' in fx or fx.startswith('h_road') and 'decal' in n.lower(); opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
             road = fx.startswith('h_road') and not re.search(r'sign|barrier|wall|armco', n, re.I)
             ts = slot_tex(no, [x for x in slots if x < 96])
             if not ts and 'barbwire' in n.lower():
@@ -481,10 +709,12 @@ for f, cs in byfile.items():
                     mt = tex.bix(IDX[ids[slots[2]]][0])
                     if mt and mt['fmt'] == 0x52:
                         mask = TX.get(IDX[ids[slots[2]]][0])
-                gnd = role_ground(s['name'])
+                gnd = role_ground(s['name']); vb_ = vblend_pair(no, slots, fx) if vw is not None else None
                 if mask is not None and len(layers) > 1:
                     mname = blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd)
                     add('col', mname, p, nr, uv, T, uv1=(r1 + 1) / 2); surf[f'terrain_blend:{gnd}'] += len(T)
+                elif vb_ and road_material(vb_, None, gnd):
+                    add('col', road_material(vb_, None, gnd), p, nr, uv, T, uv1=ramp_uv(vw[:, [1, 2]])); surf[f'terrain_vblend:{gnd}'] += len(T)
                 else:
                     add('col', material(layers[0] if layers else ts[0], gnd), p, nr, uv, T); surf[f'terrain:{gnd}'] += len(T)
                 continue
@@ -493,13 +723,31 @@ for f, cs in byfile.items():
                 stats['sec_notex'] += 1
                 continue
             if decal:
-                add('vis', material(tid, translucent=True), p, nr, uv, T, lift=.02); surf['decal'] += len(T)
+                if road and near_:         # drains and the like on Decal meshes: still road, so far ground keeps clear of them as before
+                    raster(Road, g[T])
+                mask = slot_at(no, slots, 2) if 'mask' in fx and r1 is not None else None
+                if vw is None:
+                    add('vis', material(tid, translucent=True), p, nr, uv, T, lift=.02)
+                elif mask:
+                    a_ = round(float(vw[np.unique(T), 0].mean()) * 20) / 20         # shared by sections with about the same alpha
+                    add('vis', decal_material(tid, mask, a_), p, nr, uv, T, lift=.02, uv1=(r1 + 1) / 2)
+                else:
+                    add('vis', decal_material(tid, None, 0), p, nr, uv, T, lift=.02, uv1=ramp_uv(vw[:, [0, 0]]))
+                surf['decal'] += len(T)
             elif road:
                 rgb = info['rgb']; brown = rgb[0] - rgb[2] > 14
                 gnd = 'DIRT' if brown else 'ASPHALT'
                 if near_:
                     raster(Road, g[T])
-                add('col', material(tid, gnd), p, nr, uv, T); surf[f'road:{gnd}'] += len(T)
+                lay = [slot_at(no, slots, 1) if 'diff2' in fx or 'diff3' in fx else None, slot_at(no, slots, 5) if 'diff3' in fx else None]
+                rm_ = road_material([tid] + [x for x in lay if x], slot_at(no, slots, 2) if 'noise' in fx else None, gnd) if vw is not None and any(lay) else None
+                if rm_:
+                    w_ = vw[:, [1, 2]] if lay[0] else vw[:, [2, 1]]      # the first extra layer reads UV1 u
+                    add('col', rm_, p, nr, uv, T, uv1=ramp_uv(w_))
+                    surf['road_layers'] += len(T)
+                else:
+                    add('col', material(tid, gnd), p, nr, uv, T)
+                surf[f'road:{gnd}'] += len(T)
             elif re.search(r'cable|tether', n, re.I):
                 add('vis', material(tid, alpha=opac), p, nr, uv, T); surf['cable'] += len(T)
             elif re.search(r'armco|barrier|fence|rail', n, re.I):
@@ -559,17 +807,19 @@ def clip_far(A, T, dout, din):
 
 def far_tiers():
     """A far triangle's tier: how close to it FH1 ever draws its mesh, then coarse after fine. Each zone hex lists what FH1 draws from it,
-    so the distance to the nearest hex listing any LOD of the mesh is the closest it's ever seen from. The Uber shell isn't drawn within
+    so the distance to the nearest hex listing any LOD of the mesh's group is the closest it's ever seen from. The Uber shell isn't drawn within
     1 km of itself, and a fine tile is drawn from every hex within 300 m. Finer tiers claim the ground first, so a shell can't cover them.
     -> per FARQ entry, per section, a tier for each triangle"""
     HX, HR = hexzones.hexes(); zn = sorted(HX); ZC = np.array([HX[z] for z in zn]); seen = defaultdict(list)
     for k_, z in enumerate(zn):
         for d in hexzones.drawn(z):
             if d < len(DRAW):
-                seen[lodkey(NAMEOF.get(int(DRAW['t'][d]), ''))].append(k_)
-    trees = {k: cKDTree(ZC[sorted(set(v))]) for k, v in seen.items()}; out = []; unseen = 0
-    for coarse, no, M, m, p, *_ in FARQ:
-        t_ = trees.get(lodkey(NAMEOF.get(no, ''))); unseen += t_ is None; secs = []
+                seen[int(DRAW['t'][d])].append(k_)
+    trees = {}; out = []; unseen = 0
+    for coarse, no, M, m, p, *_, gk in FARQ:
+        if gk not in trees:
+            h_ = sorted({z for f in GFILES[gk] for z in seen.get(f, ())}); trees[gk] = cKDTree(ZC[h_]) if h_ else None
+        t_ = trees[gk]; unseen += t_ is None; secs = []
         for s in m['secs']:
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             c_ = p[T].mean(1) if len(T) else np.zeros((0, 3))
@@ -580,29 +830,140 @@ def far_tiers():
     return out
 
 
+def structures():
+    """Large placed structures, such as Finley Dam's 300 m wall, stand in holes in the terrain meshes. They're placed after the far
+    ground, so their footprints go in Rock here, which keeps far ground off them. Free-roam records only, at LOD0. Bridges, turbines,
+    conveyors and light rigs span open ground, so they'd cut holes under themselves"""
+    byno = defaultdict(list); n_ = 0; OPEN = re.compile(r'bridge|turbine|conveyor|^Lights', re.I)
+    for c in F:
+        if c['sd'] >= 20 and lod(c['name']) == 0 and max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) >= 50 and not (NOUSE.search(c['name']) or OPEN.search(c['name'])):
+            byno[int(c['f'].split('.')[1])].append(c)
+    for (did, p_), r_ in ZREC.items():
+        cs = byno.get(int(DRAW['t'][did]))
+        if not cs or r_['lst'] or r_['name'] or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
+            continue
+        Rg = np.array(r_['rot']).T; sc = float(np.linalg.norm(Rg[:, 1])); Rg = Rg / np.maximum(np.linalg.norm(Rg, axis=0, keepdims=True), 1e-6)
+        F_ = np.diag([1., 1., -1.]); R_ = (F_ @ Rg if np.linalg.det(Rg) < 0 else F_ @ Rg @ F_) * np.clip(sc, .2, 5)      # game_rot, defined further down
+        o_ = np.array([r_['pos'][0], r_['pos'][1], -r_['pos'][2]])
+        for c in cs:
+            m = rmb.parse(open('../x/' + c['f'], 'rb').read())['meshes'][c['mi']]; p, _, _ = rmb.verts(m)
+            g = togrid(p @ R_.T + o_)
+            for s in m['secs']:
+                raster(Rock, g[rmb.tris(s['ib'], m['nv'], s['ints'][1])])
+        n_ += 1
+    print('structure footprints', n_)
+
+
+BQ = 16.0; BSINK = 4.0      # backdrop coverage grid, and how far coarser ground sinks under finer, in metres
+
+
+def vkeys(p):
+    """a key per vertex, to 5 cm: FH1's copies of a mesh, such as NOLOD pieces of the Uber shell, repeat its vertices exactly"""
+    q = np.round(np.asarray(p, 'f8') * 20).astype(np.int64)
+    return q[:, 0] * 73856093 ^ q[:, 1] * 19349663 ^ q[:, 2] * 83492791
+
+
+def backdrop():
+    """FH1's far mountains beyond the square, up to 18 km out and 2,700 m up: one shape with no collision, shown at every distance.
+    Near-path ground goes in first, then far meshes one at a time, finest first: Mountains_Area5_NOLOD and the Uber shell overlap there,
+    and at one priority they z-fought. A coarser triangle is cut where finer ground starts and the covered part dropped, splitting until its
+    pieces are two grid cells across. Dropping only wholly covered triangles left 300 m Uber triangles cutting through the finer Rockies.
+    Corners still over finer ground sink under it. Water doesn't count as cover, so lake beds stay"""
+    if not BACK:
+        return
+    pts = np.concatenate([b_[T_].reshape(-1, 3) for _, _, _, b_, _, _, T_, _ in BACK])
+    lo = pts[:, :2].min(0); nx, ny = (np.ceil((pts[:, :2].max(0) - lo) / BQ)).astype(int) + 1
+    H = np.full((ny, nx), np.nan); kept = collections.Counter(); lost = collections.Counter()
+    for pri in sorted({e[0] for e in BACK}):
+        low = ni.minimum_filter(np.nan_to_num(H, nan=np.inf), 3); done = []
+        hard = ni.binary_erosion(np.isfinite(H), np.ones((3, 3)))      # a cell away from the edge, so neighbouring tiles of one fineness can't eat each other's border
+        for e in BACK:
+            if e[0] != pri:
+                continue
+            _, cat, mat, b_, nb, uv, T_, u1 = e
+            g = np.c_[(b_[:, :2] - lo) / BQ, b_[:, 2]]; i_ = np.clip(g[:, 0].astype(int), 0, nx - 1); j_ = np.clip(g[:, 1].astype(int), 0, ny - 1)
+            gc = g[T_].mean(1); ic = np.clip(gc[:, 0].astype(int), 0, nx - 1); jc = np.clip(gc[:, 1].astype(int), 0, ny - 1)
+            if pri[0] >= 0 and cat != 'wat' and hard.any():
+                A_ = np.concatenate([b_, nb, uv, u1], 1); S_ = A_[T_]; out_ = []
+                while len(S_):
+                    q_ = np.einsum('ij,kjl->kil', BARY, S_[:, :, :2]); c_ = hard[np.clip(((q_[..., 1] - lo[1]) / BQ).astype(int), 0, ny - 1), np.clip(((q_[..., 0] - lo[0]) / BQ).astype(int), 0, nx - 1)]
+                    all_ = c_.all(1); none_ = ~c_.any(1); L_ = np.linalg.norm(S_[:, :, :2] - S_[:, [1, 2, 0], :2], axis=2).max(1)
+                    small_ = (L_ <= 2 * BQ) & ~all_ & ~none_
+                    lost[pri[0]] += int(all_.sum()); out_ += [S_[none_], S_[small_]]
+                    S_ = S_[~(all_ | none_ | small_)]
+                    a_, b2, c2 = S_[:, 0], S_[:, 1], S_[:, 2]; ab, bc, ca = (a_ + b2) / 2, (b2 + c2) / 2, (c2 + a_) / 2
+                    S_ = np.concatenate([np.stack(v, 1) for v in ((a_, ab, ca), (ab, b2, bc), (ca, bc, c2), (ab, bc, ca))]) if len(S_) else S_
+                V_ = np.concatenate(out_).reshape(-1, A_.shape[1]) if out_ else A_[:0]
+                b_, nb, uv, u1 = V_[:, :3], V_[:, 3:6], V_[:, 6:8], V_[:, 8:10]; T_ = np.arange(len(V_)).reshape(-1, 3)
+                g = np.c_[(b_[:, :2] - lo) / BQ, b_[:, 2]]; i_ = np.clip(g[:, 0].astype(int), 0, nx - 1); j_ = np.clip(g[:, 1].astype(int), 0, ny - 1)
+                cov = hard[j_, i_]
+            else:
+                cov = hard[j_, i_]; T_ = T_[~(cov[T_].all(1) & hard[jc, ic])]; lost[pri[0]] += len(e[6]) - len(T_)
+            kept[pri[0]] += len(T_)
+            if not len(T_):
+                continue
+            b_ = b_.copy(); b_[cov, 2] = np.minimum(b_[cov, 2], low[j_, i_][cov] - BSINK); g[:, 2] = b_[:, 2]
+            idx, inv = np.unique(T_, return_inverse=True)
+            cells[(0, 'bak')][(mat, (0, 1, 2))].append((b_[idx], nb[idx], uv[idx], inv.reshape(-1, 3).astype(np.int64), u1[idx]))
+            if cat != 'wat':
+                done.append(g[T_])
+        for t_ in done:         # after the whole priority, so meshes at the same one can't drop each other
+            raster(H, t_)
+    print('backdrop tris kept', dict(kept), 'covered by finer', dict(lost))
+
+
+structures()
+lap('structure footprints')
 TIERS = far_tiers(); NT = 2 * len(ZBANDS) + 2
+FINE = []       # each far mesh's median longest edge. Beyond the square the backdrop takes them finest first, whatever their tier
+for e_ in FARQ:
+    T_ = np.concatenate([rmb.tris(s['ib'], e_[3]['nv'], s['ints'][1]) for s in e_[3]['secs']] or [np.zeros((0, 3), int)])
+    FINE.append(float(np.median(np.linalg.norm(e_[4][T_] - e_[4][T_][:, [1, 2, 0]], axis=2).max(1))) if len(T_) else 0.0)
+# within a tier, the Uber background goes first and finer LODs before coarser, so a copy of ground already drawn is the one dropped
+ORDER = sorted(range(len(FARQ)), key=lambda i: ('uber' not in NAMEOF.get(FARQ[i][1], '').lower(), LEVEL.get(FARQ[i][1], lod(NAMEOF.get(FARQ[i][1], '')))))
 lap('far tier lookup')
 for tier_ in range(NT):
     if not any((t__ == tier_).any() for e_ in TIERS for t__ in e_):
         continue
+    SEEN = np.zeros(0, np.int64)      # vertex keys drawn in this tier
     new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
     if tier_ % 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
         lab_, n_ = ni.label(~shown); small = np.bincount(lab_.ravel()) * SQ * SQ < 150000; small[0] = False
         lump = np.where(small[lab_], pyramid_fill(Cov) + 1, np.inf)
     dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
     top = ni.minimum_filter(np.nan_to_num(np.fmax(Cov, Rock), nan=np.inf), 3)      # raster keeps a cell's highest point, so take the lowest nearby
-    for (coarse_, no, M, m, p, nr, r0, r1, g), tiers_ in zip(FARQ, TIERS):
-        ids = MT[no][0]
+    for e_ in ORDER:
+        (coarse_, no, M, m, p, nr, r0, r1, g, _), tiers_ = FARQ[e_], TIERS[e_]; BPRI = (0, FINE[e_])
+        ids = MT[no][0]; mine_ = []
         for s, ti_ in zip(m['secs'], tiers_):
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(T) or s['ints'][2] >= len(M):
                 continue
-            T = T[ti_ == tier_]
+            T = T[ti_ == tier_]; vk_ = vkeys(p)
+            if len(SEEN):       # all three corners already drawn in this tier: a copy, such as a NOLOD piece of the Uber shell. SEEN stays sorted
+                k_ = vk_[T]; T = T[~(SEEN[np.minimum(np.searchsorted(SEEN, k_), len(SEEN) - 1)] == k_).all(1)]
             if not len(T):
                 continue
+            mine_.append(vk_[T].ravel())
             uv = box_uv(r0, s['fl'])
-            u1 = (r1 + 1) / 2 if r1 is not None else uv
-            V, T = clip_far(np.c_[p, nr, uv, u1], T, dout, din)
+            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
+            vb_ = vblend_pair(no, slots, fx) if m['sd'] >= 28 else None
+            if vb_:     # vertex weights through clip_far as UV set 1, so split triangles interpolate them
+                u1 = ramp_uv(np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])[:, -3:-1].astype('f8') / 255)
+            else:
+                u1 = (r1 + 1) / 2 if r1 is not None else uv
+            A = np.c_[p, nr, uv, u1]; o_ = A[:0]
+            if BACKDROP:        # clip_far would hold ground beyond the square to the edge cells' heights. add() sends it to the backdrop
+                k_ = (np.abs(g2b(p[T].mean(1))[:, :2]) < HALF - 4).all(1); o_ = A[T[~k_]].reshape(-1, A.shape[1]); T = T[k_]
+            if tier_ == 0:      # FH1 draws this from its own hexes: real close-range ground beside the near tiles, only named PATCH or MIDDIST.
+                # clip_far's road cap and its hold to the lowest nearby ground tore it open at their seams: a slit down Redstone's canyon
+                # walls, the cliff beside Clear Springs' road. Kept as it is, unless it lies wholly over near ground
+                c_ = togrid(np.concatenate([p[T], p[T].mean(1, keepdims=True)], 1).reshape(-1, 3)).reshape(-1, 4, 3)
+                T = T[~(din[np.clip(c_[..., 1].astype(int), 0, N - 1), np.clip(c_[..., 0].astype(int), 0, N - 1)].min(1) > LIP)]
+                V = A[T].reshape(-1, A.shape[1])
+            else:
+                V, T = clip_far(A, T, dout, din)
+            V = np.concatenate([V, o_]); T = np.arange(len(V)).reshape(-1, 3)
             if not len(T):
                 continue
             p_, n_, uv, u1 = V[:, :3], V[:, 3:6], V[:, 6:8], V[:, 8:10]; g_ = togrid(p_)
@@ -626,13 +987,19 @@ for tier_ in range(NT):
                     mask = TX.get(IDX[ids[slots[2]]][0])
             if mask is not None and len(layers) > 1:
                 add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd), p_, n_, uv, T, uv1=u1)
+            elif vb_ and road_material(vb_, None, gnd):
+                add('col', road_material(vb_, None, gnd), p_, n_, uv, T, uv1=u1); surf[f'far_vblend:{gnd}'] += len(T)
             else:
                 add('col', material(layers[0] if layers else ts[0], gnd), p_, n_, uv, T)
             surf[f'far{tier_}'] += len(T)
             raster(new_, g_[T]); raster(Cov, g_[T])
+        if mine_:       # after the whole mesh, as its own sections share vertices along their edges
+            SEEN = np.union1d(SEEN, np.concatenate(mine_))
     shown = np.isfinite(Cov)
     print('far tier', tier_, 'shown now', float(shown.mean()))
 lap('far tiers')
+backdrop()
+lap('backdrop')
 NM = {}
 print('statics', dict(stats), dict(surf), f'{time.time() - t0:.0f}s')
 print('sections by road surface', {k: v for k, v in surf.items() if k.startswith('road')})
@@ -1132,7 +1499,7 @@ def detail_sizes(R_, cat):
     """detail sizes follow from a shape's radius, so every shape switches at the same distance from its edge. The engine
     measures from the centre: a kilometre-wide tile group would otherwise show LOD1 to a car on top of it"""
     s0 = max(int(R_ / (LOD_DIST[0] + R_) * PX), 3); s1 = max(min(int(R_ / (LOD_DIST[1] + R_) * PX), s0 - 1), 2)
-    s2 = 1 if cat in ('col', 'wat') else max(min(int(R_ / (PROP_FAR + R_) * PX), s1 - 1), 1)
+    s2 = 1 if cat in ('col', 'wat', 'bak') else max(min(int(R_ / (PROP_FAR + R_) * PX), s1 - 1), 1)
     if s2 >= s1:
         s1 = s2 + 1; s0 = max(s0, s1 + 1)
     return s0, s1, s2
@@ -1200,7 +1567,7 @@ lap('shape writers finishing')
 cam = g2b(np.array([[-5681., 350., 5301.]]))[0]; drawn = [0, 0, 0, 0]; before = 0
 for org, R_, cat, tr in METRIC:
     d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[0] else 1 if d_ < LOD_DIST[1] else 2
-    if cat not in ('col', 'wat') and d_ > PROP_FAR:
+    if cat not in ('col', 'wat', 'bak') and d_ > PROP_FAR:
         lv = 3
     before += tr[0]
     if lv < 3:
@@ -1231,10 +1598,13 @@ RT = 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/'
 pat = (r"route_checkpoint_\d+'[^>]*>\s*<Transform pos\.x='([-\d.]+)' pos\.y='([-\d.]+)' pos\.z='([-\d.]+)' "
        r"facing\.x='([-\d.e]+)' facing\.y='[-\d.e]+' facing\.z='([-\d.e]+)'")
 bestr = None
+SBOX = (-6700, -5200, 4400, 6000)       # Red Rock. A chunk without it, such as Clear Springs, spawns on a route inside the chunk
+if not (X0 < SBOX[0] and SBOX[1] < X1 and Z0 < SBOX[2] and SBOX[3] < Z1):
+    SBOX = (X0 + 200, X1 - 200, Z0 + 200, Z1 - 200)
 for f in glob.glob(RT + 'TrackRoute*.xml'):
     P = [tuple(map(float, x)) for x in re.findall(pat, open(f, errors='replace').read())]
     P = [(a, b, -c, d, -e) for a, b, c, d, e in P]
-    ins = [x for x in P if -6700 < x[0] < -5200 and 4400 < x[2] < 6000]
+    ins = [x for x in P if SBOX[0] < x[0] < SBOX[1] and SBOX[2] < x[2] < SBOX[3]]
     if ins and (bestr is None or len(ins) > bestr[0]):
         bestr = (len(ins), os.path.basename(f), ins[0])
 x, y, z, fx, fz = bestr[2]
@@ -1246,7 +1616,7 @@ spawn = {'class': 'SpawnSphere', 'name': 'spawn_redrock', '__parent': 'MissionGr
          'position': [float(pos[0]), float(pos[1]), float(pos[2] + .6)], 'rotationMatrix': [c_, -s_, 0, s_, c_, 0, 0, 0, 1], 'radius': 1}
 main = level / 'main'; mg = main / 'MissionGroup'; (mg / 'fh1').mkdir(parents=True, exist_ok=True)
 (main / 'items.level.json').write_text(json.dumps({'name': 'MissionGroup', 'class': 'SimGroup', 'enabled': '1'}) + '\n')
-obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup', 'visibleDistance': 6000, 'gravity': -9.81, 'canvasClearColor': [.5, .6, .7, 1]},
+obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup', 'visibleDistance': VISIBLE, 'gravity': -9.81, 'canvasClearColor': [.5, .6, .7, 1]},
        {'class': 'TimeOfDay', 'name': 'tod', '__parent': 'MissionGroup', 'time': .1, 'play': False, 'azimuthOverride': 0, 'startTime': .1},
        {'class': 'ScatterSky', 'name': 'sunsky', '__parent': 'MissionGroup', 'position': [0, 0, 0], 'shadowDistance': 1600, 'shadowSoftness': .2, 'brightness': 1.0},
        spawn, {'name': 'fh1', 'class': 'SimGroup', '__parent': 'MissionGroup'},
@@ -1263,8 +1633,8 @@ pickle.dump({k: v for k, v in surf.items()}, open('../surf.pkl', 'wb'))
 lap('scene files')
 print('done', f'{time.time() - start_:.0f}s ->', level)
 # The scripts after the build, each with the ones it must wait for. nightlights reads every items file, animated rewrites fh1's and reads fh1_nav,
-# and levelinfo and navmap both edit info.json. Otherwise they only share the top-level items file, which mission.py locks
-AFTER = {'sky': (), 'navmap': (), 'ambience': (), 'particles': (), 'water': (), 'grade': (), 'levelinfo': ('navmap',),
+# levelinfo and navmap both edit info.json, and grade grades grass's textures. Otherwise they only share the top-level items file, which mission.py locks
+AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'grade': ('grass',), 'levelinfo': ('navmap',),
          'nightlights': ('sky', 'navmap', 'levelinfo', 'particles', 'water'), 'animated': ('nightlights',)}
 SAY = threading.Lock()      # one whole line at a time from the scripts running side by side
 

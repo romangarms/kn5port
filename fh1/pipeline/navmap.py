@@ -9,7 +9,7 @@ from kn5port import beamng
 import mission, nav
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
+CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
 RADIUS = 4.0; GAP = 250.0; TILE = 2048
 # BeamNG treats 0.9 and up as a main road on the minimap, and traffic avoids low values. Speeds are m/s: about 70, 55, 40 and 25 mph
 DRIVABILITY = {'freeway': 1, 'a': 1, 'b': .9, 'dirt': .45, 'shortcut': .2, 'none': .2}

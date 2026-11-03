@@ -10,7 +10,7 @@ from kn5port import beamng
 import mission, nav, soundscape
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
+CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
 Image.MAX_IMAGE_PIXELS = None
 PREVIEW = (800, 600); PREVIEW_METRES = 2400          # stock menu images are 800x600
 # The map art's picture area, inside its black bars

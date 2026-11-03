@@ -50,6 +50,7 @@ Read by `p3.py`, `p5.py`, `p7.py`, `p8.py`.
 - At 0xAC, a 28-byte texture table: index to `_0x` texture id (`pvsrec.pkl`).
 - 173 shader names.
 - A 62,173-record, 18-byte draw table, `mt.npy`: `t` mesh number, `p`, `f` flag, `g`, `s[5]`. Draw ids throughout the game index this table.
+  - **LOD groups (proven).** `p` is a signed i16 offset to the next record of the same LOD group, and following it always comes back round: 6,511 rings of 3 (LOD0, 1, 2), 6,153 rings of 2, 17,774 of 1. `g` bits 12-13 are the level: 0, 1, 2 in rings of 3, and 0 and 3 in rings of 2. Lone meshes are 3, or 0. Bit 11 is set on the top member (LOD0, or a lone mesh). Every mesh file is in exactly one ring at one level. Names agree for 14,071 of 14,939 world meshes. Where they don't, the ring is right: names join unrelated meshes (every `Object025`) and exporters misnamed some LODs (`ROAD_CLRD_Mountains_Area03_53_LOD00` with `_49_LOD01`, `racehub_LOD00` with `hubgrass_LOD01`). 254 records with `g` under 0x4000 point outside any ring, into some other hierarchy. They have no catalog names. `build3.py` reads this in `lod_rings`.
 - 14,560 per-mesh records (`meshtab.pkl`): texture index list, shader list, OBB.
 - A material's slot N is the Nth texture in its mesh's record.
 
@@ -124,6 +125,18 @@ The set name carries layer tags such as `[freeroam]`, which appears on 55 sets, 
 Packed files with size 0 hold only full-transform rows, such as the chain-link fence sets `__R00G06531` and `__R00G06839`.
 
 Known failures, whole map: none known in `read_pgeo` after `model_ids`, trailer counts and size-0 files were fixed (2,318 files, 530,952 instances). Failures are still counted in the build's `pgeo files` line.
+
+## `Grass_Ungrouped` sets (working)
+
+Read by `pgrass.py`, placed by `grass.py`. 3,199 `.pgeo` files, version 42, named `Grass_Ungrouped_<n>_0` at 0x60. `read_pgeo` skips them silently: they hold no instances. Each is a patch of ground triangles plus the sprite layers FH1 scatters over it at runtime. All 3,199 parse.
+
+- Word 0x40 is the texture count. After the name, padded to 4 bytes, come that many 8-byte entries whose first word indexes the PVS texture table (`IDX[i][0]` in `texshader.pkl`). Then the patch's own box (8 floats), within metres of the box at 0x10. Some files keep 8 more bytes before it, such as two little-endian floats, 30 and 90 degrees. Then `nv`, `ni` and 24 zero bytes.
+- Vertices, 12 bytes: 3 u16 positions inside the patch box, a density weight / 65535 (usually 0.9), a group id, 0xffff. Then `ni` u16 indices (a triangle list), a u16 per triangle (1 to n), padding to 4, then two 16.16 words per triangle: its area, capped at 200 m2, and its slope in degrees.
+- Tables: `ptr, sprites, ptr, layers, ptr, groups, textures`, 4 pointers, 4 floats, then per group `(ptr, layer count)`, then the groups' layer indices. Sprites, 44 bytes: width min and max, height min and max, `u0, u1, v_bottom, v_top`, then 3 words, the last the texture slot. Layers, 64 bytes: pointer, density per m2, 40, 50 or 60, 1.0, two more floats, sprite count, then fixed-point copies of the same values. Then each layer's sprite indices, in layer order. A vertex's group (word 4) picks the layers that grow on its triangles.
+- After that: three disjoint instance counts per texture with sorted index lists, not decoded. On `__R00G02296` they sum to 277 and 831, and density x area x weight gives 282 and 848. They look like distance subsets of 52%, 36% and 12%.
+- The 4 floats are (26, 75, 150, 20) on 2,967 sets, (100, 300, 500, 50) on corn and (200, 400, 800, 50) on crowds: probably those subsets' distance bands. Layers' 40 and 50 or 60 look like a fade in metres. `TrackSettings.xml` adds `GrassHeightScale` 1.3, `GrassFadeStartDistance` 250 and `GrassFadeEndDistance` 280.
+- Positions use the `.pgeo` z sign. Vertices sit exactly on FH1's LOD0 terrain and road meshes: median error under 0.2 mm on 40 random sets.
+- Textures are 256 px DXT5 atlases: 20483 to 20488 and 20490 grass, reeds and flowers, 20489 corn (119 sets), 20491 festival crowd people (113 sets). Whole map: 417k triangles, 2.5 km2, about 10.4M sprites without the crowds, at 0.2 to 15 per m2.
 
 ## `FilenameMap_00.dat`
 

@@ -27,6 +27,7 @@ python prepare.py                     # about 3 minutes, FH1_DUMP overrides the 
 python buildq.py submit -m "what changed" --by <session> --chunk colorado   # queue a build: the way to build when other sessions may be editing
 python buildq.py status               # running, queued and recent builds, with notes and changed files
 FH1_CHUNK=colorado python build3.py   # whole map, 3.2 GB, 7 minutes, 4 GB of RAM. Default chunk is redrock
+FH1_CHUNK=clearsprings python build3.py   # 4 km around Clear Springs (BeamNG centre 2000, -1500) as fh1_clearsprings, about 4 minutes. Through buildq.py with --chunk clearsprings
 python sky.py fh1_colorado            # FH1 sky for ten times of day and lighting, under a minute. build3.py runs this itself unless given an output folder. Each build wipes the level
 python navmap.py fh1_colorado         # FH1 road graph for the minimap and AI, run the same way as sky.py
 python grade.py fh1_colorado          # saturation and contrast baked into the map textures, run the same way. Safe to rerun with new values
@@ -34,6 +35,7 @@ python levelinfo.py fh1_colorado      # freeroam menu text and previews, spawn p
 python ambience.py fh1_colorado       # FH1's regional ambient loops, needs ffmpeg. Run the same way
 python particles.py fh1_colorado      # FH1's water, smoke and sprinkler particles. Run the same way, after levelinfo.py
 python animated.py fh1_colorado       # FH1's windmills, turbines, tractors, combines and crop duster. Run the same way
+python grass.py fh1_colorado          # FH1 grass, reeds, flowers and corn as forest clumps. Run the same way
 python nightlights.py fh1_colorado    # Prototype: Carson's night lightmaps as glowing overlays, switched by stock core_environment. Run the same way
 ```
 
@@ -45,4 +47,4 @@ Working and tested in-game around Red Rock: real textures, terrain blending, dir
 
 The whole map builds and passes file checks, but hasn't been tested in-game.
 
-Missing: normal maps, lightmaps, water, `.fiz` collision, `Grass_Ungrouped` sets, about 3% of plants. Semi wheels are wrong.
+Missing: normal maps, lightmaps, water, `.fiz` collision, about 3% of plants. `Grass_Ungrouped` sets are placed by `grass.py`, untested in-game. Semi wheels are wrong.

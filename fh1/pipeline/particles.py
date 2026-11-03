@@ -10,7 +10,7 @@ import gamezip, mission, tex
 from animsets import placed as anim_placed
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0)}[LVL]
+CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
 WATER = re.compile(r'AMB_(WaterFall_|Dam_Rising_Mist|Geyser_Mist|FountainWater)')
 SMOKE = re.compile(r'AMB_(HouseSmokeVent|Chimney_Smoke_White|Ind_SmokeVent|Small_Steam_Vent)')
 # How far away an emitter wakes, in metres. Water is further because falls are seen across valleys

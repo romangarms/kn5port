@@ -1,4 +1,5 @@
--- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, the sky for the time of day, and the current road on the minimap's location line.
+-- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, the sky for the time of day, fog and bloom by FH1 zone and time,
+-- and the current road on the minimap's location line.
 -- Does nothing unless the level ships fh1_extras.json. levelinfo.py writes that file and installs this one.
 
 local M = {}
@@ -28,6 +29,9 @@ local awake = {} -- emitter name -> true
 local sinceParticles = 0
 local sky -- fh1_sky.json: the baked skies and which one each quarter hour shows
 local skyBake -- index of the bake on show
+local lookZone -- FH1 post-processing zone last under the camera. Between zones the last one holds, as FH1's have gaps
+local look -- fog density and bloom cutoff and scale factors on show, easing towards the zone's
+local lookBase -- the level's fog density and the engine's bloom threshold and intensity, which the factors scale. Bloom is restored on exit
 local sinceSky = 0
 local clock = 0
 local shots = {} -- playing one-shots: { id, ends }
@@ -217,6 +221,65 @@ local function updateSky()
   end
 end
 
+local function inTriangle(t, x, y)
+  local d1 = (x - t[2][1]) * (t[1][2] - t[2][2]) - (t[1][1] - t[2][1]) * (y - t[2][2])
+  local d2 = (x - t[3][1]) * (t[2][2] - t[3][2]) - (t[2][1] - t[3][1]) * (y - t[3][2])
+  local d3 = (x - t[1][1]) * (t[3][2] - t[1][2]) - (t[3][1] - t[1][1]) * (y - t[1][2])
+  return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+end
+
+local function lookZoneAt(x, y)
+  for _, zone in ipairs(sky.zones or {}) do
+    for _, t in ipairs(zone.tris) do
+      if inTriangle(t, x, y) then return zone end
+    end
+  end
+  return lookZone
+end
+
+local function restoreBloom()
+  local bloom = scenetree.findObject('PostEffectBloomObject')
+  if bloom and lookBase then
+    if lookBase.threshold then bloom:setField('threshHold', 0, tostring(lookBase.threshold)) end
+    if lookBase.intensity then bloom:setField('intensity', 0, tostring(lookBase.intensity)) end
+  end
+  lookBase = nil
+  look = nil
+end
+
+-- FH1's fog and bloom templates for the zone, with fog scaled by FH1's density at the bake's time. Eased over the zone's own fade time
+local function updateLook(dt)
+  local info = scenetree.findObject('theLevelInfo')
+  local bloom = scenetree.findObject('PostEffectBloomObject')
+  if not info then return end
+  if not lookBase then
+    lookBase = { fog = sky.fogDensity or tonumber(info:getField('fogDensity', 0)) }
+    if bloom then
+      lookBase.threshold = tonumber(bloom:getField('threshHold', 0))
+      lookBase.intensity = tonumber(bloom:getField('intensity', 0))
+    end
+  end
+  local x, y = core_camera.getPositionXYZ()
+  lookZone = lookZoneAt(x, y)
+  local bake = skyBake and sky.bakes[skyBake]
+  local target = { fog = (lookZone and lookZone.fog or 1) * (bake and bake.fog or 1),
+                   cutoff = lookZone and lookZone.bloomCutoff or 1, scale = lookZone and lookZone.bloomScale or 1 }
+  local first = not look
+  look = look or {}
+  local k = math.min(dt / (lookZone and lookZone.lerp or 15), 1)
+  local fogBefore = look.fog
+  for key, value in pairs(target) do
+    look[key] = first and value or look[key] + (value - look[key]) * k
+  end
+  if first or math.abs(look.fog - fogBefore) > 0.005 * fogBefore then
+    info:setField('fogDensity', 0, tostring(lookBase.fog * look.fog))
+    info:postApply()
+  end
+  -- Set every time: a graphics settings change puts the engine's bloom back
+  if bloom and lookBase.threshold then bloom:setField('threshHold', 0, tostring(lookBase.threshold * look.cutoff)) end
+  if bloom and lookBase.intensity then bloom:setField('intensity', 0, tostring(lookBase.intensity * look.scale)) end
+end
+
 local function zoneWithRoad(pos)
   local zone = originalZone(pos)
   local name = zone and zone.name
@@ -281,6 +344,8 @@ local function start()
   emitters = FS:fileExists(levelDir .. 'fh1_particles.json') and jsonReadFile(levelDir .. 'fh1_particles.json') or nil
   sky = FS:fileExists(levelDir .. 'fh1_sky.json') and jsonReadFile(levelDir .. 'fh1_sky.json') or nil
   skyBake = nil
+  restoreBloom()
+  lookZone = nil
   nightShown = nil
   sinceSky = SKY_SECONDS
   ambienceOn = true
@@ -313,6 +378,14 @@ local function onUpdate(dtReal)
     end
   end
   if sinceUpdate >= UPDATE_SECONDS then
+    if sky and sky.zones then
+      local okLook, errLook = pcall(updateLook, sinceUpdate)
+      if not okLook then
+        log('E', logTag, tostring(errLook) .. ', fog and bloom by zone are off')
+        sky.zones = nil
+        pcall(restoreBloom)
+      end
+    end
     sinceUpdate = 0
     local ok, err = pcall(refresh)
     if not ok then
@@ -327,6 +400,7 @@ local function onUpdate(dtReal)
 end
 
 local function onClientEndMission()
+  pcall(restoreBloom)
   data = nil
   stopAmbience()
   unpatchCity()

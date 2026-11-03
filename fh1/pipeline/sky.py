@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-# BeamNG time 0 is noon and 1 a full day. The level starts at 9:30, which the user chose. MINUTE is FH1's 15:36, the time the measured gradient comes from
-TIME = (9.5 - 12) / 24 % 1; MINUTE = 936; FACE = 1024
+# BeamNG time 0 is noon and 1 a full day. The level starts at 10:00, which the user chose. MINUTE is FH1's 15:36, the time the measured gradient comes from
+TIME = (10 - 12) / 24 % 1; MINUTE = 936; FACE = 1024
 # Each bake: FH1 minute, name, and the BeamNG hour it takes over from. The first is the level's default and keeps the old names, which water.py's
 # rivers use. BeamNG's sun rises at 6:00 and sets at 18:00. FH1's never sets: its night runs 20:02 to 6:28, with dusk colours from 18:00.
 # So bakes are matched to BeamNG's hours by phase, chosen by eye. FH1's horizon is only yellow from about 8:00 to 9:45, so morning is FH1's 10:00 and short:
@@ -38,12 +38,16 @@ BEAMNG_SKY = {'night'}
 # FH1 world axes (x, up, z) to BeamNG (x, y, z up)
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]])
 
-SCENE = {'theLevelInfo': {'globalEnviromentMap': 'fh1_sky_cubemap', 'fogDensity': .00006, 'fogAtmosphereHeight': 400, 'visibleDistance': 6000},
+SCENE = {'theLevelInfo': {'globalEnviromentMap': 'fh1_sky_cubemap', 'fogDensity': .00006, 'fogAtmosphereHeight': 400},
          'tod': {'time': TIME, 'startTime': TIME},
          # Tuned against in-game shots. ScatterSky's own light is already blue in shade and warm in sun, so these stay near stock.
          # fogScale is FH1's Redrock fog template. skyBrightness and the flare are stock
          'sunsky': {'sunScale': [1, .82, .55, 1], 'ambientScale': [1, .89, .78, 1], 'fogScale': [.84, .94, 1, 1], 'skyBrightness': 220,
                     'flareType': 'BNG_Sunflare_3', 'flareScale': 5}}
+# FH1's look by area: PostProcessingZones_Safe.xml gives each zone a fog and a bloom template (dynamicpost.zip) and a fade time in seconds.
+# Its colour grade also changes by zone, which BeamNG 0.40 can't do at runtime. Fog density is relative to Redrock's 2.35, as the level's
+# fog was tuned at Red Rock. fh1Extras.lua eases towards the zone under the camera
+FOG_REF = 2.35; CENTRE = {'fh1_colorado': (-300.0, 500.0), 'fh1_redrock': (-6000.0, 4250.0), 'fh1_clearsprings': (1700.0, 2000.0)}[LVL]
 SKYBOX = {'name': 'fh1_skybox', 'class': 'SkyBox', '__parent': 'MissionGroup', 'material': 'fh1_sky'}
 
 
@@ -176,6 +180,18 @@ def bake(d, C, R, band, density, cirrus, stars, moon):
     return (srgb(col) * 255 + .5).astype('u1')
 
 
+def zones():
+    """FH1's post-processing zones as BeamNG x, y triangles, with fog density and bloom cutoff and scale relative to the level's own."""
+    t = lambda n: {e.get('Name'): e.attrib for e in ET.fromstring(gamezip.read('dynamicpost.zip', f'Tracks/Colorado/{n}_Templates.xml'))}
+    fog, bloom = t('Fog'), t('Bloom'); out = []
+    for z in ET.parse(gamezip.MEDIA + 'tracks/colorado/Ribbon_00/PostProcessingZones_Safe.xml').getroot():
+        b = bloom[z.get('BloomTemplate')]
+        out.append({'name': z.get('Name'), 'fog': round(float(fog[z.get('Fog')]['Density']) / FOG_REF, 3), 'bloomCutoff': float(b['Cutoff']),
+                    'bloomScale': float(b['Scale']), 'lerp': float(z.get('LerpTime')),
+                    'tris': [[[round(float(p.get('posX')) - CENTRE[0], 1), round(float(p.get('posZ')) + CENTRE[1], 1)] for p in tri] for tri in z]})
+    return out
+
+
 def table():
     """Bake index, from 1, for each quarter hour of BeamNG's clock from midnight: the bake that took over last, wrapping at midnight."""
     since = (np.arange(96)[:, None] / 4 - np.array([b[2] for b in BAKES])[None, :]) % 24
@@ -198,10 +214,11 @@ for minute, tag, _ in BAKES:
         p = out / f'{stem}_{i}.color.dds'; dds.save(p, bake(d, C, R, band, density, cirrus, stars[i - 1], moon), peak=C['StarFade'][0] > .1); faces.append(f'/levels/{LVL}/art/skies/fh1_sky/{p.name}')
     materials[material] = {'name': material, 'mapTo': 'unmapped_mat', 'class': 'Material', 'Stages': [{}, {}, {}, {}], 'cubemap': cubemap, 'materialTag0': 'beamng'}
     materials[cubemap] = {'name': cubemap, 'class': 'CubemapData', 'cubeFace': faces}
-    bakes.append({'name': tag, 'material': material, 'cubemap': cubemap, 'hideBox': tag in BEAMNG_SKY})
+    # FH1's fog is about 2.7 times denser at night than by day
+    bakes.append({'name': tag, 'material': material, 'cubemap': cubemap, 'hideBox': tag in BEAMNG_SKY, 'fog': round(float(C['FogDensity'][0] / R['FogDensity'][0]), 3)})
     print(tag, minute, 'stars', round(float(C['StarFade'][0]), 2), 'moon', round(float(C['SunObjectMoon'][0] * C['SunObjectAlpha'][0]), 2))
 (out / 'main.materials.json').write_text(json.dumps(materials, indent=2))
-(level / 'fh1_sky.json').write_text(json.dumps({'bakes': bakes, 'quarterHours': table()}))
+(level / 'fh1_sky.json').write_text(json.dumps({'bakes': bakes, 'quarterHours': table(), 'fogDensity': SCENE['theLevelInfo']['fogDensity'], 'zones': zones()}))
 with mission.edit(items) as rows:
     for o in rows:
         o.update(SCENE.get(o.get('name'), {}))
