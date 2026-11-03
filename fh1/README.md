@@ -24,6 +24,8 @@ cd fh1/pipeline
 clang -O2 -fno-builtin -ffreestanding -fno-stack-protector -mno-stack-arg-probe -c lzx.c -o lzx.o
 lld-link -dll -noentry -nodefaultlib -export:lzx_decode -out:lzx.dll lzx.o      # MSYS_NO_PATHCONV=1 in Git Bash
 python prepare.py                     # about 3 minutes, FH1_DUMP overrides the dump path
+python buildq.py submit -m "what changed" --by <session> --chunk colorado   # queue a build: the way to build when other sessions may be editing
+python buildq.py status               # running, queued and recent builds, with notes and changed files
 FH1_CHUNK=colorado python build3.py   # whole map, 3.2 GB, 7 minutes, 4 GB of RAM. Default chunk is redrock
 python sky.py fh1_colorado            # FH1 sky for ten times of day and lighting, under a minute. build3.py runs this itself unless given an output folder. Each build wipes the level
 python navmap.py fh1_colorado         # FH1 road graph for the minimap and AI, run the same way as sky.py

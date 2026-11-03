@@ -38,6 +38,24 @@ Use `FH1_DUMP` to override the dump path in `prepare.py`. Note that `build3.py` 
 
 `zonevote.pkl` and `zoneobj.pkl` are obsolete. `memmat.pkl` and `memrows.pkl` are capture leftovers. `build3.py` writes `used.pkl` and `surf.pkl` as side outputs.
 
+## Build queue
+
+Several sessions edit the pipeline at once, so builds go through `buildq.py` rather than running `build3.py` by hand:
+
+```
+python buildq.py submit -m "UV box fix" --by uv-session --chunk colorado [--env FH1_COLBOX=0] [--beamng-ok]
+python buildq.py status [-n 10]      # running, queued, recent: notes, files changed since the chunk's last build, result, log
+python buildq.py wait <request id>   # until the build that covers it ends; exit code 1 if it failed. Good with run_in_background
+python buildq.py cancel <request id> # drop a queued request
+python buildq.py stop                # kill the running build
+```
+
+- One runner builds at a time. `submit` starts it if none is alive, and it exits when the queue is empty. Its state is in `fh1/buildq/`: `pending/`, `current.json`, `history.jsonl`, and `runs/<build>.out` with each build's full output.
+- Pending requests with the same chunk and `--env` flags fold into one build of the newest code, which covers them all. The oldest request's kind goes first. A request made during a build waits for the next one, and a running build is never restarted for it.
+- Before starting, the runner waits for 15 s with no change in `pipeline/` (so it doesn't catch a multi-file edit halfway), for any `build3.py` started by hand to finish, and for BeamNG to close, as a build wipes the level it may have loaded. `--beamng-ok` skips the BeamNG wait.
+- It copies `pipeline/` to `fh1/build_snapshot/` and builds there. That folder sits one level under `fh1/` like `pipeline/`, so the scripts' `../` paths still reach the data, and edits made during a build can't leak into it. Don't edit the snapshot.
+- `BUILDQ_DIR`, `BUILDQ_SNAP`, `BUILDQ_CMD` and `BUILDQ_SETTLE` point the queue at a scratch folder and a fake build, for testing the queue itself.
+
 ## `build3.py` sections
 
 One 900-line script run top to bottom:

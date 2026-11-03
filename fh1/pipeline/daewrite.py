@@ -7,8 +7,10 @@ from kn5port.level import _fmt
 FARCUT = 3
 
 
-def has_col(groups, collide):
+def has_col(groups, collide, boxes=None):
     """whether write_lod will give these groups a collision mesh"""
+    if boxes is not None:
+        return collide is not None and len(boxes) > 0
     return any(collide is not None and collide in g[0][1] or collide == 2 and FARCUT in g[0][1] for g in groups)
 
 
@@ -20,10 +22,26 @@ def weld(pos, nrm, uv, uv1, idx):
     return pos[first], nrm[first], uv[first], uv1[first], inv.ravel()[idx]
 
 
-def write_lod(path, groups, origin, sizes, collide, extra=()):
+BOX_TRIS = np.array([[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]])
+
+
+def box_mesh(boxes):
+    """(lo, hi) boxes to positions and triangles wound outward, as BeamNG collision is one-sided. Corner i has x from bit 0, y bit 1, z bit 2"""
+    P = []; T = []
+    for lo, hi in boxes:
+        T.append(BOX_TRIS + len(P) * 8); P.append(np.array([[(lo, hi)[i & 1][0], (lo, hi)[i >> 1 & 1][1], (lo, hi)[i >> 2][2]] for i in range(8)]))
+    return np.concatenate(P), np.concatenate(T).ravel()
+
+
+def write_lod(path, groups, origin, sizes, collide, extra=(), boxes=None):
     """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2).
     A trailing number on those node names is the detail size. Geometry of level `collide` is reused as Colmesh_<i>-1.
-    Level FARCUT draws nothing: it keeps a mesh for collision after its LOD2 copy is dropped."""
+    Level FARCUT draws nothing: it keeps a mesh for collision after its LOD2 copy is dropped.
+    boxes: (lo, hi) pairs that collide instead of that geometry, as one more Colmesh geometry that's never drawn"""
+    if boxes is not None and collide is not None:
+        bp, bi = box_mesh(boxes)
+        groups = list(groups) + [((groups[0][0][0], ('box',)), bp, np.zeros_like(bp), np.zeros((len(bp), 2)), bi)]
+        collide = 'box'
     mats = sorted({g[0][0] for g in groups}); out = []; w = out.append
     w('<?xml version="1.0" encoding="utf-8"?>\n<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n')
     w('<asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>\n<library_effects>\n')
@@ -50,7 +68,7 @@ def write_lod(path, groups, origin, sizes, collide, extra=()):
         w(' '.join(map(str, idx.tolist()))); w('</p></triangles>\n</mesh></geometry>\n')
         inst = f'<instance_geometry url="#{g}"><bind_material><technique_common><instance_material symbol="{mat}" target="#{mat}"/></technique_common></bind_material></instance_geometry>'
         for lv in levels:
-            if lv < len(sizes):
+            if lv != 'box' and lv < len(sizes):
                 nm_ = f'o{gi}_a{sizes[lv]}'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
         if collide is not None and collide in levels or collide == 2 and FARCUT in levels:
             col = True; nm_ = f'Colmesh_{gi}-1'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')

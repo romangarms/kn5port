@@ -213,7 +213,7 @@ def mesh_groups(nos):
     for lv, no in enumerate(nos):
         m = rmb.parse(open(f'../x/coloradoout.{no:05d}.rmb.bin', 'rb').read())['meshes'][0]
         p, nr, _ = rmb.verts(m); a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
-        r0 = np.frombuffer(a[:, 16:20].tobytes(), '>i2').reshape(-1, 2).astype('f8') / 32767
+        r0 = np.frombuffer(a[:, 16:20].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535
         pb = np.c_[p[:, 0], -p[:, 2], p[:, 1]]; nb = np.c_[nr[:, 0], -nr[:, 2], nr[:, 1]]
         for s_ in m['secs']:
             T = rmb.tris(s_['ib'], m['nv'], s_['ints'][1])
@@ -221,7 +221,7 @@ def mesh_groups(nos):
             mat = next((n for n in names if n in mats), None)
             if mat is None:
                 sys.exit(f'no built material for mesh {no}: {names}')
-            lo, hi = np.array(s_['fl'][4:6]), np.array(s_['fl'][6:8]); uv = lo + (r0 + 1) / 2 * (hi - lo)
+            uv = np.array(s_['fl'][4:6]) + r0 * np.array(s_['fl'][6:8])
             out.append(((mat, (lv,)), pb, nb, uv, T.ravel(), uv))
     return out
 
@@ -275,6 +275,9 @@ rel = f'/levels/{LVL}/art/shapes/fh1_anim'
 rows = []; world = [json.loads(l) for l in (mg / 'fh1' / 'items.level.json').read_text().splitlines() if l.strip()]
 for kind, w in OBJECTS.items():
     src = level / 'art' / 'shapes' / 'fh1' / f"{w['shape']}.dae"
+    if not src.exists():          # a chunk such as Red Rock has none of this kind
+        print(kind, 'not in this level')
+        continue
     text = src.read_text(); mat = re.search(r'<material id="([^"]+)"', text).group(1)
     hub = np.array(w['hub']); axis = np.array(AXIS, 'f8'); origin = np.array(w.get('origin', (0, 0, 0)), 'f8')
     lods = [arrays(text, 'g0'), arrays(text, 'g1' if '<geometry id="g1"' in text else 'g0')]     # some shapes have one LOD
@@ -307,7 +310,15 @@ for kind, w in OBJECTS.items():
         rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_fan_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_fan_{int(rng.integers(len(w['turns'])))}.dae', 'position': [round(float(v), 3) for v in at],
                      'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     print(kind, len(places), 'placed', [[round(float(v)) for v in (p[0] if p[0] is not None else p[2])] for p in places][:8])
+def inside(r):
+    """whether a placement record stands in this level's square"""
+    return abs(r[12] - CX) < HALF and abs(r[14] + CZ) < HALF
+
+
 for kind, w in VEHICLES.items():
+    if not any(inside(r) for r in records(w['group'])):         # a chunk such as Red Rock has none of these
+        print(kind, 'not in this level')
+        continue
     groups = mesh_groups(w['mesh']); p0 = groups[0][1]; b = gamezip.read('animatedobjects.zip', w['model'])
     if 'front' in w:
         forward = w['front']; t, c = quantised_route(b)
@@ -362,6 +373,9 @@ for kind, w in VEHICLES.items():
         print(kind, i, [round(float(v)) for v in pos], 'ground follows', round(float(np.ptp(z)), 1), 'm, max pitch', round(float(np.abs(pitch).max()), 1), 'max roll', round(float(np.abs(roll).max()), 1))
 g = ground_samples()
 for kind, w in FLYERS.items():
+    if not inside(records(w['group'])[0]):
+        print(kind, 'not in this level')
+        continue
     q, tri = granny.mesh(w['model']); t, c = route(w['model'])
     path = out / f'{kind}.dae'; mat = f'fh1_{kind}'
     write_lod(path, [((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, tri), np.zeros((len(q), 2)), tri.ravel(), np.zeros((len(q), 2)))], np.zeros(3), w['lod'], None)

@@ -158,12 +158,15 @@ with mission.edit(items) as rows:
 level_preview(level / f'{LVL}_preview.jpg')
 
 info = json.loads((level / 'info.json').read_text())
-info.update({'title': 'Forza Horizon Colorado', 'authors': 'Playground Games, Turn 10 (original game). Converted locally for personal use',
-             'description': "Forza Horizon's Colorado, converted from your own copy: Carson, Red Rock, the Horizon Festival, Finley Dam and the Rockies, "
-                            'with FH1\'s roads, lighting and regional ambience. Personal use only, not for redistribution.',
+info.update({'authors': 'Playground Games, Turn 10 (original game). Converted locally for personal use',
              'country': 'levels.common.country.usa', 'region': 'northAmerica', 'biome': 'Mountains, plains and desert',
-             'features': 'Whole Horizon map, towns, interstate, mountain passes, dirt roads', 'suitablefor': 'Free roam, road trips, rally, touring',
-             'roads': 'Interstate 70 and 76, county routes, dirt tracks', 'previews': [f'{LVL}_preview.jpg'], 'spawnPoints': points, 'defaultSpawnPointName': 'spawn_redrock'})
+             'previews': [f'{LVL}_preview.jpg'], 'spawnPoints': points, 'defaultSpawnPointName': 'spawn_redrock'})
+if LVL == 'fh1_colorado':           # a chunk keeps build3.py's title, or the level list shows two "Forza Horizon Colorado"
+    info.update({'title': 'Forza Horizon Colorado',
+                 'description': "Forza Horizon's Colorado, converted from your own copy: Carson, Red Rock, the Horizon Festival, Finley Dam and the Rockies, "
+                                'with FH1\'s roads, lighting and regional ambience. Personal use only, not for redistribution.',
+                 'features': 'Whole Horizon map, towns, interstate, mountain passes, dirt roads', 'suitablefor': 'Free roam, road trips, rally, touring',
+                 'roads': 'Interstate 70 and 76, county routes, dirt tracks'})
 (level / 'info.json').write_text(json.dumps(info, indent=2))
 
 z = zones(p, roads)

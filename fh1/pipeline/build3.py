@@ -264,15 +264,16 @@ def slot_tex(mesh_no, slots, order=None):
 
 def uv_sets(m):
     a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
-    r0 = np.frombuffer(a[:, 16:20].tobytes(), '>i2').reshape(-1, 2).astype('f8') / 32767
+    r0 = np.frombuffer(a[:, 16:20].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535      # where in the UV box, 0 to 1: see box_uv
     r1 = np.frombuffer(a[:, 20:24].tobytes(), '>i2').reshape(-1, 2).astype('f8') / 32767 if m['sd'] >= 24 else None
     return r0, r1
 
 
-def box_uv(r, fl):
-    """s16 UVs are quantised to the mesh's UV box: fl[4:6] is its low corner and fl[6:8] its high corner"""
-    lo = np.array(fl[4:6]); hi = np.array(fl[6:8])
-    return lo + (r + 1) / 2 * (hi - lo)
+def box_uv(t, fl):
+    """UVs are u16 fractions t = v / 65535 of the mesh's UV box: fl[4:6] is its low corner and fl[6:8] its size. Reading them as s16
+    shifted every UV by half the box, which tiling textures hide and atlases (signs, cars, facades) don't, and reading fl[6:8] as the
+    high corner squashed billboard text. See formats.md"""
+    return np.array(fl[4:6]) + t * np.array(fl[6:8])
 
 
 def rgmask(t):
@@ -838,13 +839,15 @@ def model_groups(no):
     global NM
     b = open('../x/' + fs, 'rb').read(); P = rmb.parse(b); M = materials(b, P); groups = []; lo = np.full(3, np.inf); hi = -lo; label = ''
     ids = MT[no][0]; tree = any(SHADERS[q].startswith('tree') for q in MT[no][1] if q < len(SHADERS))
+    flag = any(SHADERS[q].startswith('anim_flag_') for q in MT[no][1] if q < len(SHADERS))
     for m in P['meshes']:
         label = label or m['name']
         a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
         p = np.frombuffer(a[:, :12].reshape(-1, 3, 4)[:, :, ::-1].tobytes(), '<f4').reshape(-1, 3).astype('f8')
         card = m['sd'] < 20
-        if card:
-            r0 = np.frombuffer(a[:, 12:16].tobytes(), '>i2').reshape(-1, 2).astype('f8')
+        cloth = flag and m['sd'] == 32         # the waving cloth has its UVs at byte 12, like tree cards, and no normal
+        if card or cloth:
+            r0 = np.frombuffer(a[:, 12:16].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535
             nr = np.zeros_like(p)
         else:
             _, nr, _ = rmb.verts(m); r0, _ = uv_sets(m)
@@ -874,8 +877,8 @@ def model_groups(no):
                 continue
             if glow is not None:
                 GLOWING.add(no)
-            if card:
-                uv = box_uv(r0 / 32767, s['fl'])
+            if card or cloth:
+                uv = box_uv(r0, s['fl'])
                 e1 = pb[T[:, 1]] - pb[T[:, 0]]; e2 = pb[T[:, 2]] - pb[T[:, 0]]; fn_ = np.cross(e1, e2)
                 fn_ /= np.maximum(np.linalg.norm(fn_, axis=1, keepdims=True), 1e-9); nb = nb.copy(); nb[T.ravel()] = fn_.repeat(3, 0)
             else:
@@ -963,6 +966,10 @@ RT0 = 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/'
 col = open(RT0 + 'CollObjs.xml', errors='replace').read()
 pc = (r'PhysicsType="([^"]+?)\.\d+\.rmb"[^>]*>\s*<Pos x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>\s*<Orientation>\s*'
       r'<XAxis x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>\s*<YAxis x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>\s*<ZAxis x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>')
+# FH1 breaks these on contact. A free-roam record exactly on one (5 cm) is smashable, so it gets no collision and the car drives through
+SMASH = cKDTree(np.array([[float(x_), -float(z_)] for _, x_, _, z_ in re.findall(r'PhysicsType="([^"]+?)\.\d+\.rmb"[^>]*>\s*<Pos x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"', col)]))
+
+
 def norm(n):
     n = n.lower(); n = re.sub(r'_lod\d+.*$', '', n); n = re.sub(r'^(o_|co_|s_|obj_)+', '', n); n = re.sub(r'_\d+$', '', n)
     return n.strip('_')
@@ -1048,6 +1055,8 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
     if np.linalg.det(Rm) < 0:
         skip['mirrored'] += 1
     rows[it['item']].append(dict(ctxid=0, pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=[round(float(q), 5) for q in Rm.ravel()], scale=round(float(np.clip(sc, .2, 5)), 3), type=it['item']))
+    if SMASH.query([x, z])[0] < .05:
+        rows[it['item']][-1]['smash'] = True; kept['smashable'] += 1
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
 lap('smashables and free-roam objects')
@@ -1057,10 +1066,10 @@ for no, it in list(defs.items()):
     if not it or PLANT.search(it['item']) or it['item'] not in rows:
         continue
     for o in rows.pop(it['item']):
-        SOLIDS[it['item']] += 1
+        SOLIDS[it['item']] += 1; smash_ = o.pop('smash', False)
         Rm = np.array(o['rotationMatrix']).reshape(3, 3) * o['scale']; pos = np.array(o['pos'])
         if np.linalg.det(Rm) > 0 and (np.abs(pos[:2]) < HALF - 4).all():       # one shape per model. Mirrored objects stay baked
-            INST[no].append(o); solid += 1
+            INST[no].append(dict(o, smash=smash_)); solid += 1
             continue
         far_ = FARCUT if max(it['h'], it['w']) < 15 else 2                       # small objects stop at 800 m
         for lvl_, (mat, pb, nb, uv, t) in [(((0,) if it['low'] else (0, 1, far_)), g) for g in it['groups']] + [((1, far_), g) for g in it['low']]:
@@ -1069,7 +1078,7 @@ for no, it in list(defs.items()):
             if (np.abs(c[:2]) >= HALF - 4).any():
                 continue
             key = np.floor((c[:2] + HALF) / CELL).astype(int); u = int(key[0]) * 1000 + int(key[1])
-            cells[(u, 'pro')][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv))
+            cells[(u, 'vis' if smash_ else 'pro')][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv))
             stats['pro'] += len(t) // 3
         solid += 1
 print('pgeo problems', {k: v for k, v in stats.items() if k.startswith(('pgeo', 'proc'))}, LOSTSET.most_common(8))
@@ -1107,15 +1116,15 @@ sys.modules['__main__'].__file__ = os.path.abspath('daewrite.py')      # Windows
 POOL = ProcessPoolExecutor(min(6, os.cpu_count() or 1)); PENDING = set()
 
 
-def queue_lod(*job):
+def queue_lod(*job, boxes=None):
     """write_lod in a worker. The queue is short, because each job holds a copy of its geometry"""
     global PENDING
     while len(PENDING) >= 24:
         done_, PENDING = wait(PENDING, return_when=FIRST_COMPLETED)
         for f_ in done_:
             f_.result()
-    PENDING.add(POOL.submit(write_lod, *job))
-    return has_col(job[1], job[4])
+    PENDING.add(POOL.submit(write_lod, *job, boxes=boxes))
+    return has_col(job[1], job[4], boxes)
 
 
 
@@ -1129,18 +1138,67 @@ def detail_sizes(R_, cat):
     return s0, s1, s2
 
 
+# Thin and simple props collide with boxes instead of their mesh: fences alone held 2.7M of the 8M instanced collision triangles.
+# Each colliding object is its own copy in physics, at about 41.5 bytes a triangle. FH1_COLBOX=0 keeps the meshes, for comparison
+COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
+BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
+                   r'(?<![a-z])bin[a-z]?(?![a-z])|bench|table|container|skip|haybale|crate|rack|hoarding|bollard', re.I)
+NOCOL = re.compile(r'rope', re.I)       # festival bunting, 35 m across, above the cars
+BOXMIN = 0.1                            # metres: flat signs still get a solid slab
+
+
+def fit_boxes(groups, collide):
+    """one box around the geometry that collides, or two stacked boxes when the bottom is much wider than the top (barrier feet,
+    a sign on its post). Model frame, z up. Points are sampled inside triangles, so a band cut through a long triangle still sees it"""
+    P = []
+    for g in groups:
+        if collide in g[0][1] or collide == 2 and FARCUT in g[0][1]:
+            p_ = g[1]; T_ = np.asarray(g[4]).reshape(-1, 3)
+            w_ = np.array([(a_, b_, 4 - a_ - b_) for a_ in range(5) for b_ in range(5 - a_)], 'f8') / 4
+            P.append(np.einsum('kj,tjd->tkd', w_, p_[T_]).reshape(-1, 3))
+    if not P:
+        return []
+    P = np.concatenate(P)
+
+    def box(Q):
+        lo = Q.min(0); hi = Q.max(0); c = (lo + hi) / 2; h = np.maximum((hi - lo) / 2, BOXMIN / 2)
+        return c - h, c + h
+
+    def vol(bs):
+        return sum(float(np.prod(hi - lo)) for lo, hi in bs)
+    best = [box(P)]
+    z0, z1 = P[:, 2].min(), P[:, 2].max()
+    for f in np.linspace(.1, .6, 11):
+        zc = z0 + f * (z1 - z0); dn = P[P[:, 2] <= zc]; up = P[P[:, 2] >= zc]
+        if len(dn) < 3 or len(up) < 3:
+            continue
+        bs = [box(dn), box(up)]
+        bs = [(bs[0][0], np.r_[bs[0][1][:2], max(zc, bs[0][0][2] + BOXMIN)]), (np.r_[bs[1][0][:2], zc], bs[1][1])]      # abut at the cut
+        if vol(bs) < vol(best) * (.7 if len(best) == 1 else 1):
+            best = bs
+    return best
+
+
+stats['colbox_shapes'] = stats['colbox_tris_saved'] = 0
 for no, objs in INST.items():
     it = defs[no]; far_ = FARCUT if max(it['h'], it['w']) < 15 else 2
     shape = [((g[0], (0,) if it['low'] else (0, 1, far_)),) + tuple(g[1:]) for g in it['groups']] + [((g[0], (1, far_)),) + tuple(g[1:]) for g in it['low']]
     allp = np.concatenate([g[1] for g in shape]); R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
-    col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), 2)
+    collide = None if all(o['smash'] for o in objs) or NOCOL.search(it['item']) else 2; boxes = None
+    if COLBOX and collide is not None and BOXED.search(it['item']) and 2 * R_ < 16:
+        boxes = fit_boxes(shape, collide)
+        n_ = sum(not o['smash'] for o in objs)
+        stats['colbox_shapes'] += 1
+        stats['colbox_tris_saved'] += n_ * (sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1]) - 12 * len(boxes))
+    col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), collide, boxes=boxes)
     ct = 'Collision Mesh' if col else 'None'
     for i_, o in enumerate(objs):
         items.append({'class': 'TSStatic', 'name': f'fh1_m{no}_{i_}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
                       'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(),     # a TSStatic lists its axes as rows, measured on stock guardrail chains
-                      'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct,
+                      'scale': [o['scale']] * 3, 'collisionType': 'None' if o['smash'] else ct, 'decalType': 'None' if o['smash'] else ct,
                       **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if no in GLOWING or lod_sibling(no) in GLOWING else {})})
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
+print('box collision', stats['colbox_shapes'], 'shapes,', stats['colbox_tris_saved'], 'collision triangles saved')
 for (u, cat), mm in cells.items():
     groups = []
     for mat, parts in mm.items():

@@ -53,12 +53,12 @@ def tris(ib,nv,prim=6):
     return np.concatenate(out) if out else np.zeros((0,3),int)
 
 def verts(m):
-    """-> pos(N,3) f8, normal(N,3), uv(N,2) raw s16/32767 (first set)"""
+    """-> pos(N,3) f8, normal(N,3), uv(N,2) as u16/65535, the fraction of the section's UV box (first set)"""
     a=np.frombuffer(m['vb'],'u1').reshape(-1,m['sd'])
     P=a[:,:12].reshape(-1,3,4)[:,:,::-1].reshape(-1,12)
     pos=np.frombuffer(P.tobytes(),'<f4').reshape(-1,3).astype('f8')
     n=np.frombuffer(a[:,12:16].tobytes(),'>u4').astype(np.int64)
     def s10(v): return np.where(v>=512,v-1024,v)/511.0
     nor=np.stack([s10(n&1023),s10((n>>10)&1023),s10((n>>20)&1023)],1)
-    uv=np.frombuffer(a[:,16:20].tobytes(),'>i2').reshape(-1,2)/32767.0
+    uv=np.frombuffer(a[:,16:20].tobytes(),'>u2').reshape(-1,2)/65535.0
     return pos,nor,uv
