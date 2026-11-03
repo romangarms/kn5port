@@ -1539,6 +1539,8 @@ for no, objs in INST.items():
                       **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if no in GLOWING or lod_sibling(no) in GLOWING else {})})
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
 print('simple collision', {k[4:-7]: v for k, v in stats.items() if k.startswith('col_') and k.endswith('_shapes')}, 'shapes,', stats['col_tris_saved'], 'collision triangles saved')
+# barrier collision for the whole level at once, so walls run on across cell lines; each is carried by the cell its first piece is in
+RAILMESH, (RAIL_SEGS, RAIL_CHAINS) = colfit.rails({u: np.concatenate(t) for u, t in RAILS.items()}) if COLBOX else ({}, (0, 0))
 for (u, cat), mm in cells.items():
     groups = []
     for mat, parts in mm.items():
@@ -1551,7 +1553,7 @@ for (u, cat), mm in cells.items():
     # a mesh drawn at every LOD is cooked once per detail level, so those go in a one-detail shape: one copy instead of three
     whole = [((g[0][0], (0,)),) + tuple(g[1:]) for g in groups if {0, 1, 2} <= set(g[0][1])]
     lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 0, 'pro': 2}.get(cat)
-    rail = colfit.rails(np.concatenate(RAILS[u])) if cat == 'bar' and COLBOX and RAILS[u] else None
+    rail = RAILMESH.get(u) if cat == 'bar' else None
     if cat == 'bar' and not COLBOX:
         collide = 2
     for fn, gs, single in ((f'c{u}_{cat}', lods, False), (f'c{u}_{cat}f', whole, True)):
@@ -1559,8 +1561,8 @@ for (u, cat), mm in cells.items():
             continue
         p_ = np.concatenate([g[1] for g in gs]); o_ = np.round((p_.min(0) + p_.max(0)) / 2); sizes = detail_sizes(float(np.linalg.norm(p_.max(0) - p_.min(0))) / 2, cat)
         cm = None
-        if rail is not None:        # the first shape of the cell carries all its rail boxes, in world space as write_lod subtracts o_
-            cm = rail; collide = 0; stats['col_rail_boxes'] += len(rail[0]) // 8; stats['col_rail_tris_was'] += sum(len(t) for t in RAILS[u]); rail = None
+        if rail is not None:        # the first shape of the cell carries its rail walls, in world space as write_lod subtracts o_
+            cm = rail; collide = 0; stats['col_rail_tris'] += len(rail[1]) // 3; rail = None
         elif cat == 'bar' and COLBOX:
             collide = None
         col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide, colmesh=cm)
@@ -1568,7 +1570,7 @@ for (u, cat), mm in cells.items():
         items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
                       'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
-print('rail collision', stats['col_rail_boxes'], 'boxes for', stats['col_rail_tris_was'], 'barrier triangles at LOD0')
+print('rail collision', RAIL_CHAINS, 'walls from', RAIL_SEGS, 'pieces,', stats['col_rail_tris'], 'triangles, for', sum(len(t) for v in RAILS.values() for t in v), 'barrier triangles at LOD0')
 lap('shapes queued')
 for f_ in PENDING:
     f_.result()
