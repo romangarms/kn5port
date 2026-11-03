@@ -1559,8 +1559,8 @@ for (u, cat), mm in cells.items():
             continue
         p_ = np.concatenate([g[1] for g in gs]); o_ = np.round((p_.min(0) + p_.max(0)) / 2); sizes = detail_sizes(float(np.linalg.norm(p_.max(0) - p_.min(0))) / 2, cat)
         cm = None
-        if rail is not None:        # the first shape of the cell carries all its rail boxes
-            cm = (rail[0] - o_, rail[1]); collide = 0; stats['col_rail_boxes'] += len(rail[0]) // 8; stats['col_rail_tris_was'] += sum(len(t) for t in RAILS[u]); rail = None
+        if rail is not None:        # the first shape of the cell carries all its rail boxes, in world space as write_lod subtracts o_
+            cm = rail; collide = 0; stats['col_rail_boxes'] += len(rail[0]) // 8; stats['col_rail_tris_was'] += sum(len(t) for t in RAILS[u]); rail = None
         elif cat == 'bar' and COLBOX:
             collide = None
         col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide, colmesh=cm)
