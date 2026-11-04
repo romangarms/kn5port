@@ -1,6 +1,6 @@
 """Saturation and contrast baked into a built level's colour textures, because BeamNG 0.40 ignores colour ramps.
 Run after build3.py: python grade.py [fh1_colorado|fh1_redrock]. Grades from copies in art/textures_ungraded, so rerunning with new values is safe."""
-import shutil, struct, sys, os
+import struct, sys, os
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
@@ -39,7 +39,7 @@ def blocks(a):
     """Grade DXT1 endpoints in place. Colour order picks a block's mode, so swapped endpoints need their indices remapped to keep it."""
     c0 = a[:, 0] & 0xffff; c1 = a[:, 0] >> 16; idx = a[:, 1].copy()
     four = c0 > c1
-    n0 = grade(c0); n1 = grade(c1)
+    n0 = TABLE[c0]; n1 = TABLE[c1]
     swap4 = four & (n0 < n1); idx[swap4] ^= 0x55555555             # 0-1 and 2-3 trade places
     same = four & (n0 == n1); idx[same] = 0                        # equal endpoints are one colour, and index 3 would turn transparent
     swap3 = ~four & (n0 > n1)                                      # 0 and 1 trade places, 2 is the midpoint and 3 stays transparent
@@ -49,6 +49,8 @@ def blocks(a):
     a[:, 0] = n0 | (n1 << 16); a[:, 1] = idx
 
 
+TABLE = grade(np.arange(1 << 16, dtype='u4'))       # every 565 colour graded once, then looked up
+
 level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL
 tex = level / 'art' / 'textures'; keep = level / 'art' / 'textures_ungraded'
 if not tex.exists():
@@ -56,12 +58,12 @@ if not tex.exists():
 keep.mkdir(exist_ok=True)
 done = skipped = 0
 for f in sorted(tex.glob('*.color.dds')):
-    src = keep / f.name
-    if not src.exists():
-        shutil.copy2(f, src)
-    b = src.read_bytes()
+    src = keep / f.name; first = not src.exists()
+    b = (f if first else src).read_bytes()
     if b[84:88] != b'DXT1':
         skipped += 1; continue
+    if first:
+        os.replace(f, src)      # the build's file becomes the ungraded copy, and the graded one is written in its place
     a = np.frombuffer(b, '<u4', offset=128).reshape(-1, 2).copy()
     blocks(a)
     f.write_bytes(b[:128] + a.astype('<u4').tobytes()); done += 1
