@@ -9,7 +9,7 @@ from numba import njit
 from scipy import ndimage as ni
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
-import colfit, dds, hexzones, rmb, tex
+import colfit, dds, frame, hexzones, rmb, tex
 from daewrite import FARCUT, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -93,7 +93,7 @@ def lod(n):
 
 
 def g2b(p):
-    return np.stack([p[:, 0] - CX, -(p[:, 2] - CZ), p[:, 1]], 1)
+    return np.stack([p[:, 0] - CX, -(p[:, 2] - CZ), p[:, 1] + frame.LIFT], 1)
 
 
 def n2b(n):
@@ -1666,7 +1666,7 @@ for f in glob.glob(RT + 'TrackRoute*.xml'):
 x, y, z, fx, fz = bestr[2]
 pos = g2b(np.array([[x, y, z]]))[0]; ri = int((x - X0) / SQ); rj = int((Z1 - z) / SQ)
 if np.isfinite(Road[rj, ri]):
-    pos[2] = Road[rj, ri]
+    pos[2] = Road[rj, ri] + frame.LIFT        # the rasters keep FH1's heights
 yaw = math.atan2(fx, fz); c_, s_ = math.cos(yaw), math.sin(yaw)
 spawn = {'class': 'SpawnSphere', 'name': 'spawn_redrock', '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker',
          'position': [float(pos[0]), float(pos[1]), float(pos[2] + .6)], 'rotationMatrix': [c_, -s_, 0, s_, c_, 0, 0, 0, 1], 'radius': 1}

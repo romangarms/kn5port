@@ -10,14 +10,14 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage as ni
 from scipy.spatial import cKDTree
-import dds, mission, rmb, tex
+import dds, frame, mission, rmb, tex
 from daewrite import write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 # each level's centre and half size, as build3.py's CHUNKS: a chunk gets only the ground inside its square
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
+CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
 # None for the whole map, or (x, y, radius) in BeamNG metres to limit it, as the Carson prototype did at (-3670, 1378, 1500). The user confirmed Carson in-game
 TOWN = None
 LM_SLOT = 7; LM = re.compile(r'_lm(\d|_|$)')
@@ -62,7 +62,7 @@ def materials(b, p):
 
 
 def g2b(p):
-    return np.stack([p[:, 0] - CX, -(p[:, 2] - CZ), p[:, 1]], 1)
+    return np.stack([p[:, 0] - CX, -(p[:, 2] - CZ), p[:, 1] + LIFT], 1)
 
 
 def pools(lum, img, lo, span):

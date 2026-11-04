@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ni
-import dds, gamezip, mission, tex
+import dds, frame, gamezip, mission, tex
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -38,7 +38,7 @@ BEAMNG_SKY = {'night'}
 # FH1 world axes (x, up, z) to BeamNG (x, y, z up)
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]])
 
-SCENE = {'theLevelInfo': {'globalEnviromentMap': 'fh1_sky_cubemap', 'fogDensity': .00006, 'fogAtmosphereHeight': 400},
+SCENE = {'theLevelInfo': {'globalEnviromentMap': 'fh1_sky_cubemap', 'fogDensity': .00006, 'fogAtmosphereHeight': 400 + frame.LIFT},
          'tod': {'time': TIME, 'startTime': TIME},
          # Tuned against in-game shots. ScatterSky's own light is already blue in shade and warm in sun, so these stay near stock.
          # fogScale is FH1's Redrock fog template. skyBrightness and the flare are stock

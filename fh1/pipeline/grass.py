@@ -7,13 +7,13 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage as ni
 from scipy.spatial import cKDTree
-import dds, pgrass, tex
+import dds, frame, pgrass, tex
 from daewrite import write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
+CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
 CROWD, CORN = 20491, 20489           # texture ids: festival crowd people, and corn
 HEIGHT = 1.3                         # GrassHeightScale in TrackSettings.xml
 TILE = (8.0, 16.0); MIN_SPRITES = 3  # clump area in m2: 8, grown so sparse layers still get 3 sprites a clump
@@ -143,7 +143,7 @@ for n in names:
     g = pgrass.parse(n)
     if g is None or not len(g['T']):
         continue
-    P = g['P']; Pb = np.stack([P[:, 0] - CX, P[:, 2] + CZ, P[:, 1]], 1)       # .pgeo z is minus mesh z, so g2b's -(z - CZ) is z + CZ here
+    P = g['P']; Pb = np.stack([P[:, 0] - CX, P[:, 2] + CZ, P[:, 1] + LIFT], 1)       # .pgeo z is minus mesh z, so g2b's -(z - CZ) is z + CZ here
     if Pb[:, 0].max() < -HALF or Pb[:, 0].min() > HALF or Pb[:, 1].max() < -HALF or Pb[:, 1].min() > HALF:
         continue
     tb = pgrass.tables(g); tids = [IDX[i][0] for i in g['tex']]

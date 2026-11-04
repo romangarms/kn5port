@@ -8,13 +8,13 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from daewrite import FARCUT, write_lod
-import gamezip, granny, mission, rmb
+import frame, gamezip, granny, mission, rmb
 from animsets import records
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
+CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); S = np.diag([1., 1., -1.])
 # shape: the built shape for this mesh. group: the anim_proc set that places it. hub and axis: the Fan bone from its ANIM_*.pgeo, checked against the mesh, in BeamNG axes.
 # radius and depth: parts wholly inside this disc are the fan. origin: the point of the shape that a set's position means, where the ANIM model is centred differently.
@@ -295,7 +295,7 @@ for kind, w in OBJECTS.items():
         animate(path, spin(seconds))
     places = []
     for r in records(w['group']):
-        Rm = yaw_matrix(r); places.append((np.array([r[12] - CX, r[14] + CZ, r[13]]) - Rm @ origin, Rm))
+        Rm = yaw_matrix(r); places.append((np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT]) - Rm @ origin, Rm))
     for o in world:
         if o.get('shapeName', '').endswith(f"/{w['shape']}.dae") or o.get('shapeName', '').endswith(f'/{kind}_tower.dae'):
             o['shapeName'] = f'{rel}/{kind}_tower.dae'
@@ -343,7 +343,7 @@ for kind, w in VEHICLES.items():
         parts.append((name, hub, mesh_groups((part['mesh'],)), 360 * turns * times / t[-1]))
     # FH1's route is flat, so each placement gets its own shape, tilted to the ground under it
     for i, r in enumerate(records(w['group'])):
-        pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
+        pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
         xy = pos[:2] + u[:, :1] * [r[0], r[2]] + u[:, 1:] * [r[8], r[10]]
         d = np.gradient(xy, times, axis=0); moving = np.hypot(*d.T) > STOPPED
         yaw = np.degrees(np.arctan2(-d[:, 0] * forward, d[:, 1] * forward))
@@ -379,7 +379,7 @@ for kind, w in FLYERS.items():
     q, tri = granny.mesh(w['model']); t, c = route(w['model'])
     path = out / f'{kind}.dae'; mat = f'fh1_{kind}'
     write_lod(path, [((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, tri), np.zeros((len(q), 2)), tri.ravel(), np.zeros((len(q), 2)))], np.zeros(3), w['lod'], None)
-    r = records(w['group'])[0]; pos = np.array([r[12] - CX, r[14] + CZ, r[13]])
+    r = records(w['group'])[0]; pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
     times, p, yaw, pitch, bank = flight(t, level_route(c))
     near = cKDTree(g[:, :2]).query_ball_point(pos[:2] + p[:, :2], GROUND_RADIUS)
     lift = max(g[i, 2].max() - pos[2] - p[k, 2] for k, i in enumerate(near) if i) + CLEARANCE; p[:, 2] += lift

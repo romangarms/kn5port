@@ -6,11 +6,11 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import gamezip, mission, tex
+import frame, gamezip, mission, tex
 from animsets import placed as anim_placed
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
+CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
 WATER = re.compile(r'AMB_(WaterFall_|Dam_Rising_Mist|Geyser_Mist|FountainWater)')
 SMOKE = re.compile(r'AMB_(HouseSmokeVent|Chimney_Smoke_White|Ind_SmokeVent|Small_Steam_Vent)')
 # How far away an emitter wakes, in metres. Water is further because falls are seen across valleys
@@ -185,14 +185,14 @@ for e in root:
     if eff is None or pos is None or not (WATER.match(eff.get('value')) or SMOKE.match(eff.get('value'))):
         continue
     # Same z sign as meshes, so BeamNG y is -(z - CZ)
-    x, y, z = float(pos.get('v.x')) - CX, -(float(pos.get('v.z')) - CZ), float(pos.get('v.y'))
+    x, y, z = float(pos.get('v.x')) - CX, -(float(pos.get('v.z')) - CZ), float(pos.get('v.y')) + LIFT
     if max(abs(x), abs(y)) < HALF:
         placed.append((eff.get('value'), x, y, z))
 far = {}
 for model, (name, height, dist) in ANIMATED.items():
     for r in anim_placed(model):
         # anim_proc sets keep the .pgeo z sign, unlike ParticleEmitters.xml
-        x, y, z = r[12] - CX, r[14] + CZ, r[13] + height
+        x, y, z = r[12] - CX, r[14] + CZ, r[13] + height + LIFT
         if max(abs(x), abs(y)) < HALF:
             placed.append((name, x, y, z)); far[name] = dist
 
@@ -219,7 +219,7 @@ for e in root:
         # A composite lists its effects with offsets in the emitter's axes, and its own time window
         c = effect(name); when = hours(c); subs = [(s.find('FileName').get('name'), v3(s.find('PosOffset'))) for s in c.findall('Effect')]
     for sub, off in subs:
-        w = to_b(v3(pos) + X * off[0] + Y * off[1] + Z * off[2]) - [CX, -CZ, 0]
+        w = to_b(v3(pos) + X * off[0] + Y * off[1] + Z * off[2]) - [CX, -CZ, -LIFT]
         if max(abs(w[0]), abs(w[1])) < HALF:
             scene.append((sub, w, to_b(Y), dist, when))
 blocks = {}; images = set(); amb = {}

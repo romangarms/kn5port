@@ -7,10 +7,10 @@ from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import mission, nav, soundscape
+import frame, mission, nav, soundscape
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
+CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
 Image.MAX_IMAGE_PIXELS = None
 PREVIEW = (800, 600); PREVIEW_METRES = 2400          # stock menu images are 800x600
 # The map art's picture area, inside its black bars
@@ -74,7 +74,7 @@ def public_nodes(p, roads):
 def spawn(name, obj, x, y, p, pub):
     ids = np.array(list(pub)); i = ids[((p[ids, 0] - x) ** 2 + (p[ids, 1] - y) ** 2).argmin()]
     (dx, dy), oneway = pub[int(i)]
-    pos = p[i] - [CX, -CZ, 0]
+    pos = p[i] - [CX, -CZ, -LIFT]
     if not oneway:                                         # two-way nodes are on the centre line; drive on the right
         pos = pos + [dy * LANE_OFFSET, -dx * LANE_OFFSET, 0]
     yaw = math.atan2(dx, -dy); c, s = math.cos(yaw), math.sin(yaw)
@@ -129,7 +129,7 @@ def reverb(zones, p, roads):
             for (x, y), dist, i in zip(tri, d, near):
                 if np.isfinite(dist):
                     cells.setdefault((round(x / REVERB_GRID), round(y / REVERB_GRID)), (x, y, p[nodes[i], 2]))
-    return [{'name': f'fh1_reverb_{i}', 'class': 'SFXEmitter', '__parent': 'fh1_reverb', 'position': [round(float(x - CX), 2), round(float(y + CZ), 2), round(float(z + 2), 2)],
+    return [{'name': f'fh1_reverb_{i}', 'class': 'SFXEmitter', '__parent': 'fh1_reverb', 'position': [round(float(x - CX), 2), round(float(y + CZ), 2), round(float(z + 2 + LIFT), 2)],
              'fadeInTime': 0, 'fadeOutTime': 0, 'isLooping': False, 'maxDistance': REVERB_RADIUS, 'scale': [REVERB_RADIUS] * 3, 'track': REVERB_EVENT, 'useTrackDescriptionOnly': True}
             for i, (x, y, z) in enumerate(cells[k] for k in sorted(cells)) if abs(x - CX) < HALF and abs(y + CZ) < HALF]
 
