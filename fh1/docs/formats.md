@@ -100,7 +100,15 @@ Evidence: 99.7% of `colorado.nav` road nodes fall in a filled hex with this layo
 
 Filled hexes follow the drivable area, so open country far from roads has no zone. `PVSZLookup_00.dat` is 1,434 `(key, zone number)` pairs whose keys look like hashes. `PVSZoneSpeeds.dat` is one float per zone, 55 to 111, probably a streaming speed.
 
-**A zone's id list is what FH1 draws from that hex**, not a delta. Bit 31 set means drawn. A fine tile, `Mountains_Area01A_Terrain_LOD00_10`, is listed by every hex within 300 m of it and none beyond 600 m. `UberLOD_04B` is listed by none of the 149 hexes within 1 km of it, including the 65 inside its bounds. `TERR_CLRD_ZONE02_AREA6_MIDDIST_02` (mesh 12873) isn't listed within 300 m. So a mesh's nearest listing hex gives the closest distance FH1 ever shows it from. Overlapping ground meshes can be listed by the same hex, so the lists alone don't settle overlaps.
+**A zone's id list loads (bit 31) or unloads its ids.** Hexes near a mesh load it, a ring farther out unloads it (93% of ground meshes listed both ways have their unload hexes farther out, and no hex does both), and hexes in between list it neither way, where it stays drawn. All 5,300 ground meshes with load entries have an unload ring, with 62 unlisted hexes between on average. `hex_selection` draws a group from a hex that loads it, or lists it neither way and lies nearer its load hexes than its unload ones. The second section (`k` u16 mesh numbers) lists the mesh files of the zone's placed props, not its draw ids. A fine tile, `Mountains_Area01A_Terrain_LOD00_10`, is listed by every hex within 300 m of it and none beyond 600 m. `UberLOD_04B` is listed by none of the 149 hexes within 1 km of it, including the 65 inside its bounds. `TERR_CLRD_ZONE02_AREA6_MIDDIST_02` (mesh 12873) isn't listed within 300 m. So a mesh's nearest listing hex gives the closest distance FH1 ever shows it from. Overlapping ground meshes can be listed by the same hex, so the lists alone don't settle overlaps.
+
+## Draw table (`mt.npy`) flags (working)
+
+Fields `t` (mesh file), `p` (offset to the next record of the LOD ring), `f`, `g`, `s[5]`.
+
+- `f`: the low six bits are always `0x3f`. Above them: `0x100` on all 1,103 `TERR_CUBE` records (occluder boxes, never drawn: `NODRAW`), `0x80` on `*_ShadowCaster_*` meshes, `0x1000` on road markings and tyre marks, `0x200` on some road pieces, `0x800` on most props and some terrain, `0x2000` on records with no mesh.
+- `g` bits 12-13: LOD level, bit 11 the ring's top member (see `lod_rings`). Bit 3 marks close-range ground: 64% of those records are listed from hexes in or touching the mesh's box, 3% only from 500 m or more. Bit 4 marks background (27% and 51%), set on every Uber shell piece, `TERR_CUBE` and tree. Bit 9 is clear on every `TERR_CUBE`. Bits 0, 1, 10 and 14 are not understood.
+- `s[1]`: a placement's own lightmap. `s[0]` is always 0, `s[2]` 0 or 65535, `s[3]` small counts, `s[4]` mostly 65535: not decoded.
 
 ## `*.pgeo` plant and model sets (working)
 
