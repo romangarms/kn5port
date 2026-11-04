@@ -46,4 +46,4 @@ Road fences and barriers are permanent scenery in `Models_Ungrouped` files: `Met
 
 Zone record owners are real event ids. `FR05` is `Events.HorizonEventID` in `media/db/gamedb.slt`, and `FESTIVAL_FIRST_001` is `Tracks.DevName`. A record with an owner is never kept. `models_proc_clrd_*_barriers_*` sets stay out, and `model_item` refuses `BarrierConcrete`: the user reports it never appears in the game and blocks real roads.
 
-Hoardings and `TWALL` covers come back when `0x6e` is in their list. That value was seen on them at the festival, where Xenia shows them in free roam. What the list bytes mean is still not decoded.
+Hoardings and `TWALL` tyre walls stay out. They once came back when `0x6e` was in their list, a value seen on them at the festival, but 0x6e also marks 67 tyre walls on race routes 370 m to 2.6 km away, most of them within 11 m of a road's centre line. What the list bytes mean is still not decoded.
