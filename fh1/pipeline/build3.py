@@ -92,6 +92,9 @@ PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and
 NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
 TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD|^Mountains_Area\d+_NOLOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
+# TERR_CUBE is FH1's coarse filler (80 to 130 m triangles). It goes last, as its own tier, only where nothing else was drawn: banks along
+# Clear Springs' river had no other ground. Laid in with the far tiers it covered finer ground. FH1_CUBE=0 leaves it out
+CUBE = os.environ.get('FH1_CUBE', '1') != '0'; CUBEQ = []; WATER_CLEAR = .5; ROCK_CLEAR = 1.0
 FARQ = []; ZBANDS = (150.0, 400.0, 800.0, 1500.0)      # far ground's tiers: how close FH1 draws it from, in metres. See far_tiers
 
 
@@ -838,7 +841,9 @@ for f, cs in byfile.items():
         g = togrid(p)
         if isterr:
             if cube:
-                if 'TERR_CUBE' not in n and l <= best[gkey(c)] and (c['f'], c['mi']) not in LONE:
+                if 'TERR_CUBE' in n and CUBE:
+                    CUBEQ.append(len(FARQ)); FARQ.append((True, no, M, m, p, nr, r0, r1, g, gkey(c)))
+                elif 'TERR_CUBE' not in n and l <= best[gkey(c)] and (c['f'], c['mi']) not in LONE:
                     # coarse by measured density, as names mislead: TERR_UberLOD_Patch is the coarse shell, at 240 tris per km2 against PATCH's 21,000
                     d_ = c['nt'] / max((c['mx'][0] - c['mn'][0]) * (c['mx'][2] - c['mn'][2]) / 1e6, 1e-3)
                     FARQ.append((d_ < 1500, no, M, m, p, nr, r0, r1, g, gkey(c)))
@@ -1005,6 +1010,41 @@ def clip_far(A, T, dout, din):
     return V, np.arange(len(V)).reshape(-1, 3)
 
 
+def clear_clip(A, T, cube=False):
+    """Far ground clear of water and rock by height, not footprint: hidden only below a water surface plus WATER_CLEAR, or a rock top plus
+    ROCK_CLEAR. A river's surface mesh runs on under its banks, and a riverbed such as Object025 (h_vblnd, so drawn as rock) lies under
+    them too, so by footprint the bank beside Clear Springs' bridge at (300, 537) lost the only ground FH1 has there. Triangles are split
+    until a piece is two cells across, where it's kept if mostly clear. cube: TERR_CUBE, FH1's coarse filler, which also keeps clear of
+    everything drawn so far, by footprint, and sinks half a metre beside it so a coarse piece can't poke through"""
+    if not len(T):
+        return A[:0], np.zeros((0, 3), int)
+    gb = togrid(A[np.unique(T), :3]); i0, j0 = np.clip(np.floor(gb[:, :2].min(0)).astype(int) - 4, 0, N - 1); i1, j1 = np.clip(np.ceil(gb[:, :2].max(0)).astype(int) + 5, 1, N)
+    win = (slice(j0, j1), slice(i0, i1))        # the section's own cells. Cov is live, so two cube meshes can't fill one hole twice
+    top_ = np.fmax(np.nan_to_num(Water[win], nan=-np.inf) + WATER_CLEAR, np.nan_to_num(Rock[win], nan=-np.inf) + ROCK_CLEAR)
+    solid = np.isfinite(Cov[win]) | road[win] if cube else np.zeros(top_.shape, bool)
+    if not cube and not np.isfinite(top_).any():
+        return A, T
+    S = A[T]; keep = []
+    while len(S):
+        c_ = togrid(S[:, :, :3].reshape(-1, 3)).reshape(-1, 3, 3); Q_ = np.einsum('ij,kjl->kil', BARY, c_)
+        ci = np.clip(Q_[..., 0].astype(int) - i0, 0, i1 - i0 - 1); cj = np.clip(Q_[..., 1].astype(int) - j0, 0, j1 - j0 - 1)
+        cov = solid[cj, ci] | (Q_[..., 2] < top_[cj, ci])
+        L = np.sqrt(((c_[:, :, :2] - c_[:, [1, 2, 0], :2]) ** 2).sum(2)).max(1)
+        none_ = ~cov.any(1); small = (L <= 2) & ~none_
+        keep += [S[none_], S[small & (cov.mean(1) < .5)]]
+        s_ = S[~((cov.all(1) & (L <= 24)) | none_ | small)]      # samples are L / 8 apart: a big triangle can hide a bank between them
+        if not len(s_):
+            break
+        a_, b_, c2 = s_[:, 0], s_[:, 1], s_[:, 2]; ab = (a_ + b_) / 2; bc = (b_ + c2) / 2; ca = (c2 + a_) / 2
+        S = np.concatenate([np.stack(v, 1) for v in ((a_, ab, ca), (ab, b_, bc), (ca, bc, c2), (ab, bc, ca))])
+    V = np.concatenate(keep).reshape(-1, A.shape[1]) if keep else A[:0]
+    if cube:
+        c_ = togrid(V[:, :3]); ci = np.clip(c_[:, 0].astype(int) - i0, 0, i1 - i0 - 1); cj = np.clip(c_[:, 1].astype(int) - j0, 0, j1 - j0 - 1)
+        V[ni.distance_transform_edt(~(solid | np.isfinite(Rock[win])))[cj, ci] < 2, 1] -= .5
+        stats['cube_tris'] += len(V) // 3
+    return V, np.arange(len(V)).reshape(-1, 3)
+
+
 def far_tiers():
     """A far triangle's tier: how close to it FH1 ever draws its mesh, then coarse after fine. Each zone hex lists what FH1 draws from it,
     so the distance to the nearest hex listing any LOD of the mesh's group is the closest it's ever seen from. The Uber shell isn't drawn within
@@ -1121,27 +1161,28 @@ def backdrop():
 structures()
 lap('structure footprints')
 TIERS = far_tiers(); NT = 2 * len(ZBANDS) + 2
+for i_ in CUBEQ:
+    TIERS[i_] = [np.full(len(t__), NT) for t__ in TIERS[i_]]
+NT += bool(CUBEQ)
 FINE = []       # each far mesh's median longest edge. Beyond the square the backdrop takes them finest first, whatever their tier
 for e_ in FARQ:
     T_ = np.concatenate([rmb.tris(s['ib'], e_[3]['nv'], s['ints'][1]) for s in e_[3]['secs']] or [np.zeros((0, 3), int)])
     FINE.append(float(np.median(np.linalg.norm(e_[4][T_] - e_[4][T_][:, [1, 2, 0]], axis=2).max(1))) if len(T_) else 0.0)
 # within a tier, the Uber background goes first and finer LODs before coarser, so a copy of ground already drawn is the one dropped
 ORDER = sorted(range(len(FARQ)), key=lambda i: ('uber' not in NAMEOF.get(FARQ[i][1], '').lower(), LEVEL.get(FARQ[i][1], lod(NAMEOF.get(FARQ[i][1], '')))))
+CUBESET = set(CUBEQ)
 lap('far tier lookup')
 for tier_ in range(NT):
     if not any((t__ == tier_).any() for e_ in TIERS for t__ in e_):
         continue
     SEEN = np.zeros(0, np.int64)      # triangle keys drawn in this tier
-    new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
+    new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road      # road shaders also draw town grass and paving. Water and rock go by height, in clear_clip
     if os.environ.get('FH1_DUMPMASKS') and tier_ == 0:      # what keeps far ground off, for checking where it went missing
         np.savez_compressed(Path('../logs') / f'{LVL}-masks.npz', shown=shown, road=road, rock=np.isfinite(Rock), water=np.isfinite(Water), X0=X0, Z0=Z0, SQ=SQ, N=N)
     if tier_ % 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
         lab_, n_ = ni.label(~shown); small = np.bincount(lab_.ravel()) * SQ * SQ < 150000; small[0] = False
         lump = np.where(small[lab_], pyramid_fill(Cov) + 1, np.inf)
     dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
-    # FH1's own close-range ground ignores water: a river's surface mesh runs on under its banks, and this dropped the banks along
-    # Clear Springs' river (Reservoir_Area5_PATCH14), leaving holes to the sky. Under the water it's the river bed, which stays anyway
-    din0 = ni.distance_transform_edt(shown | road | np.isfinite(Rock)) * SQ if tier_ == 0 else None
     top = ni.minimum_filter(np.nan_to_num(np.fmax(Cov, Rock), nan=np.inf), 3)      # raster keeps a cell's highest point, so take the lowest nearby
     for e_ in ORDER:
         (coarse_, no, M, m, p, nr, r0, r1, g, _), tiers_ = FARQ[e_], TIERS[e_]; BPRI = (0, FINE[e_])
@@ -1167,12 +1208,16 @@ for tier_ in range(NT):
                 u1 = (r1 + 1) / 2 if r1 is not None else uv
             A = np.c_[p, nr, uv, u1]; o_ = A[:0]
             if BACKDROP:        # clip_far would hold ground beyond the square to the edge cells' heights. add() sends it to the backdrop
-                k_ = (np.abs(g2b(p[T].mean(1))[:, :2]) < HALF - 4).all(1); o_ = A[T[~k_]].reshape(-1, A.shape[1]); T = T[k_]
-            if tier_ == 0:      # FH1 draws this from its own hexes: real close-range ground beside the near tiles, only named PATCH or MIDDIST.
+                k_ = (np.abs(g2b(p[T].mean(1))[:, :2]) < HALF - 4).all(1); o_ = A[T[~k_]].reshape(-1, A.shape[1]) if e_ not in CUBESET else A[:0]; T = T[k_]
+            if e_ not in CUBESET:
+                A, T = clear_clip(A, T)
+            if e_ in CUBESET:
+                V, T = clear_clip(A, T, cube=True)
+            elif tier_ == 0:      # FH1 draws this from its own hexes: real close-range ground beside the near tiles, only named PATCH or MIDDIST.
                 # clip_far's road cap and its hold to the lowest nearby ground tore it open at their seams: a slit down Redstone's canyon
                 # walls, the cliff beside Clear Springs' road. Kept as it is, unless it lies wholly over near ground
-                c_ = togrid(np.concatenate([p[T], p[T].mean(1, keepdims=True)], 1).reshape(-1, 3)).reshape(-1, 4, 3)
-                T = T[~(din0[np.clip(c_[..., 1].astype(int), 0, N - 1), np.clip(c_[..., 0].astype(int), 0, N - 1)].min(1) > LIP)]
+                c_ = togrid(np.concatenate([A[T][..., :3], A[T][..., :3].mean(1, keepdims=True)], 1).reshape(-1, 3)).reshape(-1, 4, 3)
+                T = T[~(din[np.clip(c_[..., 1].astype(int), 0, N - 1), np.clip(c_[..., 0].astype(int), 0, N - 1)].min(1) > LIP)]
                 V = A[T].reshape(-1, A.shape[1])
             else:
                 V, T = clip_far(A, T, dout, din)
