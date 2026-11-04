@@ -161,6 +161,7 @@ def run():
             for r in group:
                 (PENDING / f"{r['id']}.json").unlink(missing_ok=True)
             out = RUNS / f'{rid}.out'; env = dict(os.environ, FH1_CHUNK=k[0], PYTHONUNBUFFERED='1', **dict(k[1]))
+            env.setdefault('NUMBA_CACHE_DIR', str(FH1 / 'numbacache'))      # the snapshot is copied without __pycache__, which held numba's compiled code
             t0 = time.time()
             with open(out, 'w', encoding='utf8') as f_:
                 p_ = subprocess.Popen([sys.executable, '-u', BUILD], cwd=SNAP, env=env, stdout=f_, stderr=subprocess.STDOUT, creationflags=NOWIN)

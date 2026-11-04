@@ -8,7 +8,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from daewrite import FARCUT, write_lod
-import gamezip, granny, rmb
+import gamezip, granny, mission, rmb
 from animsets import records
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -272,7 +272,7 @@ out = level / 'art' / 'shapes' / 'fh1_anim'; out.mkdir(parents=True, exist_ok=Tr
 for old in out.glob('*'):
     old.unlink()
 rel = f'/levels/{LVL}/art/shapes/fh1_anim'
-rows = []; world = [json.loads(l) for l in (mg / 'fh1' / 'items.level.json').read_text().splitlines() if l.strip()]
+rows = []; world = mission.rows(mg / 'fh1' / 'items.level.json'); was = {o.get('name'): o.get('shapeName') for o in world}
 for kind, w in OBJECTS.items():
     src = level / 'art' / 'shapes' / 'fh1' / f"{w['shape']}.dae"
     if not src.exists():          # a chunk such as Red Rock has none of this kind
@@ -393,12 +393,13 @@ for kind, w in FLYERS.items():
     world_p = pos + p
     print(kind, len(q), 'verts', len(tri), 'tris, lift', round(float(lift), 1), 'x', np.round([world_p[:, 0].min(), world_p[:, 0].max()]).tolist(), 'y', np.round([world_p[:, 1].min(), world_p[:, 1].max()]).tolist(),
           'z', np.round([world_p[:, 2].min(), world_p[:, 2].max()]).tolist(), 'max bank', round(float(np.abs(bank).max())), 'max pitch', round(float(np.abs(pitch).max())))
-(mg / 'fh1' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in world))
+moved = {o['name']: o['shapeName'] for o in world if o.get('shapeName') != was.get(o.get('name'))}
+with mission.edit(mg / 'fh1' / 'items.level.json') as r_:       # water.py edits this file too, while this runs: only the shapes this swapped change
+    for o in r_:
+        if o.get('name') in moved:
+            o['shapeName'] = moved[o['name']]
 (mg / 'fh1_anim').mkdir(exist_ok=True)
 (mg / 'fh1_anim' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
-top = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-if not any(o.get('name') == 'fh1_anim' for o in top):
-    top.append({'name': 'fh1_anim', 'class': 'SimGroup', '__parent': 'MissionGroup'})
-    items.write_text(''.join(json.dumps(o) + '\n' for o in top))
+mission.add_groups(items, 'fh1_anim')
 (level / 'fh1_animated.json').unlink(missing_ok=True)
 print('done', len(rows), 'objects ->', level)

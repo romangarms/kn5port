@@ -1,5 +1,6 @@
-"""The level's top-level MissionGroup/items.level.json, which the scripts after build3.py each add to. build3.py runs several of them
-at once, so every change reads, edits and writes the file under a lock."""
+"""items.level.json files that the scripts after build3.py share: the level's top-level MissionGroup one, which each adds to, and fh1's,
+which water.py and animated.py edit. build3.py runs several of them at once, so every change reads, edits and writes the file under a lock,
+and a write replaces the file whole, so a reader never sees half of it."""
 import hashlib, json, os, tempfile, time
 from contextlib import contextmanager
 
@@ -9,7 +10,13 @@ def read(path):
 
 
 def write(path, rows):
-    path.write_text(''.join(json.dumps(o) + '\n' for o in rows))
+    tmp = path.with_name(path.name + '.tmp'); tmp.write_text(''.join(json.dumps(o) + '\n' for o in rows))
+    for i in range(100):
+        try:
+            os.replace(tmp, path); return
+        except PermissionError:         # Windows refuses while another process has the file open to read
+            time.sleep(.05)
+    os.replace(tmp, path)
 
 
 @contextmanager

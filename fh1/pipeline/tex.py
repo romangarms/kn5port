@@ -1,4 +1,4 @@
-import struct,os,numpy as np
+import functools,struct,os,numpy as np
 from PIL import Image
 X=os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','x')
 def tiled_offset(x,y,w,log_bpp):
@@ -68,6 +68,11 @@ def caff(i,n):
     if kind!=0 or fw&0xff not in (0x52,0x53,0x54,0x71): return None    # kind 2 is a cube map
     return dict(w=w,h=hh,mips=0,fw=fw,fmt=fw&0xff,top=0,tot=0,path=p,bpath=p,off=0x190+ds)
 def bix(i):
+    # the texture's header, read once per process: the build asks for each one many times
+    t=_bix(i)
+    return dict(t) if t else t
+@functools.lru_cache(maxsize=None)
+def _bix(i):
     n=f'_0x{i:08X}'
     p=f'{X}/{n}.bix'
     if not os.path.exists(p): return caff(i,n)

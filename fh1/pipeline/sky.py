@@ -1,7 +1,7 @@
 """FH1 sky and lighting for a built level: bakes cubemaps at several times of day from realtimesky.zip and TimeOfDayA.xml, then patches the scene.
 fh1Extras.lua swaps the skybox, reflections and river cubemaps to follow BeamNG's clock, from the table in fh1_sky.json.
 Run after build3.py, which wipes the level: python sky.py [fh1_colorado|fh1_redrock]. Safe to run twice. Needs no rebuild."""
-import json, os, struct, sys
+import hashlib, json, os, shutil, struct, sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import numpy as np
@@ -202,16 +202,24 @@ level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL
 items = level / 'main' / 'MissionGroup' / 'items.level.json'
 if not items.exists():
     sys.exit(f'{items} is missing: run build3.py first')
-R = curves(MINUTE); band, density = xds('CloseCloudAlphaDensityFront0.xds'); cirrus = xds('FarCloudMapBack0.xds')[0]
-b = gamezip.read('realtimesky.zip', MOON); moon = tex.decode(b[52:], 256, 256, 0x54).astype('f4') / 255
-moon[..., :3] = linear(moon[..., :3] * 255)
-stars = star_faces(FACE)
+R = curves(MINUTE)
 out = level / 'art' / 'skies' / 'fh1_sky'; out.mkdir(parents=True, exist_ok=True)
+# The faces don't depend on the level and FH1's files never change, so they're baked once per version of this code and copied after that
+CACHE = Path('../ddscache') / ('sky-' + hashlib.md5(b''.join(Path(f).read_bytes() for f in (__file__, dds.__file__, tex.__file__))).hexdigest()[:12])
+if not all((CACHE / f'{names(tag)[2]}_{i}.color.dds').exists() for _, tag, _ in BAKES for i in range(1, 7)):
+    band, density = xds('CloseCloudAlphaDensityFront0.xds'); cirrus = xds('FarCloudMapBack0.xds')[0]
+    b = gamezip.read('realtimesky.zip', MOON); moon = tex.decode(b[52:], 256, 256, 0x54).astype('f4') / 255
+    moon[..., :3] = linear(moon[..., :3] * 255)
+    stars = star_faces(FACE); dirs = list(directions(FACE)); CACHE.mkdir(parents=True, exist_ok=True)
 materials = {}; bakes = []
 for minute, tag, _ in BAKES:
     C = curves(minute); material, cubemap, stem = names(tag); faces = []
-    for i, d in enumerate(directions(FACE), 1):
-        p = out / f'{stem}_{i}.color.dds'; dds.save(p, bake(d, C, R, band, density, cirrus, stars[i - 1], moon), peak=C['StarFade'][0] > .1); faces.append(f'/levels/{LVL}/art/skies/fh1_sky/{p.name}')
+    for i in range(1, 7):
+        p = out / f'{stem}_{i}.color.dds'; c_ = CACHE / p.name
+        if not c_.exists():
+            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, band, density, cirrus, stars[i - 1], moon), peak=C['StarFade'][0] > .1)
+            os.replace(c_.with_suffix('.tmp'), c_)
+        shutil.copyfile(c_, p); faces.append(f'/levels/{LVL}/art/skies/fh1_sky/{p.name}')
     materials[material] = {'name': material, 'mapTo': 'unmapped_mat', 'class': 'Material', 'Stages': [{}, {}, {}, {}], 'cubemap': cubemap, 'materialTag0': 'beamng'}
     materials[cubemap] = {'name': cubemap, 'class': 'CubemapData', 'cubeFace': faces}
     # FH1's fog is about 2.7 times denser at night than by day

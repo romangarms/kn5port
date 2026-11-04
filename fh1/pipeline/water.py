@@ -116,7 +116,7 @@ def unfold(P):
 
 
 items_path = level / 'main' / 'MissionGroup' / 'fh1' / 'items.level.json'
-items = [json.loads(l) for l in items_path.read_text().splitlines() if l.strip()]
+items = mission.rows(items_path)
 wdir = level / 'main' / 'MissionGroup' / 'fh1_water'; wdir.mkdir(parents=True, exist_ok=True); saved = wdir / 'meshwater.json'
 wat = [o for o in items if re.search(r'_watf?\.dae$', o.get('shapeName', ''))]
 if wat:
@@ -151,8 +151,10 @@ for tid in LAKE_NORMALS:     # River ripples want an RGB normal map, as core/art
     dds.save(p_, np.clip(np.dstack([rg, z]) * 127.5 + 127.5, 0, 255).astype('u1')); ripple.append(f'{rel}/art/textures/{p_.name}')
 
 rivers = []; lab, n = ni.label(mask, np.ones((3, 3)))
-for k in range(1, n + 1):
-    comp = lab == k
+# each piece of water inside its own box with a dry cell round it, which gives the same distances as the whole raster at a fraction of the work
+for k, (sy, sx) in enumerate(ni.find_objects(lab), 1):
+    y0, x0 = max(sy.start - 1, 0), max(sx.start - 1, 0); off = np.array([y0, x0])
+    comp = lab[y0:sy.stop + 1, x0:sx.stop + 1] == k
     if comp.sum() * GRID * GRID < MIN_AREA:
         continue
     left = comp.copy()
@@ -161,10 +163,10 @@ for k in range(1, n + 1):
         if part.sum() * GRID * GRID < MIN_AREA:
             break
         D = ni.distance_transform_edt(part) * GRID
-        path = centre_line(part, D)
+        path = centre_line(part, D); gp = path + off
         width = ni.median_filter(np.array([D[max(y - 2, 0):y + 3, max(x - 2, 0):x + 3].max() for y, x in path]) * 2 + MARGIN, 9, mode='nearest')
-        z = ni.median_filter(Hw[path[:, 0], path[:, 1]], 5, mode='nearest')
-        P = np.c_[lo[0] + path[:, 1] * GRID, lo[1] + path[:, 0] * GRID, z, width]
+        z = ni.median_filter(Hw[gp[:, 0], gp[:, 1]], 5, mode='nearest')
+        P = np.c_[lo[0] + gp[:, 1] * GRID, lo[1] + gp[:, 0] * GRID, z, width]
         # a drop of metres between neighbouring cells is a fall, or a pool beside lower water: the ribbon stops there
         for P_ in np.split(P, np.flatnonzero(np.abs(np.diff(z)) > 4) + 1):
             if len(P_) < 3:
@@ -189,7 +191,8 @@ RIVER = {'class': 'River', '__parent': 'fh1_water', 'annotation': 'WATER', 'base
                                          {'rippleDir': [-.5, .86], 'rippleMagnitude': .3, 'rippleSpeed': .01, 'rippleTexScale': [40, 40]}],
          'Waves (vertex undulation)': [{'waveDir': [0, 1], 'waveMagnitude': .1, 'waveSpeed': 1}, {'waveDir': [.7, .7], 'waveMagnitude': .1, 'waveSpeed': 1},
                                        {'waveDir': [.5, .86], 'waveMagnitude': .1, 'waveSpeed': 1}]}
-items_path.write_text(''.join(json.dumps(o) + '\n' for o in items if o not in wat))
+with mission.edit(items_path) as r_:        # animated.py edits this file too, while this runs
+    r_[:] = [o for o in r_ if o not in wat]
 (wdir / 'items.level.json').write_text(''.join(json.dumps(dict(RIVER, name=f'fh1_river_{i}', position=r[0][:3], nodes=r)) + '\n' for i, r in enumerate(rivers)))
 mission.add_groups(level / 'main' / 'MissionGroup' / 'items.level.json', 'fh1_water')
 print('removed', len(wat), 'water shapes')

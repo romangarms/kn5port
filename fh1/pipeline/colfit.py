@@ -15,10 +15,10 @@ HULL_MAX = 8.                   # metres across: a building's hull slopes from t
 MAX_BOXES = 40
 
 
-def sample(p_):
-    """points over triangles (n, 3, 3), 25 cm apart along each one's longest edge"""
+def sample(p_, step=.25):
+    """points over triangles (n, 3, 3), step metres apart along each one's longest edge, corners included"""
     out = []
-    e_ = np.linalg.norm(p_ - p_[:, [1, 2, 0]], axis=2).max(1); K = np.clip(np.ceil(e_ / .25), 1, 40).astype(int)
+    e_ = np.linalg.norm(p_ - p_[:, [1, 2, 0]], axis=2).max(1); K = np.clip(np.ceil(e_ / step), 1, 40).astype(int)
     for k in np.unique(K):
         w_ = np.array([(a, b, k - a - b) for a in range(k + 1) for b in range(k + 1 - a)], 'f8') / k
         out.append(np.einsum('kj,tjd->tkd', w_, p_[K == k]).reshape(-1, 3))
@@ -101,6 +101,7 @@ def skyline(P, cell):
     return out, float(sum((zmax[full] - zmin[full])) * cell * cell)
 
 
+RAIL_STEP = 1.     # metres between points: corners set a piece's width, and joints bridge its ends
 RAIL_W = .5; RAIL_L = 8.; RAIL_MIN = .3      # metres: a box this thin and short follows a curved rail; none thinner, so wheels don't pass through
 
 
@@ -132,7 +133,7 @@ def _segments(tris):
     _, lab = connected_components(coo_matrix((np.ones(len(e_)), (e_[:, 0], e_[:, 1])), shape=(n_, n_)), directed=False)
     out = []; tl = lab[inv[:, 0]]
     for k in np.unique(tl):
-        _rail(sample(tris[tl == k]), out)
+        _rail(sample(tris[tl == k], RAIL_STEP), out)
     return [(c + a * lo[0] + b * (lo[1] + hi[1]) / 2, c + a * hi[0] + b * (lo[1] + hi[1]) / 2, (hi[1] - lo[1]) / 2, lo[2], hi[2]) for c, a, b, lo, hi in out]
 
 
@@ -239,14 +240,14 @@ def _posts(S, chains):
     return [c for i, c in enumerate(chains) if i not in gone]
 
 
-def rails(cells):
+def rails(cells, pool=None):
     """walls along barriers, guardrails and fences. cells: {key: triangles (n, 3, 3) in world space, z up}, to {key: (vertices, triangle
     indices)} and (segments, chains). Each connected piece is halved along its long axis until a piece is at most RAIL_W thick and RAIL_L
-    long; pieces whose ends meet, across cells too, become one swept wall, so a car sliding along finds no box ends to catch on"""
-    S = []; key = []
-    for k, tris in cells.items():
-        if len(tris):
-            s_ = _segments(tris); S += s_; key += [k] * len(s_)
+    long; pieces whose ends meet, across cells too, become one swept wall, so a car sliding along finds no box ends to catch on.
+    pool: an executor to fit the cells' pieces in, which is most of the work"""
+    S = []; key = []; ks = [k for k, t in cells.items() if len(t)]
+    for k, s_ in zip(ks, (pool.map if pool else map)(_segments, [cells[k] for k in ks])):
+        S += s_; key += [k] * len(s_)
     chains = _posts(S, _chains(S)) if S else []; out = {}
     for ch, closed in chains:
         V, T = _sweep(S, ch, closed); k = key[ch[0][0]]

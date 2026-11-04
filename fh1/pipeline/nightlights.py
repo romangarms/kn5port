@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage as ni
 from scipy.spatial import cKDTree
-import dds, rmb, tex
+import dds, mission, rmb, tex
 from daewrite import write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -130,10 +130,14 @@ for tid, parts in sorted(geo.items()):
     for p, nr, T in parts:
         uv = (p[:, [0, 2]] - lo) / span
         for t in T:
-            poly = [tuple(x) for x in uv[t] * (w, h)]; dc.polygon(poly, fill=1)
-            # A triangle stays if any texel it covers is lit. Most of a town's ground is dark at night
-            im = Image.new('1', (w, h)); ImageDraw.Draw(im).polygon(poly, fill=1); a = np.asarray(im, bool)
-            if (a & lit).any():
+            xy = uv[t] * (w, h); poly = [tuple(x) for x in xy]; dc.polygon(poly, fill=1)
+            # A triangle stays if any texel it covers is lit. Most of a town's ground is dark at night. Drawn in its own box, moved by
+            # whole texels, which fills the same texels as drawing it over the whole map
+            x0, y0 = np.maximum(np.floor(xy.min(0)).astype(int) - 1, 0); x1, y1 = np.minimum(np.ceil(xy.max(0)).astype(int) + 2, (w, h))
+            if x1 <= x0 or y1 <= y0 or not lit[y0:y1, x0:x1].any():      # nothing lit in its box: no need to draw it
+                continue
+            im = Image.new('1', (int(x1 - x0), int(y1 - y0))); ImageDraw.Draw(im).polygon([(x - x0, y - y0) for x, y in poly], fill=1)
+            if (np.asarray(im, bool) & lit[y0:y1, x0:x1]).any():
                 keep.append((p[t], nr[t], uv[t]))
     fit = (ni.binary_dilation(np.asarray(cover, bool), iterations=2) & (lum > 40)).sum() / max((lum > 40).sum(), 1)
     if fit < FIT or not keep:
@@ -167,15 +171,11 @@ for i in order:
     if not taken[i]:
         pool.append(found[i]); taken[tree.query_ball_point(found[i][:2], POOL_GAP)] = True
 heads = []
-for f in mg.rglob('items.level.json'):
-    if f.parent.name in ('fh1_night', 'fh1_lamps'):
-        continue
-    for l in f.read_text().splitlines():
-        if '"TSStatic"' in l and any(k in l for k in LAMPS):
-            o = json.loads(l); k = Path(o['shapeName']).stem
-            if k in LAMPS:
-                R = np.array(o.get('rotationMatrix', np.eye(3).ravel())).reshape(3, 3)
-                heads.append((np.array(o['position']) + R.T @ np.array(LAMPS[k]), LAMPS[k][2]))
+for o in mission.rows(mg / 'fh1' / 'items.level.json'):        # build3.py places every lamp post there
+    k = Path(o.get('shapeName', '')).stem
+    if o.get('class') == 'TSStatic' and k in LAMPS:
+        R = np.array(o.get('rotationMatrix', np.eye(3).ravel())).reshape(3, 3)
+        heads.append((np.array(o['position']) + R.T @ np.array(LAMPS[k]), LAMPS[k][2]))
 if TOWN:
     heads = [h for h in heads if np.hypot(*(h[0][:2] - TOWN[:2])) < TOWN[2]]
 WARM = np.array([1.0, .75, .45])
@@ -208,9 +208,5 @@ for i, (p, peak, rgb, rise, shadows) in enumerate(lights):
 (mg / 'fh1_lamps' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in lamp_rows))
 # fh1Extras.lua used to switch the nearest lamps from this list; stock nightLight does it now
 (level / 'fh1_lamps.json').unlink(missing_ok=True)
-top = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-for g in ('fh1_night', 'fh1_lamps'):
-    if not any(o.get('name') == g for o in top):
-        top.append({'name': g, 'class': 'SimGroup', '__parent': 'MissionGroup'})
-items.write_text(''.join(json.dumps(o) + '\n' for o in top))
+mission.add_groups(items, 'fh1_night', 'fh1_lamps')
 print('done', dict(stats), 'lightmaps', len(geo), 'pools', len(pool), 'lights', len(lights), '->', level)

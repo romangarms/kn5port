@@ -18,6 +18,11 @@ from kn5port.terrain import pyramid_fill
 
 Image.MAX_IMAGE_PIXELS = None
 T_START = T_LAP = time.time(); TIMES = []
+# FH1_PROFILE=1 writes cProfile stats for the build and each post-build script to ../logs/prof-<stamp>/, for python -m pstats
+PROF = Path('../logs') / f'prof-{time.strftime("%Y%m%d-%H%M%S")}' if os.environ.get('FH1_PROFILE') else None
+if PROF:
+    import cProfile
+    PROF.mkdir(parents=True, exist_ok=True); PROFILER = cProfile.Profile(); PROFILER.enable()
 
 
 def lap(name):
@@ -1540,7 +1545,7 @@ for no, objs in INST.items():
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
 print('simple collision', {k[4:-7]: v for k, v in stats.items() if k.startswith('col_') and k.endswith('_shapes')}, 'shapes,', stats['col_tris_saved'], 'collision triangles saved')
 # barrier collision for the whole level at once, so walls run on across cell lines; each is carried by the cell its first piece is in
-RAILMESH, (RAIL_SEGS, RAIL_CHAINS) = colfit.rails({u: np.concatenate(t) for u, t in RAILS.items()}) if COLBOX else ({}, (0, 0))
+RAILMESH, (RAIL_SEGS, RAIL_CHAINS) = colfit.rails({u: np.concatenate(t) for u, t in RAILS.items()}, POOL) if COLBOX else ({}, (0, 0))
 for (u, cat), mm in cells.items():
     groups = []
     for mat, parts in mm.items():
@@ -1644,17 +1649,18 @@ base.resize((1024, 1024)).save(level / f'{LVL}.jpg', quality=90)
 pickle.dump({k: v for k, v in surf.items()}, open('../surf.pkl', 'wb'))
 lap('scene files')
 print('done', f'{time.time() - start_:.0f}s ->', level)
-# The scripts after the build, each with the ones it must wait for. nightlights reads every items file, animated rewrites fh1's and reads fh1_nav,
-# levelinfo and navmap both edit info.json, and grade grades grass's textures. Otherwise they only share the top-level items file, which mission.py locks
-AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'grade': ('grass',), 'levelinfo': ('navmap',),
-         'nightlights': ('sky', 'navmap', 'levelinfo', 'particles', 'water'), 'animated': ('nightlights',)}
+# The scripts after the build, each with the ones it must wait for. animated reads fh1_nav and grass's forest files, levelinfo and navmap both
+# edit info.json, and grade grades grass's textures. The items files they share (the top-level one, and fh1's, which water and animated edit and
+# nightlights reads) go through mission.py, which locks them and replaces them whole
+AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass',), 'levelinfo': ('navmap',),
+         'animated': ('navmap', 'grass')}
 SAY = threading.Lock()      # one whole line at a time from the scripts running side by side
 
 
 def post_script(s_):
     """one script, its output piped into the log with its name in front -> seconds taken"""
     t_ = time.time()
-    p_ = subprocess.Popen([sys.executable, '-u', f'{s_}.py', LVL], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    p_ = subprocess.Popen([sys.executable, '-u'] + (['-m', 'cProfile', '-o', str(PROF / f'{s_}.prof')] if PROF else []) + [f'{s_}.py', LVL], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           env=dict(os.environ, PYTHONIOENCODING='utf8'), encoding='utf8', errors='replace')
     for l_ in p_.stdout:
         with SAY:
@@ -1689,6 +1695,8 @@ def post_build():
 
 if len(sys.argv) == 1:                  # the wipe at the top also removes the sky. sky.py only patches installed levels
     post_build(); lap('post-build scripts, wall clock')
+if PROF:
+    PROFILER.disable(); PROFILER.dump_stats(str(PROF / 'build3.prof')); print('profile', PROF.resolve())
 print('[time] summary, slowest first, total', f'{time.time() - T_START:.0f}s')
 for n_, t_ in sorted(TIMES, key=lambda x: -x[1]):
     print(f'[time] {t_:8.1f}s  {n_}')

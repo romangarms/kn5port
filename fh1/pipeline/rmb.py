@@ -39,18 +39,14 @@ def tris(ib,nv,prim=6):
     if prim==4:
         t=ib[:len(ib)//3*3].reshape(-1,3)
         return t[(t[:,0]!=t[:,1])&(t[:,1]!=t[:,2])&(t[:,0]!=t[:,2])]
-    out=[]; rs=(0xffff if ib.dtype else 0)
-    start=0
-    cuts=np.where((ib==0xffff)|(ib==0xffffffff))[0].tolist()+[len(ib)]
-    for c in cuts:
-        s=ib[start:c]; start=c+1
-        if len(s)<3: continue
-        t=np.stack([s[:-2],s[1:-1],s[2:]],1)
-        odd=np.arange(len(t))%2==1
-        t[odd]=t[odd][:,[1,0,2]]
-        keep=(t[:,0]!=t[:,1])&(t[:,1]!=t[:,2])&(t[:,0]!=t[:,2])
-        out.append(t[keep])
-    return np.concatenate(out) if out else np.zeros((0,3),int)
+    if len(ib)<3: return np.zeros((0,3),int)
+    # every window of three indices at once: a window holding a restart is no triangle, and every second one in a strip flips
+    r=(ib==0xffff)|(ib==0xffffffff); k=np.arange(len(ib))
+    start=np.maximum.accumulate(np.where(r,k,-1))+1
+    t=np.stack([ib[:-2],ib[1:-1],ib[2:]],1); ok=~(r[:-2]|r[1:-1]|r[2:])
+    odd=(k[:-2]-start[:-2])%2==1
+    t[odd]=t[odd][:,[1,0,2]]
+    return t[ok&(t[:,0]!=t[:,1])&(t[:,1]!=t[:,2])&(t[:,0]!=t[:,2])]
 
 def verts(m):
     """-> pos(N,3) f8, normal(N,3), uv(N,2) as u16/65535, the fraction of the section's UV box (first set)"""
