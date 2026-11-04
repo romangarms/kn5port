@@ -1,4 +1,4 @@
-"""The level's face in BeamNG: freeroam menu text and previews, named spawns, location zones, and the data fh1Extras.lua reads.
+"""The level's face in BeamNG: freeroam menu text and previews, spawns at FH1's outposts, location zones, and the data fh1Extras.lua reads.
 Run after build3.py, which wipes the level: python levelinfo.py [fh1_colorado|fh1_redrock]. Safe to run twice. Needs no rebuild."""
 import json, math, os, re, shutil, sys
 from pathlib import Path
@@ -7,22 +7,22 @@ from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import frame, mission, nav, soundscape
+import events, frame, mapart, mission, nav, soundscape
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
-Image.MAX_IMAGE_PIXELS = None
-PREVIEW = (800, 600); PREVIEW_METRES = 2400          # stock menu images are 800x600
+PREVIEW = mapart.SIZE; PREVIEW_METRES = 2400
 # The map art's picture area, inside its black bars
 ART_BOX = (377, 0, 4742, 3072)
 LANE_OFFSET = 1.8
 
-# name, spawn object, target as (x, nav z): a hub or zone from FH1's data. Spawns snap to the nearest public road.
-# Beaumont is the one guess: FH1 calls that zone Brekenridge and no file ties the two names together
-SPAWNS = [('Carson', 'spawn_carson', -3954, 879), ('Horizon Festival', 'spawn_festival', -919, -247), ('Gladstone', 'spawn_gladstone', -421, -1388),
-          ('Clear Springs', 'spawn_clear_springs', 1028, -3102), ('Kettle Hills', 'spawn_kettle_hills', 2916, -3876), ('The Rockies', 'spawn_rockies', 4616, 1717),
-          ('Finley Dam', 'spawn_finley_dam', 6617, 263), ('Beaumont', 'spawn_beaumont', 3491, 3150), ('Montano Plains', 'spawn_montano', -3524, -1868),
-          ('Steelworks', 'spawn_steelworks', -1517, 2779), ('Windmill test', 'spawn_windmill_test', -1457, -1612)]
+# name, spawn object, target as (x, nav z), snapped to the nearest public road: the festival, FH1's main hub
+SPAWNS = [('Horizon Festival', 'spawn_festival', -919, -247)]
+# FH1's Horizon Outposts, where it fast travels to: OUTPOST_<n>_NODE in GameObjs.xml, each beside a gas station. FH1's challenge text names
+# three (South Beaumont, Kettle Hills, Red Rock); the others take the nearest FH1 place name
+OUTPOSTS = {1: 'South Beaumont', 2: 'Rockies', 3: 'Kettle Hills', 4: 'Red Rock', 5: 'Montano Plains', 6: 'Carson', 7: 'Route 4', 8: 'Clear Springs',
+            9: 'Gladstone Estate', 10: 'Steelworks'}
+OUTPOST_DROP = 1.0          # metres above the node, which sits on the ground
 # area_type to FH1's own name, from the matching lists in Environments.str and Map.str. FH1's `lakes` regions are mostly forest, so they aren't named
 ZONES = {'festival': 'Horizon Festival', 'maintown': 'Carson', 'redrock': 'Red Rock', 'plains': 'Montano Plains', 'foothills': 'Kettle Hills',
          'mountains': 'The Rockies', 'canyons': 'Canyons', 'reservoir': 'Clear Springs', 'lake': 'Lake'}
@@ -37,16 +37,9 @@ REVERB_EVENT = 'event:>Snapshot Events>Snapshot_ATT_Tunnel_Closed_Position'; REV
 NAMED_ROAD = re.compile(r'(interstate \d+|county route \d+|route \d+|horizon outer loop)')
 
 
-def art(box):
-    """Map art for a world rectangle (x0, z0, x1, z1) in mesh axes."""
-    r = json.load(open('../reg.json')); src = Image.open('../ui/New_Map_MapGameReady.jpg').convert('RGB')
-    x0, z0, x1, z1 = box
-    return src.transform(PREVIEW, Image.EXTENT, (x0 / r['sx'] + r['ox'], z0 / r['sz'] + r['oz'], x1 / r['sx'] + r['ox'], z1 / r['sz'] + r['oz']), Image.BICUBIC)
-
-
 def spawn_preview(x, z, path):
     w = PREVIEW_METRES; h = w * PREVIEW[1] / PREVIEW[0]
-    im = art((x - w / 2, z - h / 2, x + w / 2, z + h / 2)); d = ImageDraw.Draw(im); cx, cy = PREVIEW[0] / 2, PREVIEW[1] / 2
+    im = mapart.art((x - w / 2, z - h / 2, x + w / 2, z + h / 2)); d = ImageDraw.Draw(im); cx, cy = PREVIEW[0] / 2, PREVIEW[1] / 2
     d.ellipse((cx - 12, cy - 12, cx + 12, cy + 12), outline=(255, 90, 30), width=4)
     im.save(path, quality=90)
 
@@ -81,6 +74,15 @@ def spawn(name, obj, x, y, p, pub):
     return ({'class': 'SpawnSphere', 'name': obj, '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker', 'position': [float(pos[0]), float(pos[1]), float(pos[2] + .6)],
              'rotationMatrix': [c, -s, 0, s, c, 0, 0, 0, 1], 'radius': 1},
             {'objectname': obj, 'translationId': name, 'preview': f'{obj}_preview.jpg'}, (float(p[i, 0]), float(-p[i, 1])))
+
+
+def outpost(n, name, nodes):
+    """a spawn on an outpost's node, facing the node's way"""
+    (x, y, z), f = nodes[f'OUTPOST_{n:03d}_NODE']; obj = 'spawn_outpost_' + name.lower().replace(' ', '_')
+    yaw = math.atan2(f[0], -f[2]); c, s = math.cos(yaw), math.sin(yaw)
+    return ({'class': 'SpawnSphere', 'name': obj, '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker', 'position': [float(x - CX), float(z + CZ), float(y + LIFT + OUTPOST_DROP)],
+             'rotationMatrix': [c, -s, 0, s, c, 0, 0, 0, 1], 'radius': 1},
+            {'objectname': obj, 'translationId': f'{name} Outpost', 'preview': f'{obj}_preview.jpg'}, (float(x), float(-z)))
 
 
 def zones(p, roads):
@@ -140,12 +142,19 @@ if not items.exists():
     sys.exit(f'{items} is missing: run build3.py first')
 p, roads = nav.read(); pub = public_nodes(p, roads)
 spawns = []      # rows for the top-level items file, which other scripts change at the same time, so it's edited in one go below
-points = [{'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': 'spawn_redrock_preview.jpg'}]
-red = next(o for o in mission.rows(items) if o.get('name') == 'spawn_redrock')['position']
-spawn_preview(red[0] + CX, CZ - red[1], level / 'spawn_redrock_preview.jpg')
+points = []; default = 'spawn_outpost_red_rock'
 if LVL == 'fh1_colorado':
     for name, obj, x, y in SPAWNS:
         row, point, where = spawn(name, obj, x, y, p, pub)
+        spawns.append(row); points.append(point); spawn_preview(*where, level / point['preview'])
+else:               # a chunk keeps build3.py's spawn, and the outposts that fall inside it
+    points.append({'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': 'spawn_redrock_preview.jpg'}); default = 'spawn_redrock'
+    red = next(o for o in mission.rows(items) if o.get('name') == 'spawn_redrock')['position']
+    spawn_preview(red[0] + CX, CZ - red[1], level / 'spawn_redrock_preview.jpg')
+gameplay = events.nodes()
+for n, name in OUTPOSTS.items():
+    row, point, where = outpost(n, name, gameplay)
+    if max(abs(v) for v in row['position'][:2]) < HALF:
         spawns.append(row); points.append(point); spawn_preview(*where, level / point['preview'])
 objects, reverb_zones = soundscape.read()
 emitters = reverb(reverb_zones, p, roads)
@@ -160,7 +169,7 @@ level_preview(level / f'{LVL}_preview.jpg')
 info = json.loads((level / 'info.json').read_text())
 info.update({'authors': 'Playground Games, Turn 10 (original game). Converted locally for personal use',
              'country': 'levels.common.country.usa', 'region': 'northAmerica', 'biome': 'Mountains, plains and desert',
-             'previews': [f'{LVL}_preview.jpg'], 'spawnPoints': points, 'defaultSpawnPointName': 'spawn_redrock'})
+             'previews': [f'{LVL}_preview.jpg'], 'spawnPoints': points, 'defaultSpawnPointName': default})
 if LVL == 'fh1_colorado':           # a chunk keeps build3.py's title, or the level list shows two "Forza Horizon Colorado"
     info.update({'title': 'Forza Horizon Colorado',
                  'description': "Forza Horizon's Colorado, converted from your own copy: Carson, Red Rock, the Horizon Festival, Finley Dam and the Rockies, "

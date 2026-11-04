@@ -1429,12 +1429,13 @@ for c in F:
     names_.setdefault(int(c['f'].split('.')[1]), c['name'])
 skip = collections.Counter(); kept = collections.Counter(); uniq = {}
 ALWAYS = re.compile('FlowerHolder', re.I); ROADSIDE = re.compile('Barrier(?!Brand)', re.I); HOARDING = re.compile('RoadsideHoarding|TWALL', re.I)      # 0x6e: the festival grounds, seen on Xenia at beam (-516, 135)
+STARTER = re.compile('TeamTrailer', re.I)     # each event owns one trailer at its start, where races.py puts its BeamNG mission
 
 
 def event_kept(r_, nm_, x, y, z):
     """Event scenery the map needs in free roam"""
     if r_['name']:          # an owner is an event id: Events.HorizonEventID in gamedb.slt, or Tracks.DevName
-        return False
+        return bool(STARTER.search(nm_))
     return bool(ALWAYS.search(nm_) or ROADSIDE.search(nm_) or HOARDING.search(nm_) and 0x6e in r_['lst'])
 
 
@@ -1707,7 +1708,7 @@ print('done', f'{time.time() - start_:.0f}s ->', level)
 # The scripts after the build, each with the ones it must wait for. animated reads fh1_nav and grass's forest files, levelinfo and navmap both
 # edit info.json, and grade grades grass's textures. The items files they share (the top-level one, and fh1's, which water and animated edit and
 # nightlights reads) go through mission.py, which locks them and replaces them whole
-AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass',), 'levelinfo': ('navmap',),
+AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass',), 'levelinfo': ('navmap',), 'races': (),
          'animated': ('navmap', 'grass')}
 SAY = threading.Lock()      # one whole line at a time from the scripts running side by side
 

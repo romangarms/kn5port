@@ -11,7 +11,7 @@ Implemented in `build3.py`, using `zonerec.pkl` from `zones.py`. Keep a record u
 | No owner block | Buildings, telegraph poles, outpost tent | Yes |
 | Block, empty list, no owner | Signs, fences, bins, snow poles | Yes |
 | Block with list | Food trucks, RVs, cones, tyre stacks, grandstands | No, except `event_kept`: flower holders, and barriers that are off the road |
-| Block with owner name | `FR22_03`, `flyer_066`, `BF_..._OPEN`, speed camera markers | No |
+| Block with owner name | `FR22_03`, `flyer_066`, `BF_..._OPEN`, speed camera markers | No, except `TeamTrailer`: each event owns one starter trailer at its marker |
 
 Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), and `S_`, `C_` or `Debri` prefixes (smashable pieces), plus records near the origin.
 

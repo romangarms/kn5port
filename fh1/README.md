@@ -31,7 +31,8 @@ FH1_CHUNK=clearsprings python build3.py   # 4 km around Clear Springs (BeamNG ce
 python sky.py fh1_colorado            # FH1 sky for ten times of day and lighting, under a minute. build3.py runs this itself unless given an output folder. Each build wipes the level
 python navmap.py fh1_colorado         # FH1 road graph for the minimap and AI, run the same way as sky.py
 python grade.py fh1_colorado          # saturation and contrast baked into the map textures, run the same way. Safe to rerun with new values
-python levelinfo.py fh1_colorado      # freeroam menu text and previews, spawn points, location zones, HUD road names. Run the same way
+python levelinfo.py fh1_colorado      # freeroam menu text and previews, spawns at FH1's outposts, location zones, HUD road names. Run the same way
+python races.py fh1_colorado          # FH1's 118 races as BeamNG time trials, started at each event's marker and trailer. Run the same way
 python ambience.py fh1_colorado       # FH1's regional ambient loops, needs ffmpeg. Run the same way
 python particles.py fh1_colorado      # FH1's water, smoke and sprinkler particles. Run the same way, after levelinfo.py
 python animated.py fh1_colorado       # FH1's windmills, turbines, tractors, combines and crop duster. Run the same way
