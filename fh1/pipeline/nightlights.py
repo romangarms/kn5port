@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-CX, CZ = {'fh1_colorado': (-300.0, 500.0), 'fh1_redrock': (-6000.0, 4250.0), 'fh1_clearsprings': (1700.0, 2000.0)}[LVL]
+# each level's centre and half size, as build3.py's CHUNKS: a chunk gets only the ground inside its square
+CX, CZ, HALF = {'fh1_colorado': (-300.0, 500.0, 8192.0), 'fh1_redrock': (-6000.0, 4250.0, 2048.0), 'fh1_clearsprings': (1700.0, 2000.0, 2048.0)}[LVL]
 # None for the whole map, or (x, y, radius) in BeamNG metres to limit it, as the Carson prototype did at (-3670, 1378, 1500). The user confirmed Carson in-game
 TOWN = None
 LM_SLOT = 7; LM = re.compile(r'_lm(\d|_|$)')
@@ -115,7 +116,11 @@ for old in out.glob('*'):
     old.unlink()
 rel = f'/levels/{LVL}/art/shapes/fh1_night'
 mats = {}; rows = []; stats = defaultdict(int); found = []
+inside = lambda p, T: (np.abs(g2b(p)[T].mean(1)[:, :2]) < HALF).all(1)
 for tid, parts in sorted(geo.items()):
+    if not any(inside(p, T).any() for p, _, T in parts):      # all its ground is outside this chunk. The box below still takes all of it
+        stats['outside'] += 1
+        continue
     r = tex.load(tid)
     if not r or r[0] is None:
         stats['missing'] += 1
@@ -129,8 +134,10 @@ for tid, parts in sorted(geo.items()):
     lit = ni.maximum_filter(lum, 3) > LIT; cover = Image.new('1', (w, h)); dc = ImageDraw.Draw(cover); keep = []
     for p, nr, T in parts:
         uv = (p[:, [0, 2]] - lo) / span
-        for t in T:
-            xy = uv[t] * (w, h); poly = [tuple(x) for x in xy]; dc.polygon(poly, fill=1)
+        for t, in_ in zip(T, inside(p, T)):
+            xy = uv[t] * (w, h); poly = [tuple(x) for x in xy]; dc.polygon(poly, fill=1)       # ground outside the chunk still counts towards the fit
+            if not in_:
+                continue
             # A triangle stays if any texel it covers is lit. Most of a town's ground is dark at night. Drawn in its own box, moved by
             # whole texels, which fills the same texels as drawing it over the whole map
             x0, y0 = np.maximum(np.floor(xy.min(0)).astype(int) - 1, 0); x1, y1 = np.minimum(np.ceil(xy.max(0)).astype(int) + 2, (w, h))

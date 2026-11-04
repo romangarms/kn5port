@@ -1,5 +1,5 @@
 """Red Rock chunk, second pass: FH1's own meshes, textures and placed models in a BeamNG level."""
-import sys, os, re, json, math, pickle, shutil, struct, subprocess, threading, time, glob, collections
+import sys, os, re, json, math, hashlib, pickle, shutil, struct, subprocess, threading, time, glob, collections
 import numpy as np
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
@@ -125,30 +125,69 @@ def cooked(path, *args, save=dds.save, **kw):
     shutil.copyfile(c_, path)
 
 
+def keep_pickle(p_, d):
+    tmp = p_.with_suffix('.tmp'); pickle.dump(d, open(tmp, 'wb')); os.replace(tmp, p_)
+
+
+# What decoding a texture tells the build (name, mean colour, alpha cut) and which colour layer each normal map pairs with, kept beside the cooked
+# textures so a build decodes only what it hasn't seen. Both follow from FH1's files, tex.py and the code below: bump INFO_V after changing get()
+# or section_normals(), or delete the pickles
+INFO_V = 1; INFO_KEY = hashlib.md5(Path(tex.__file__).read_bytes() + f'{INFO_V} {TEXMAX}'.encode()).hexdigest()[:12]
+INFO_P = CACHE / f'texinfo-{INFO_KEY}.pkl'; PAIR_P = CACHE / f'pairs-{INFO_KEY}.pkl'
+load_ = lambda p_: pickle.load(open(p_, 'rb')) if p_.exists() else {}
+
+
+class Info(dict):
+    """a texture's info, its pixels (src) decoded only when asked for"""
+    def __missing__(self, k):
+        if k != 'src':
+            raise KeyError(k)
+        self['src'] = TX.pixels(self['tid'])[0]
+        return self['src']
+
+
 class Textures:
     def __init__(self):
         self.d = level / 'art' / 'textures'; self.d.mkdir(parents=True, exist_ok=True)
-        self.info = {}; self.missing = collections.Counter()
+        self.info = {}; self.missing = collections.Counter(); self.known = load_(INFO_P)
 
-    def get(self, tid):
-        if tid in self.info:
-            return self.info[tid]
+    def pixels(self, tid):
+        """(the texture at a power-of-two size, as BeamNG needs, 16 and up, whether it was already one), or None. UVs are normalised"""
         t = tex.bix(tid); r = None
         if t and t['fmt'] != 0x71:
             r = tex.load(tid)
         if r is None or r[0] is None:
-            self.missing[tid] += 1; self.info[tid] = None
             return None
-        a = r[0]; name = f'd{tid:X}'     # pre-cooked, so BeamNG loads FH1's sizes. The d prefix can't match PNG-era cached textures
-        w_, h_ = (max(1 << math.ceil(math.log2(v_)), 16) for v_ in a.shape[1::-1]); pot = (w_, h_) == a.shape[1::-1]      # BeamNG needs powers of two, 16 and up. UVs are normalised
+        a = r[0]; w_, h_ = (max(1 << math.ceil(math.log2(v_)), 16) for v_ in a.shape[1::-1]); pot = (w_, h_) == a.shape[1::-1]
         if not pot:
             a = np.asarray(Image.fromarray(a).resize((w_, h_), Image.BICUBIC))
+        return a, pot, t
+
+    def get(self, tid):
+        if tid in self.info:
+            return self.info[tid]
+        name = f'd{tid:X}'      # pre-cooked, so BeamNG loads FH1's sizes. The d prefix can't match PNG-era cached textures
+        k_ = self.known.get(tid, ...)
+        if k_ is None or k_ is not ... and (CACHE / f'{name}.color.dds').exists() and (k_[1] <= .002 or (CACHE / f'{name}_o.data.dds').exists()):
+            if k_ is None:
+                self.missing[tid] += 1; self.info[tid] = None
+                return None
+            cooked(self.d / f'{name}.color.dds')
+            if k_[1] > .002:
+                cooked(self.d / f'{name}_o.data.dds')
+            self.info[tid] = Info(tid=tid, name=name, rgb=k_[0], cut=k_[1])
+            return self.info[tid]
+        r = self.pixels(tid)
+        if r is None:
+            self.missing[tid] += 1; self.info[tid] = self.known[tid] = None
+            return None
+        a, pot, t = r
         cooked(self.d / f'{name}.color.dds', a, tex.blocks(tid) if t['fmt'] == 0x52 and pot else None, TEXMAX)
         al = a[..., 3]; cut = float((al < 128).mean())
         if cut > 0.002:
             cooked(self.d / f'{name}_o.data.dds', al, limit=TEXMAX)
         rgb = a[..., :3].reshape(-1, 3).mean(0)
-        self.info[tid] = dict(name=name, rgb=rgb, cut=cut, src=a)
+        self.info[tid] = Info(tid=tid, name=name, rgb=rgb, cut=cut, src=a); self.known[tid] = (rgb, cut)
         return self.info[tid]
 
     def normal(self, tid):
@@ -166,7 +205,7 @@ MATS = {}
 # under instanceEmissive, and the TSStatics carry nightEmissive with a black instanceColor, so stock core_environment lights only the glass from
 # 18:00 to 6:00. GLOW: model name prefixes and the mask's slot position. GLOW_NITS by eye from West Coast's floodlight (4000) and traffic lights (5000)
 GLOW = {'OBJ_CLRD_LampPost': 3, 'OBJ_CLRD_StreetLight': 3}; GLOW_NITS = 3000; GLOWING = set()
-NM = {}; PAIR = {}       # NM: the current section's normal map for each colour texture, from section_normals
+NM = {}; PAIR = load_(PAIR_P)       # NM: the current section's normal map for each colour texture, from section_normals
 
 
 def section_normals(no, slots):
@@ -1647,6 +1686,7 @@ base.resize((1024, 1024)).save(level / f'{LVL}.jpg', quality=90)
     'size': [int(2 * HALF), int(2 * HALF)], 'previews': [f'{LVL}.jpg'],
     'spawnPoints': [{'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': f'{LVL}.jpg'}], 'defaultSpawnPointName': 'spawn_redrock'}, indent=2))
 pickle.dump({k: v for k, v in surf.items()}, open('../surf.pkl', 'wb'))
+keep_pickle(INFO_P, TX.known); keep_pickle(PAIR_P, PAIR)
 lap('scene files')
 print('done', f'{time.time() - start_:.0f}s ->', level)
 # The scripts after the build, each with the ones it must wait for. animated reads fh1_nav and grass's forest files, levelinfo and navmap both
