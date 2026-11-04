@@ -1584,7 +1584,7 @@ for no, objs in INST.items():
     glow = no in GLOWING or lod_sibling(no) in GLOWING
     if PROPFOREST and not glow and no not in KEEPSTATIC:
         it_ = f'fh1_m{no}'
-        PROPDATA[it_] = {'name': it_, 'internalName': it_, 'class': 'TSForestItemData', 'annotation': 'PROP', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0,
+        PROPDATA[it_] = {'name': it_, 'internalName': it_, 'class': 'TSForestItemData', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0,
                          'mass': 1, 'rigidity': 1, 'shapeFile': f'{rel}/art/shapes/fh1/m{no}.dae', 'windScale': 0}
         (fdir / f'{it_}.forest4.json').write_text(''.join(json.dumps({'ctxid': 0, 'pos': o['pos'], 'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(),
                                                                      'scale': o['scale'], 'type': it_}) + '\n' for o in objs))
