@@ -91,6 +91,18 @@ SAMP = samplers()
 lap('wipe and load tables')
 
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
+# The draw table's f flags above 0x3f tag a record's kind: 0x100 on all 1,103 TERR_CUBE records (FH1's occluder boxes, never visible ground,
+# among them Carson's town-block stand-ins), 0x80 on *_ShadowCaster_* meshes, 0x1000 on road markings and tyre marks. A mesh whose every
+# record is an occluder or shadow caster isn't drawn
+_fl = collections.defaultdict(list)
+for t_, f_ in zip(DRAW['t'].astype(int), DRAW['f'].astype(int)):
+    _fl[t_].append(f_)
+NODRAW = {t_ for t_, v in _fl.items() if all(f_ & 0x180 for f_ in v)}
+# g bit 3 marks close-range ground (64% listed from hexes in or touching the mesh's box, 3% only from 500 m or more); bit 4 background
+# (27% and 51%). Ground fallback prefers bit 3
+GBITS = collections.defaultdict(list)
+for t_, g_ in zip(DRAW['t'].astype(int), DRAW['g'].astype(int)):
+    GBITS[t_].append(g_)
 PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
 NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
 TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD|^Mountains_Area\d+_NOLOD', re.I)
@@ -271,6 +283,11 @@ def section_normals(no, slots):
     return out
 
 
+# FH1's AO maps darken only its ambient light (formats.md, .fxobj shaders), and canyon ground's are mostly black. BeamNG's AO darkened sunlit
+# rock too, so it's off: FH1_AO=1 puts it back
+AO = os.environ.get('FH1_AO', '0') == '1'
+
+
 def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None, ao=None, lm=None, win=None, emis=None, tone=1.0, spec=None):
     """glow: an emissive mask texture, lit at night through the TSStatic's instance colour (see GLOW). ao and lm: an AO map and a lightmap,
     both on UV1 (see object_maps). win: a window mask on UV0 (window_mask). emis: a baked UV1 emissive (bake_emissive) holding both.
@@ -293,7 +310,7 @@ def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=N
             st['baseColorFactor'] = [tone, tone, tone, 1]
         if n_:
             st['normalMap'] = TX.normal(n_)
-        if o_:
+        if o_ and AO:
             st.update({'ambientOcclusionMap': grey(ao), 'ambientOcclusionMapUseUV': 1})      # linear, as stock AO maps are (.data): as .color it read as sRGB and came out far too dark
         if g_:
             st.update({'emissiveMap': f"{rel}/art/textures/{g_['name']}.color.dds", 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': GLOW_NITS, 'instanceEmissive': True})
@@ -344,7 +361,7 @@ def blend_material(tids, masktid, ground, ao=None):
     for t, s_ in zip(tids, st):
         if t in NM:
             s_['normalMap'] = TX.normal(NM[t])
-    if ao is not None and TX.get(ao):
+    if ao is not None and TX.get(ao) and AO:
         for s_ in st:
             s_.update({'ambientOcclusionMap': grey(ao), 'ambientOcclusionMapUseUV': 1})
     while len(st) < 4:
@@ -849,7 +866,8 @@ def lake(c):
 
 
 sel = [c for c in F if (BACKDROP or c['mx'][0] > X0 and c['mn'][0] < X1 and c['mx'][2] > Z0 and c['mn'][2] < Z1)
-       and (BACKDROP or max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 or 'UberLOD' in c['name'] or lake(c)) and not NOUSE.search(c['name'])]
+       and (BACKDROP or max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) < 6000 or 'UberLOD' in c['name'] or lake(c)) and not NOUSE.search(c['name'])
+       and int(c['f'].split('.')[1]) not in NODRAW]
 # Origin-local meshes only belong where a zone record puts them, so they must not also go in raw at (0, 0).
 # Any record away from the origin marks a whole LOD group as local. World-space meshes have records at the origin.
 ZREC = pickle.load(open('../zonerec.pkl', 'rb')); NAMEOF = {int(c['f'].split('.')[1]): c['name'] for c in F}
@@ -988,13 +1006,12 @@ print(len(sel), 'meshes in box')
 Road = np.full((N, N), np.nan, 'f8'); Water = np.full((N, N), np.nan, 'f8'); Cov = np.full((N, N), np.nan, 'f8'); Rock = np.full((N, N), np.nan, 'f8')
 
 # ---- ground chosen by FH1's zone hexes (FH1_HEXGROUND=1)
-# Each 100 m hex lists what FH1 draws while the player is in it, and each record gives its LOD group's switch distances. A HG cell takes
-# the ground groups its nearest hex draws at that distance, or the next nearest hex's when that draws none there: what a player sees
-# from the closest viewpoint. That replaces the far tiers' priorities and every footprint and height rule for water and rock. Tested
-# offline on Clear Springs: no cell within reach of a hex left without ground, 1.3% of cells with two groups within 1 m of height,
-# nearly all ground against a river's surface mesh. Cells no hex draws take the finest ground over them. User-checked on Clear Springs
-# 2026-11-04: no visible holes. FH1_HEXGROUND=0 goes back to the far tiers and their clipping
-HEXGROUND = os.environ.get('FH1_HEXGROUND', '1') == '1'; HG = 16.0; HEX_K = 8
+# Each 100 m hex loads and unloads what FH1 streams while the player is in it, and each record gives its LOD group's switch distances. A HG
+# cell takes the ground groups drawn from its nearest hex (see drawn_from in hex_selection): what a player sees from the closest viewpoint.
+# That replaces the far tiers' priorities and every footprint and height rule for water and rock. Cells no hex draws ground for take the
+# finest ground over them, close-range ground (g bit 3) first. Clear Springs 2026-11-04: no visible holes (user-checked), 42 holes in the
+# scan against 99 when unlisted hexes counted as not drawn. FH1_HEXGROUND=0 goes back to the far tiers and their clipping
+HEXGROUND = os.environ.get('FH1_HEXGROUND', '1') == '1'; HG = 16.0
 GROUNDFX = re.compile(r'^(h_blnd|h_vblnd|h_road)'); NOTGROUND = re.compile(r'sign|barrier|armco|fence|rail|wall|pole|bridge|decal|cable|building|^TERR_CUBE', re.I)
 HN = (int(np.ceil((X1 - X0) / HG)), int(np.ceil((Z1 - Z0) / HG)))
 HEXSEL = {}; HEXRING = {}       # ring -> sorted selected cell numbers; file -> ring, for the ground files
@@ -1097,37 +1114,48 @@ def hex_selection(cs):
     pc = np.concatenate(pc); pr = np.concatenate(pr)       # candidate (cell, ring) pairs
     dens = np.array([ntri[r_] / max(len(np.unique(np.concatenate(foot[r_]))), 1) for r_ in rings_])
     HX, HR = hexzones.hexes(); zn = sorted(HX); ZC = np.array([HX[z] for z in zn])
-    listed = [{int(DRAW['t'][d]) for d in hexzones.drawn(z) if d < len(DRAW)} for z in zn]
+    # a zone's list loads (bit 31) or unloads its ids. Unload hexes ring the load ones farther out, and hexes between list neither: a mesh
+    # loaded on the way in stays drawn there. So from hex h a group is drawn if h loads it, or lists it neither way and lies nearer its
+    # load hexes than its unload ones. 5,300 ground meshes have both, with 62 unlisted hexes between on average
+    load = [set() for _ in zn]; unload = [set() for _ in zn]
+    for k_, z in enumerate(zn):
+        b_ = open(f'../x/__R00Z{z:05d}.pvsz', 'rb').read(); n_ = struct.unpack_from('>I', b_, 0)[0]
+        for v in struct.unpack_from('>%dI' % n_, b_, 4):
+            d = v & 0x7fffffff
+            if d < len(DRAW):
+                (load if v >> 31 else unload)[k_].add(int(DRAW['t'][d]))
     cj, ci = np.divmod(np.arange(HN[0] * HN[1]), HN[0]); cx_ = X0 + (ci + .5) * HG; cz_ = Z0 + (cj + .5) * HG
-    dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_], k=HEX_K)
-
-    def chosen(r_, rb, h):
-        """whether FH1 draws some member of ring r_ at distance bin rb from hex h"""
-        ms = sorted(mem[r_], key=lambda f_: LEVEL.get(f_, 0)) if r_ in mem else [r_[1]]
-        lst = listed[h]
-        lod = next((lod_of[f_] for f_ in ms if f_ in lod_of), None); r = (rb + .5) * 10
-        for i, f_ in enumerate(ms):
-            if f_ not in lst:
-                continue
-            if lod is None or lod[0] < 0:
-                return True
-            lo = 0 if i == 0 else lod[min(i - 1, 2)]; hi = lod[min(i, 2)] if i < len(ms) - 1 else lod[2]
-            if lo <= r < hi:
-                return True
-        return False
-
-    # per group: the nearest hex listing any member of it decides, by its distance. Deciding per cell, the first group chosen there settled
-    # it, though that group might cover a corner of the cell only, and the rest stayed empty
+    dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_]); dK = dK.ravel(); hK = hK.ravel()
     ms_ = [set(mem[r_]) if r_ in mem else {r_[1]} for r_ in rings_]
-    sel = np.zeros(len(pc), bool); decided = np.zeros(len(pc), bool)
-    for q in range(HEX_K):
-        o_ = np.flatnonzero(~decided)
-        if not len(o_):
-            break
-        key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64)], 1)
-        uk, inv = np.unique(key, axis=0, return_inverse=True); inv = inv.ravel()
-        lst = np.array([bool(ms_[a] & listed[h]) for a, h, b in uk]); ok = np.array([l and chosen(rings_[a], b, h) for (a, h, b), l in zip(uk, lst)])
-        decided[o_[lst[inv]]] = True; sel[o_[lst[inv] & ok[inv]]] = True
+    Lh = defaultdict(list); Uh = defaultdict(list); byfile = defaultdict(list)
+    for a, m_ in enumerate(ms_):
+        for f_ in m_:
+            byfile[f_].append(a)
+    for k_ in range(len(zn)):
+        for f_ in load[k_]:
+            for a in byfile.get(f_, ()):
+                Lh[a].append(k_)
+        for f_ in unload[k_]:
+            for a in byfile.get(f_, ()):
+                Uh[a].append(k_)
+    Ls = {a: set(v) for a, v in Lh.items()}; Us = {a: set(v) for a, v in Uh.items()}
+    Lt = {a: cKDTree(ZC[sorted(v)]) for a, v in Ls.items()}; Ut = {a: cKDTree(ZC[sorted(v)]) for a, v in Us.items()}
+    cull = {}
+    for a in range(len(rings_)):        # the record's last switch distance is where FH1 stops drawing the group; 131008 means never
+        sw_ = next((lod_of[f_] for f_ in ms_[a] if f_ in lod_of), None)
+        cull[a] = np.inf if sw_ is None or sw_[0] < 0 or sw_[2] >= 1e5 else sw_[2]
+
+    def drawn_from(a, h, r):
+        """whether FH1 draws ring a from hex h at distance r: loaded there, or listed neither way and nearer its load hexes, and not culled"""
+        if a not in Ls or r >= cull[a]:
+            return False
+        if h in Ls[a]:
+            return True
+        return h not in Us.get(a, ()) and (a not in Ut or Lt[a].query(ZC[h])[0] < Ut[a].query(ZC[h])[0])
+
+    key = np.stack([pr, hK[pc], (dK[pc] // 10).astype(np.int64)], 1)
+    uk, inv = np.unique(key, axis=0, return_inverse=True)
+    sel = np.array([drawn_from(a, h, (b + .5) * 10) for a, h, b in uk])[inv.ravel()]
     done = np.zeros(HN[0] * HN[1], bool); done[pc[sel]] = True
     # copies of one tile in separate rings, such as TERR_CLRD_FEST_AREA_09_LOD00 and _LOD02: the finest in each cell
     lk = np.array([hash(lodkey(name_[r_])) for r_ in rings_]); lv = np.array([lod(name_[r_]) for r_ in rings_])
@@ -1136,7 +1164,8 @@ def hex_selection(cs):
     lead = lv[pr[o_]][np.maximum.accumulate(np.where(first, np.arange(len(o_)), 0))]
     sel[o_[lv[pr[o_]] > lead]] = False
     # cells no hex draws ground for: the finest ground over them
-    o_ = np.flatnonzero(~done[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], pc[o_]))]
+    near = np.array([any(((int(g_) >> 3) & 1) for f_ in ms_[a] for g_ in GBITS.get(f_, ())) for a in range(len(rings_))])     # g bit 3: close-range ground
+    o_ = np.flatnonzero(~done[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], ~near[pr[o_]], pc[o_]))]
     first = np.r_[True, pc[o_][1:] != pc[o_][:-1]]; sel[o_[first]] = True
     stats['hex_cells_fallback'] = int(first.sum()); stats['hex_cells_drawn'] = int(done.sum())
     out = {r_: np.sort(pc[sel & (pr == i)]) for i, r_ in enumerate(rings_)}
@@ -1539,12 +1568,13 @@ for tier_ in range(NT):
                 continue
             T = T[ti_ == tier_]; vk_ = vkeys(p)
             tk_ = tkeys(vk_[T])
-            if len(SEEN):       # the same triangle already drawn in this tier: a copy, such as a NOLOD piece of the Uber shell. SEEN stays sorted.
+            if len(SEEN) and not HEXGROUND:       # the same triangle already drawn in this tier: a copy, such as a NOLOD piece of the Uber shell. SEEN stays sorted.
                 # Tested corner by corner, it also dropped every far triangle filling a small hole in nearer ground, whose corners its neighbours share
                 c_ = SEEN[np.minimum(np.searchsorted(SEEN, tk_), len(SEEN) - 1)] == tk_; stats['far_copies'] += int(c_.sum()); T = T[~c_]; tk_ = tk_[~c_]
             if not len(T):
                 continue
-            mine_.append(tk_)
+            if not HEXGROUND:
+                mine_.append(tk_)
             uv = box_uv(r0, s['fl'])
             si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
             vb_ = vblend_pair(no, slots, fx) if m['sd'] >= 28 else None
@@ -1557,6 +1587,13 @@ for tier_ in range(NT):
                 k_ = (np.abs(g2b(p[T].mean(1))[:, :2]) < HALF - 4).all(1); o_ = A[T[~k_]].reshape(-1, A.shape[1]); T = T[k_]
             if HEXGROUND:       # where FH1's hexes draw it, as it is: no tiers, no clipping, no water or rock rules
                 V, T = hex_split(no, A, T); V = V[T].reshape(-1, A.shape[1])      # as triangle rows: a mesh with no hex group comes back indexed
+                # copies are told after the selection, from what it kept: told before, Mountains_Area5_NOLOD_01's 129 triangles shared with
+                # UberLOD24_LOD00 went as copies of Uber pieces the selection then dropped, leaving holes in the far mountains
+                tk_ = tkeys(vkeys(V[:, :3]).reshape(-1, 3))
+                if len(SEEN):
+                    c_ = SEEN[np.minimum(np.searchsorted(SEEN, tk_), len(SEEN) - 1)] == tk_; stats['far_copies'] += int(c_.sum())
+                    V = V.reshape(-1, 3, A.shape[1])[~c_].reshape(-1, A.shape[1]); tk_ = tk_[~c_]
+                mine_.append(tk_)
             elif tier_ == 0:      # FH1 draws this from its own hexes: real close-range ground beside the near tiles, only named PATCH or MIDDIST.
                 # clip_far's road cap and its hold to the lowest nearby ground tore it open at their seams: a slit down Redstone's canyon
                 # walls, the cliff beside Clear Springs' road. Kept as it is, unless it lies wholly over near ground
