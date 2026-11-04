@@ -2,7 +2,8 @@
 beside its starter trailer (build3.py keeps the trailers). Run after build3.py: python races.py [fh1_colorado|fh1_redrock]. Needs no rebuild.
 
 Street, Nemesis and plane races have checkpoints with widths. Festival races only have GPS waypoints and a finish line, because FH1 lined
-the course with barriers, so their waypoints become checkpoints. Medal times are estimates from length and surface, not FH1's."""
+the course with barriers, so their waypoints become checkpoints. FH1 has no medal times, as its races were against AI, so they come from
+FH1's own length for each route and an average speed for its surface."""
 import json, math, re, shutil, sys
 from pathlib import Path
 import numpy as np
@@ -18,7 +19,6 @@ MIN_RADIUS, MAX_RADIUS = 6.0, 25.0
 AHEAD = 10.0                    # waypoints less than this far in front of the pole are behind the grid
 FINISH_SNAP = 40.0              # a waypoint this close to the finish line is replaced by it
 CIRCUIT = 100.0                 # a finish this close to the pole closes the loop
-WINDING = 1.2                   # road length over straight-line length between checkpoints, for medal times
 DIRT = re.compile(r'Dirt|Trail|Cross', re.I)
 GOLD_SPEED = (28.0, 20.0)       # m/s average on asphalt and on dirt
 SILVER, BRONZE = 1.15, 1.35     # times relative to gold
@@ -106,7 +106,7 @@ def info(e, folder, trigger, facing, laps, closed, times):
             'careerSetup': {'defaultStarKeys': ['bronzeTime', 'silverTime', 'goldTime'], 'showInFreeroam': True, 'skill': '(none)', 'starOutroTexts': {}, 'starRewards': {},
                             'starsActive': {'bronzeTime': True, 'silverTime': True, 'goldTime': True}},
             'customAdditionalAttributes': {}, 'date': 0,
-            'description': f"{e['kind']} on {e['track']}" + (f', {laps} laps' if closed and laps > 1 else '') + '. From Forza Horizon; medal times are estimates.',
+            'description': f"{e['kind']} on {e['track']}" + (f', {laps} laps' if closed and laps > 1 else '') + '. From Forza Horizon; FH1 had no medal times, so these are estimates.',
             'devMission': False, 'grouping': {'id': '', 'label': ''},
             'layers': [{'dir': f'/{folder}/', 'fixed': True, 'isMissionFolderDir': True, 'isMissionTypeDir': False},
                        {'dir': '/gameplay/missionTypes/timeTrial/', 'fixed': True, 'isMissionFolderDir': False, 'isMissionTypeDir': True}],
@@ -151,8 +151,7 @@ for e in events.races():
     marker = nodes.get(e['id'] + '_NODE') or (pole, facing)
     rel = f'gameplay/missions/{LVL}/timeTrial/{len(made) + 1:03d}-{e["id"].lower()}'; folder = mod / rel; folder.mkdir(parents=True)
     race = race_file(e['name'], pole, facing, gates, closed, laps)
-    pts = [p for p, _ in gates] + ([gates[0][0]] if closed else [])
-    length = (np.linalg.norm(gates[0][0] - b(pole)) + sum(np.linalg.norm(p - q) for p, q in zip(pts, pts[1:]))) * WINDING * laps
+    length = e['length'] * laps
     (folder / 'race.race.json').write_text(json.dumps(race, indent=1))
     (folder / 'info.json').write_text(json.dumps(info(e, rel, b(marker[0]), marker[1], laps, closed, medals(e, length)), indent=1))
     preview(pole, gates, folder)

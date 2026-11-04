@@ -32,9 +32,9 @@ def route(n):
 
 
 def races():
-    """every event with a route, as dicts: id (Events.HorizonEventID), name, kind (its career type), track (the route's name), route (TrackRoute number), laps"""
+    """every event with a route, as dicts: id (Events.HorizonEventID), name, kind (its career type), track (the route's name), route (TrackRoute number), laps, length (FH1's driven metres, one lap)"""
     E, T, C = strtab.read('Events.str'), strtab.read('Tracks.str'), strtab.read('CareerEventTypes.str')
     db = sqlite3.connect(gamezip.MEDIA + 'db/gamedb.slt')
-    rows = db.execute('select e.HorizonEventID, e.Name, ct.Name, t.DisplayName, t.RouteId, r.NumLaps from Events e join Races r on r.EventId = e.Id '
+    rows = db.execute('select e.HorizonEventID, e.Name, ct.Name, t.DisplayName, t.RouteId, r.NumLaps, t.Length from Events e join Races r on r.EventId = e.Id '
                       'join Tracks t on t.id = r.TrackId left join CareerEventTypes ct on ct.id = e.CareerTypeId where t.MediaName = "Colorado" order by e.HorizonEventID')
-    return [dict(id=i, name=strtab.lookup(E, n), kind=strtab.lookup(C, k), track=strtab.lookup(T, d), route=r, laps=laps) for i, n, k, d, r, laps in rows]
+    return [dict(id=i, name=strtab.lookup(E, n), kind=strtab.lookup(C, k), track=strtab.lookup(T, d), route=r, laps=laps, length=length) for i, n, k, d, r, laps, length in rows]
