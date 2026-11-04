@@ -2,7 +2,7 @@
 Instruction layouts follow Xenia's src/xenia/gpu/ucode.h. Layout of the container is in docs/formats.md.
 python xenos.py ../x/shaders_track_H_DIFF_SPEC_AO_2_LM.fxobj [shader number]
 Vertex fetches print blank, as the game patches their format, offset and stride in from the vertex declaration: the bindings say which
-usage each fetch reads. Operands of the scalar constant ops (mulsc, addsc, subsc) aren't decoded exactly."""
+usage each fetch reads. Scalar constant ops (mulsc, addsc, subsc) print their constant and temp operands."""
 import struct, sys
 
 MAGIC = (0x102A1100, 0x102A1101)        # pixel, vertex
@@ -89,7 +89,10 @@ def alu(d, vs):
     out = []
     if vmask:
         out.append(f"{VEC[vop] if vop < len(VEC) else vop} {dest(vdst, vmask)}, {', '.join(srcs[:VARGS[vop] if vop < len(VARGS) else 3])}")
-    if smask:
+    if smask and 42 <= sop <= 47:     # mulsc, addsc, subsc: a constant's first component and a temp's second, the temp packed into opcode and src3 bits
+        sw3 = bits(b, 0, 8); temp = (sop & 1) | (bits(c, 29, 1) << 1) | (sw3 & 0x3C); comp = lambda k: 'xyzw'[((sw3 >> (2 * k)) + k) & 3]
+        out.append(f"{SCA[sop]} {dest(sdst, smask)}, {'-' if bits(b, 24, 1) else ''}c{bits(c, 0, 8)}.{comp(0)}, r{temp}.{comp(1)}")
+    elif smask:
         out.append(f"{SCA[sop] if sop < len(SCA) else sop} {dest(sdst, smask)}, {srcs[2]}")
     return '   ||   '.join(out) or 'nop'
 

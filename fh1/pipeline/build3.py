@@ -4,7 +4,7 @@ import numpy as np
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 from numba import njit
 from scipy import ndimage as ni
 from scipy.sparse.csgraph import connected_components
@@ -74,13 +74,16 @@ IDX, SHADERS = pickle.load(open('../texshader.pkl', 'rb')); DRAW = np.load('../m
 
 
 def samplers():
-    """{shader name: (AO slot, lightmap slot)}, from each shader's own pixel shader: a sampler's register is its material slot (see formats.md, .fxobj shaders)"""
+    """{shader name: (AO slot, lightmap slot, window mask, modulate slot, specular slot)}, from each shader's own pixel shader: a sampler's register is its material slot
+    (see formats.md, .fxobj shaders). Window mask: ('map', slot) for an EmissiveMapSampler, ('spec', slot) for the *_emissive shaders without
+    one, which light where the specular map's green is over half"""
     out = {}
     for f_ in glob.glob('../x/shaders_track_*.fxobj'):
         ps_ = [s_ for s_ in xenos.shaders(open(f_, 'rb').read()) if s_['kind'] == 'ps']
         if ps_:
-            r_ = {n_: reg for n_, set_, reg, _, _ in ps_[0]['consts'] if set_ == 3}
-            out[Path(f_).stem[len('shaders_track_'):].lower()] = (r_.get('AOMapSampler'), r_.get('Light_MapSampler'))
+            r_ = {n_: reg for n_, set_, reg, _, _ in ps_[0]['consts'] if set_ == 3}; nm_ = Path(f_).stem[len('shaders_track_'):].lower()
+            win = ('map', r_['EmissiveMapSampler']) if 'EmissiveMapSampler' in r_ else ('spec', r_['SpecularMapSampler']) if 'emissive' in nm_ and 'SpecularMapSampler' in r_ else None
+            out[nm_] = (r_.get('AOMapSampler', r_.get('AO_Sampler')), r_.get('Light_MapSampler'), win, r_.get('Modulate_Sampler'), r_.get('SpecularMapSampler'))
     return out
 
 
@@ -224,8 +227,12 @@ MATS = {}
 GLOW = {'OBJ_CLRD_LampPost': 3, 'OBJ_CLRD_StreetLight': 3}; GLOW_NITS = 3000; GLOWING = set()
 # Object lightmaps: FH1 adds the lightmap to the light falling on a surface, so it shows times the surface colour (formats.md, .fxobj shaders).
 # Here it's an emissive map on UV1 tinted by the texture's mean colour, under instanceEmissive, lit at night as GLOW is. LM_NITS by eye: a full-white
-# texel on a mid-grey wall comes out near nightlights.py's ground pools (NITS 40). LM_LIT: share of texels above 40 of 255 for a lightmap to be used
-LM_NITS = 80; LM_LIT = .002; LITMAP = {}
+# texel on a mid-grey wall comes out near nightlights.py's ground pools (NITS 40); raised from 80 when the user found night too dark. LM_LIT: share of texels above 40 of 255 for a lightmap to be used
+LM_NITS = 120; LM_LIT = .002; LITMAP = {}
+# Lit windows: FH1's emissive building shaders add a window mask in a warm colour, c254 in H_DIFF_SPEC_REFL_EMISSIVE_AO_4_LM's pixel shader
+# (1, 0.5, 0.32), switched on per building at dusk. Here it's an emissiveMap lit at night like the lightmaps; WIN_NITS by eye. A section with
+# both a lightmap and windows gets them baked into one UV1 texture of BAKE px (bake_emissive)
+WIN_RGB = (1.0, .5, .32); WIN_NITS = 350; BAKE = 512; BAKE_NITS = max(LM_NITS, WIN_NITS); WINMASK = {}
 NM = {}; PAIR = load_(PAIR_P)       # NM: the current section's normal map for each colour texture, from section_normals
 
 
@@ -259,27 +266,39 @@ def section_normals(no, slots):
     return out
 
 
-def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None, ao=None, lm=None):
+def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None, ao=None, lm=None, win=None, emis=None, tone=1.0, spec=None):
     """glow: an emissive mask texture, lit at night through the TSStatic's instance colour (see GLOW). ao and lm: an AO map and a lightmap,
-    both on UV1 (see object_maps). A lightmap lights at night like glow, which wins if both are given"""
+    both on UV1 (see object_maps). win: a window mask on UV0 (window_mask). emis: a baked UV1 emissive (bake_emissive) holding both.
+    One emissive map per material, taken in that order: glow, emis, lm, win. All light at night. spec: a specular map, as the roughness (rough_texture)"""
     t = TX.get(tid); g_ = TX.get(glow) if glow is not None else None; o_ = TX.get(ao) if ao is not None else None
-    l_ = TX.get(lm) if lm is not None and g_ is None else None
+    e_ = emis if g_ is None else None; l_ = TX.get(lm) if lm is not None and g_ is None and e_ is None else None
+    w_ = win if g_ is None and e_ is None and l_ is None else None
     if t is None:
         return None
     use_a = (alpha or translucent) and t['cut'] > 0.002; n_ = NM.get(tid)
     key = (f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '') + (f'_e{glow:X}' if g_ else '')
-           + (f'_o{ao:X}' if o_ else '') + (f'_l{lm:X}' if l_ else ''))
+           + (f'_o{ao:X}' if o_ else '') + (f'_l{lm:X}' if l_ else '') + (f'_w{w_[0][0]}{w_[1]:X}' if w_ else '') + (f"_{Path(e_).name.split('.')[0]}" if e_ else '')
+           + (f'_k{round(tone * 100)}' if tone < 1 else '') + (f'_s{spec:X}' if spec is not None else ''))
     if key not in MATS:
         st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
+        r_ = rough_texture(spec) if spec is not None else None
+        if r_:
+            st['roughnessMap'] = r_; del st['roughnessFactor']
+        if tone < 1:        # road_tone
+            st['baseColorFactor'] = [tone, tone, tone, 1]
         if n_:
             st['normalMap'] = TX.normal(n_)
         if o_:
             st.update({'ambientOcclusionMap': f"{rel}/art/textures/{o_['name']}.color.dds", 'ambientOcclusionMapUseUV': 1})
         if g_:
             st.update({'emissiveMap': f"{rel}/art/textures/{g_['name']}.color.dds", 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': GLOW_NITS, 'instanceEmissive': True})
+        elif e_:
+            st.update({'emissiveMap': e_, 'emissiveMapUseUV': 1, 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': BAKE_NITS, 'instanceEmissive': True})
         elif l_:
             st.update({'emissiveMap': f"{rel}/art/textures/{l_['name']}.color.dds", 'emissiveMapUseUV': 1, 'emissiveFactor': [round(float(v_) / 255, 3) for v_ in t['rgb']],
                        'emissiveIntensityNits': LM_NITS, 'instanceEmissive': True})
+        elif w_:
+            st.update({'emissiveMap': window_texture(*w_), 'emissiveFactor': list(WIN_RGB), 'emissiveIntensityNits': WIN_NITS, 'instanceEmissive': True})
         m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng'}
         if use_a:
             st['opacityMap'] = f"{rel}/art/textures/{t['name']}_o.data.dds"
@@ -300,9 +319,10 @@ def write_dae(path, groups, origin):
     return write_lod(path, [((g[0], (0,)),) + tuple(g[1:]) for g in groups], origin, (1,), None)
 
 
-def blend_material(tids, masktid, ground):
-    """FH1 h_blnd: layer 0 plus layers masked by the red and green channels, on the second UV set"""
-    key = 'fh1_b_' + '_'.join(f'{t:X}' for t in tids) + f'_m{masktid:X}' + (f'_{ground}' if ground else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+def blend_material(tids, masktid, ground, ao=None):
+    """FH1 h_blnd: layer 0 plus layers masked by the red and green channels, on the second UV set. ao: the ground's AO map, which FH1 reads
+    where it reads the mask, on every layer"""
+    key = 'fh1_b_' + '_'.join(f'{t:X}' for t in tids) + f'_m{masktid:X}' + (f'_{ground}' if ground else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM) + (f'_o{ao:X}' if ao is not None and TX.get(ao) else '')
     if key in MATS:
         return key
     info = [TX.get(t) for t in tids]; m_ = TX.get(masktid)
@@ -319,6 +339,9 @@ def blend_material(tids, masktid, ground):
     for t, s_ in zip(tids, st):
         if t in NM:
             s_['normalMap'] = TX.normal(NM[t])
+    if ao is not None and TX.get(ao):
+        for s_ in st:
+            s_.update({'ambientOcclusionMap': f"{rel}/art/textures/{TX.get(ao)['name']}.color.dds", 'ambientOcclusionMapUseUV': 1})
     while len(st) < 4:
         st.append({})
     m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng', 'translucentBlendOp': 'None'}
@@ -361,15 +384,62 @@ def grey(tid):
     return f'{rel}/art/textures/{p_.name}'
 
 
-def road_material(tids, noise, ground):
-    """h_road diff2 and diff3: layer 0, then slot 1 and slot 5 layers whose opacity is ramp(UV1 u) and ramp(UV1 v) times the noise on UV0"""
-    key = 'fh1_r_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + f'_{ground}' + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+def road_modulate(no, slots, fx, vw, T):
+    """(modulate map, the section's mean weight) for a *_modulate road shader, or None. FH1 multiplies the road colour by
+    lerp(1, modulate, z), z the colour vertex's byte 3: as a BeamNG layer, black at opacity z (1 - modulate), which road_material adds"""
+    mo_ = SAMP.get(fx, (None,) * 5)[3]; ids = MT[no][0]
+    if vw is None or 'modulate' not in fx or mo_ is None or mo_ >= len(slots) or slots[mo_] >= len(ids):
+        return None
+    t_ = IDX[ids[slots[mo_]]][0]; v = np.unique(T); v = v[v < len(vw)]
+    return (t_, round(float(vw[v, 3].mean()) * 20) / 20) if TX.get(t_) and len(v) else None
+
+
+def road_tone(no, slots, fx, m, s, vw, T, mod_layer=False):
+    """How much FH1's road shader darkens a section's colour, averaged over its vertices, as a BeamNG material can't read vertex bytes.
+    The colour vertex (the last 4 bytes) reads x, y, z, w = bytes 1, 2, 3, 0: the colour is times w squared, times lerp(1, modulate map, z)
+    for *_modulate shaders, times 0.05 + 0.95 AO for *_ao ones, the AO map read at TEXCOORD2 (bytes 24-27, the same UV box), which also
+    dims the sun on roads (formats.md, .fxobj shaders). Rounded to 0.05, so sections share materials. 1 with no vertex colour.
+    mod_layer: the modulate map is drawn per pixel by road_modulate's layer, so it stays out of the average"""
+    if vw is None:
+        return 1.0
+    v = np.unique(T); v = v[v < len(vw)]; f = vw[v, 0] ** 2; a_, _, _, mo_, _ = SAMP.get(fx, (None,) * 5); ids = MT[no][0]
+    if 'modulate' in fx and not mod_layer and mo_ is not None and mo_ < len(slots) and slots[mo_] < len(ids):
+        r_ = tex.load(IDX[ids[slots[mo_]]][0])
+        if r_ and r_[0] is not None:
+            f = f * (1 + (r_[0][..., :3].mean() / 255 - 1) * vw[v, 3])
+    if '_ao' in fx and a_ is not None and a_ < len(slots) and slots[a_] < len(ids) and m['sd'] >= 28:
+        r_ = tex.load(IDX[ids[slots[a_]]][0])
+        if r_ and r_[0] is not None:
+            A = r_[0][..., :3].mean(2) / 255; h_, w_ = A.shape; a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
+            u2 = box_uv(np.frombuffer(a[v, 24:28].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535, s['fl'])
+            f = f * (.05 + .95 * A[np.clip((u2[:, 1] * h_).astype(int), 0, h_ - 1), np.clip((u2[:, 0] * w_).astype(int), 0, w_ - 1)])
+    return round(float(np.clip(f.mean(), .05, 1)) * 20) / 20
+
+
+def mod_opacity(tid):
+    """1 - a modulate map, as the opacity of road_material's black layer: q<id>.data.dds"""
+    p_ = TX.d / f'q{tid:X}.data.dds'
+    if not p_.exists():
+        cooked(p_, (255 - TX.get(tid)['src'][..., :3].mean(2)).astype('u1'), limit=TEXMAX)
+    return f'{rel}/art/textures/{p_.name}'
+
+
+def road_material(tids, noise, ground, tone=1.0, mod=None):
+    """h_road diff2 and diff3: layer 0, then slot 1 and slot 5 layers whose opacity is ramp(UV1 u) and ramp(UV1 v) times the noise on UV0.
+    tone: road_tone, as every layer's baseColorFactor. mod: road_modulate's (map, weight), as a last black layer at opacity weight x
+    (1 - map) on UV0, which multiplies what's under it by lerp(1, map, weight) per pixel. FH1 reads it at UV1 times a per-material scale
+    (c360_2) that isn't decoded; UV0 runs along the road too"""
+    key = ('fh1_r_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + f'_{ground}' + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+           + (f'_k{round(tone * 100)}' if tone < 1 else '') + (f'_q{mod[0]:X}_{round(mod[1] * 100)}' if mod and mod[1] > 0 else ''))
     if key in MATS:
         return key
     info = [TX.get(t) for t in tids]
     if any(i is None for i in info):
         return None
     st = [{'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0} for i_ in info]
+    if tone < 1:
+        for s_ in st:
+            s_['baseColorFactor'] = [tone, tone, tone, 1]
     nz = grey(noise) if noise else None
     for k_, s_ in enumerate(st[1:]):
         s_.update({'opacityMap': ramp(k_), 'opacityMapUseUV': 1})
@@ -378,9 +448,12 @@ def road_material(tids, noise, ground):
     for t, s_ in zip(tids, st):
         if t in NM:
             s_['normalMap'] = TX.normal(NM[t])
+    if mod and mod[1] > 0 and len(st) < 4:
+        st.append({'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': mod_opacity(mod[0]), 'opacityFactor': mod[1]})
+    n_ = len(st)
     while len(st) < 4:
         st.append({})
-    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng',
+    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': n_, 'materialTag0': 'beamng',
                  'translucentBlendOp': 'None', 'groundType': ground}
     return key
 
@@ -444,16 +517,20 @@ def ramp_product(gain=RAMP_GAIN):
     return f'{rel}/art/textures/{p_.name}'
 
 
-def skirt_blend_material(base, tids, noise, nbase):
+def skirt_blend_material(base, tids, noise, nbase, tone=1.0):
     """a skirt over the road section it shares vertices with, as one opaque material: the road's own texture, then the skirt's layers faded
     in by byte 3 (UV1 u), the second also by byte 1 (UV1 v). Both sections use the same UV box, so the road layer lines up with the road"""
-    key = f'fh1_s_{base:X}_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + (f'_n{nbase:X}' if nbase else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+    key = (f'fh1_s_{base:X}_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + (f'_n{nbase:X}' if nbase else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+           + (f'_k{round(tone * 100)}' if tone < 1 else ''))
     if key in MATS:
         return key
     info = [TX.get(t) for t in [base] + tids]
     if any(i is None for i in info):
         return None
     st = [{'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0} for i_ in info]
+    if tone < 1:        # road_tone of the skirt section
+        for s_ in st:
+            s_['baseColorFactor'] = [tone, tone, tone, 1]
     if nbase:
         st[0]['normalMap'] = TX.normal(nbase)
     for t, s_ in zip(tids, st[1:]):
@@ -535,19 +612,102 @@ def lit_map(tid):
 
 
 def object_maps(no, slots, fx, key=None):
-    """(AO map, lightmap) texture ids of an object material, at the slots its shader samples them from. A lightmap slot of 0xFFFFFFFF
+    """(AO map, lightmap, window mask) of an object material, at the slots its shader samples them from. A lightmap slot of 0xFFFFFFFF
     takes the placement's own lightmap: key, the draw table's s[1] for that placement. 'draw' when that's wanted but no key is given.
-    Lightmaps without light are left out"""
-    a_, l_ = SAMP.get(fx, (None, None)); ids = MT[no][0]; ao = lm = None
-    if a_ is not None and a_ < len(slots) and slots[a_] < len(ids):
-        t_ = IDX[ids[slots[a_]]][0]
-        ao = t_ if tex.bix(t_) and tex.bix(t_)['fmt'] != 0x71 else None
+    Lightmaps without light are left out. The window mask is (kind, texture id), see samplers and window_mask"""
+    a_, l_, w_ = SAMP.get(fx, (None,) * 5)[:3]; ids = MT[no][0]; ao = lm = win = None
+    if w_ and w_[1] < len(slots) and slots[w_[1]] < len(ids):
+        t_ = IDX[ids[slots[w_[1]]]][0]
+        win = (w_[0], t_) if tex.bix(t_) and tex.bix(t_)['fmt'] != 0x71 and window_mask(w_[0], t_) is not None else None
+    ao = ao_map(no, slots, fx)
     if l_ is not None and l_ < len(slots):
         if slots[l_] == 0xFFFFFFFF:
             lm = 'draw' if key is None else (IDX[key][0] if key in IDX and lit_map(IDX[key][0]) else None)
         elif slots[l_] < len(ids) and lit_map(IDX[ids[slots[l_]]][0]):
             lm = IDX[ids[slots[l_]]][0]
-    return ao, lm
+    return ao, lm, win
+
+
+def slot_map(no, slots, k):
+    """the colour (not normal) texture at material slot k, or None"""
+    ids = MT[no][0]
+    if k is not None and k < len(slots) and slots[k] < len(ids):
+        t_ = IDX[ids[slots[k]]][0]
+        return t_ if tex.bix(t_) and tex.bix(t_)['fmt'] != 0x71 else None
+    return None
+
+
+def ao_map(no, slots, fx):
+    """the AO map an object or ground shader samples (AOMapSampler, or AO_Sampler on ground and roads), at UV1. Ground reads it where
+    it reads its splat mask, which blend materials already put on UV1"""
+    return slot_map(no, slots, SAMP.get(fx, (None,) * 5)[0])
+
+
+def spec_map(no, slots, fx):
+    """the specular map an object shader samples (SpecularMapSampler), for rough_texture"""
+    return slot_map(no, slots, SAMP.get(fx, (None,) * 5)[4])
+
+
+def rough_texture(tid):
+    """FH1's specular map as a BeamNG roughness map: shiny is smooth, 0.95 - 0.8 x its brightness, 0.15 to 0.95. FH1 uses it as specular
+    strength with a fixed power, so the scale is by eye: siding (spec 0.1 to 0.25) comes out 0.75 to 0.87, glass (0.8) 0.31"""
+    p_ = TX.d / f'r{tid:X}.data.dds'
+    if not p_.exists():
+        r_ = tex.load(tid)
+        if not r_ or r_[0] is None:
+            return None
+        cooked(p_, (np.clip(.95 - .8 * r_[0][..., :3].mean(2) / 255, .15, .95) * 255).astype('u1'), limit=TEXMAX)
+    return f'{rel}/art/textures/{p_.name}'
+
+
+def window_mask(kind, tid):
+    """A window mask as floats 0-1, or None when nothing in it glows. 'spec': FH1's *_emissive building shaders light where the specular
+    map's green is over half, (g - 0.5) x 2: glass with curtains drawn in, against siding under 0.3. 'map': an emissive map as it is"""
+    k_ = (kind, tid)
+    if k_ not in WINMASK:
+        r_ = tex.load(tid); m_ = None
+        if r_ and r_[0] is not None:
+            a_ = r_[0].astype('f4') / 255
+            m_ = np.clip(a_[..., 1] * 2 - 1, 0, 1) if kind == 'spec' else a_[..., :3].max(2)
+            m_ = m_ if (m_ > .1).mean() > .002 else None
+        WINMASK[k_] = m_
+    return WINMASK[k_]
+
+
+def window_texture(kind, tid):
+    """the mask as a texture for an emissiveMap on UV0: w<id>.color.dds"""
+    name = f'w{kind[0]}{tid:X}'; p_ = level / 'art' / 'textures' / f'{name}.color.dds'
+    if not p_.exists():
+        m_ = (window_mask(kind, tid) * 255).astype('u1'); dds.save(p_, np.dstack([m_, m_, m_]))
+    return f'{rel}/art/textures/{name}.color.dds'
+
+
+def bake_emissive(lm, rgb, win, uv0, uv1, T):
+    """One UV1 emissive for a section with both a lightmap and windows, as a material has one emissive map: the lightmap times the
+    texture's mean colour (rgb) at LM_NITS, plus the window mask drawn into the section's UV1 charts, sampled at each texel's UV0
+    (tiling), in WIN_RGB at WIN_NITS, both as shares of BAKE_NITS. Named by what goes in, so placements that share them share the texture"""
+    h_ = hashlib.md5(np.ascontiguousarray(uv1[np.unique(T)]).tobytes() + np.ascontiguousarray(T).tobytes()).hexdigest()[:10]
+    name = f'b{lm:X}_{win[0][0]}{win[1]:X}_{h_}'; p_ = level / 'art' / 'textures' / f'{name}.color.dds'
+    if not p_.exists():
+        L_ = tex.load(lm)[0][..., :3].astype('f4') / 255; S = BAKE
+        out = (np.asarray(Image.fromarray((L_ * 255).astype('u1')).resize((S, S), Image.BICUBIC)).astype('f4') / 255) ** 2.2 * (np.asarray(rgb, 'f4') / 255)
+        M_ = window_mask(*win); mh, mw = M_.shape
+        P1 = uv1[T] * S; P0 = uv0[T]
+        # which triangle covers each texel, drawn by PIL as index + 1 (outlines too, so charts bleed a texel), then UV0 there from barycentrics
+        ix = Image.new('I', (S, S)); d_ = ImageDraw.Draw(ix)
+        for i_, q1 in enumerate(P1):
+            d_.polygon([tuple(v) for v in q1], fill=i_ + 1, outline=i_ + 1)
+        ix = np.asarray(ix); ys, xs = np.nonzero(ix); k_ = ix[ys, xs] - 1; q1 = P1[k_]; q0 = P0[k_]
+        px, py = xs + .5, ys + .5
+        den = (q1[:, 1, 1] - q1[:, 2, 1]) * (q1[:, 0, 0] - q1[:, 2, 0]) + (q1[:, 2, 0] - q1[:, 1, 0]) * (q1[:, 0, 1] - q1[:, 2, 1])
+        den = np.where(np.abs(den) < 1e-9, 1e-9, den)
+        a = ((q1[:, 1, 1] - q1[:, 2, 1]) * (px - q1[:, 2, 0]) + (q1[:, 2, 0] - q1[:, 1, 0]) * (py - q1[:, 2, 1])) / den
+        b = ((q1[:, 2, 1] - q1[:, 0, 1]) * (px - q1[:, 2, 0]) + (q1[:, 0, 0] - q1[:, 2, 0]) * (py - q1[:, 2, 1])) / den
+        a = np.clip(a, 0, 1); b = np.clip(b, 0, 1 - a); u0 = a[:, None] * q0[:, 0] + b[:, None] * q0[:, 1] + (1 - a - b)[:, None] * q0[:, 2]
+        add_ = np.zeros((S, S), 'f4'); add_[ys, xs] = M_[((u0[:, 1] % 1) * mh).astype(int) % mh, ((u0[:, 0] % 1) * mw).astype(int) % mw]
+        out = (out * LM_NITS + add_[..., None] * np.asarray(WIN_RGB, 'f4') * WIN_NITS) / BAKE_NITS
+        dds.save(p_, (np.clip(out, 0, 1) ** (1 / 2.2) * 255).astype('u1'))
+    return f'{rel}/art/textures/{name}.color.dds'
 
 
 def box_uv(t, fl):
@@ -884,7 +1044,8 @@ for f, cs in byfile.items():
             # 300k of the 327k triangles drawn twice up close were these skirts, opaque on the road and terrain under them. Over their own
             # road they're one opaque blend of road and verge, 1 cm up so road decals stay above. Without one, a translucent overlay
             lay_ = [x for x in (ts[0], slot_at(no, slots, 1) if 'diff2' in fx or 'diff3' in fx else None) if x] if skirt else []
-            sk_ = skirt_blend_material(SR[si_][0], lay_, slot_at(no, slots, 2) if 'noise' in fx else None, SR[si_][1]) if skirt and si_ in SR else None
+            tone_ = road_tone(no, slots, fx, m, s, vw, T) if skirt else 1.0
+            sk_ = skirt_blend_material(SR[si_][0], lay_, slot_at(no, slots, 2) if 'noise' in fx else None, SR[si_][1], tone_) if skirt and si_ in SR else None
             if skirt and (sk_ or skirt_material(ts[0])):
                 if near_:
                     raster(Cov if isterr else Road, g[T])
@@ -911,12 +1072,13 @@ for f, cs in byfile.items():
                         mask = TX.get(IDX[ids[slots[2]]][0])
                 gnd = role_ground(s['name']); vb_ = vblend_pair(no, slots, fx) if vw is not None else None
                 if mask is not None and len(layers) > 1:
-                    mname = blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd)
+                    mname = blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd, ao_map(no, slots, fx))
                     add('col', mname, p, nr, uv, T, uv1=(r1 + 1) / 2); surf[f'terrain_blend:{gnd}'] += len(T)
                 elif vb_ and road_material(vb_, None, gnd):
                     add('col', road_material(vb_, None, gnd), p, nr, uv, T, uv1=ramp_uv(vw[:, [1, 2]])); surf[f'terrain_vblend:{gnd}'] += len(T)
                 else:
-                    add('col', material(layers[0] if layers else ts[0], gnd), p, nr, uv, T); surf[f'terrain:{gnd}'] += len(T)
+                    ao_ = ao_map(no, slots, fx) if r1 is not None else None      # on UV1 where FH1 reads it, as the blend masks
+                    add('col', material(layers[0] if layers else ts[0], gnd, ao=ao_), p, nr, uv, T, uv1=(r1 + 1) / 2 if ao_ else None); surf[f'terrain:{gnd}'] += len(T)
                 continue
             tid = ts[0]; info = TX.get(tid)
             if info is None:
@@ -940,29 +1102,35 @@ for f, cs in byfile.items():
                 if near_:
                     raster(Road, g[T])
                 lay = [slot_at(no, slots, 1) if 'diff2' in fx or 'diff3' in fx else None, slot_at(no, slots, 5) if 'diff3' in fx else None]
-                rm_ = road_material([tid] + [x for x in lay if x], slot_at(no, slots, 2) if 'noise' in fx else None, gnd) if vw is not None and any(lay) else None
+                mod_ = road_modulate(no, slots, fx, vw, T); surf['road_modulated'] += len(T) if mod_ else 0
+                tone = road_tone(no, slots, fx, m, s, vw, T, mod_layer=bool(mod_)); surf['road_tone_sum'] += tone * len(T)
+                rm_ = (road_material([tid] + [x for x in lay if x], slot_at(no, slots, 2) if 'noise' in fx else None, gnd, tone, mod_)
+                       if vw is not None and (any(lay) or mod_) else None)
                 if rm_:
                     w_ = vw[:, [1, 2]] if lay[0] else vw[:, [2, 1]]      # the first extra layer reads UV1 u
                     add('col', rm_, p, nr, uv, T, uv1=ramp_uv(w_))
                     surf['road_layers'] += len(T)
                 else:
-                    add('col', material(tid, gnd), p, nr, uv, T)
+                    add('col', material(tid, gnd, tone=tone), p, nr, uv, T)
                 surf[f'road:{gnd}'] += len(T)
             else:       # objects: AO map and lightmap on UV1 (object_maps). A lit lightmap puts the section in a 'lit' cell, lit at night
                 u1 = uv1_box(m, s['fl']) if 'vblnd' not in fx else None
-                ao, lm = object_maps(no, slots, fx, WORLDLM.get(no)) if u1 is not None else (None, None)
+                ao, lm, win = object_maps(no, slots, fx, WORLDLM.get(no)) if u1 is not None else (None, None, None)
                 lm = None if lm == 'draw' else lm
+                emis = bake_emissive(lm, info['rgb'], win, uv, u1, T) if lm and win else None; sp_ = spec_map(no, slots, fx)
                 if re.search(r'cable|tether', n, re.I):
-                    add('vis', material(tid, alpha=opac, ao=ao), p, nr, uv, T, uv1=u1); surf['cable'] += len(T)
+                    add('vis', material(tid, alpha=opac, ao=ao, spec=sp_), p, nr, uv, T, uv1=u1); surf['cable'] += len(T)
                 elif re.search(r'armco|barrier|fence|rail', n, re.I):
                     lv_ = LV; LV = tuple(FARCUT if x == 2 else x for x in LV)      # barriers stop at 800 m, and their copies add up
-                    add('bar', material(tid, 'METAL', alpha=opac, ao=ao), p, nr, uv, T, uv1=u1); surf['barrier'] += len(T); LV = lv_
+                    add('bar', material(tid, 'METAL', alpha=opac, ao=ao, spec=sp_), p, nr, uv, T, uv1=u1); surf['barrier'] += len(T); LV = lv_
                 elif re.search(r'rock|wall|cliff', n, re.I) or 'vblnd' in fx:
-                    add('col', material(tid, 'ROCK', alpha=opac, ao=ao), p, nr, uv, T, uv1=u1); surf['rock'] += len(T)
+                    add('col', material(tid, 'ROCK', alpha=opac, ao=ao, spec=sp_), p, nr, uv, T, uv1=u1); surf['rock'] += len(T)
                     if near_:
                         raster(Rock, g[T])
                 else:
-                    add('lit' if lm else 'pro', material(tid, alpha=opac, ao=ao, lm=lm), p, nr, uv, T, uv1=u1); surf['prop_lit' if lm else 'prop'] += len(T)
+                    lit_ = bool(lm or win)
+                    add('lit' if lit_ else 'pro', material(tid, alpha=opac, ao=ao, lm=lm, win=win, emis=emis, spec=sp_), p, nr, uv, T, uv1=u1)
+                    surf['prop_lit' if lit_ else 'prop'] += len(T); surf['windows'] += len(T) if win else 0
                 surf['ao'] += len(T) if ao else 0
 LV = (0, 1, 2); FIX = None; NM = {}
 print('dropped sections by mesh', DROPPED.most_common(24))
@@ -1244,11 +1412,12 @@ for tier_ in range(NT):
                 if mt_ and mt_['fmt'] == 0x52:
                     mask = TX.get(IDX[ids[slots[2]]][0])
             if mask is not None and len(layers) > 1:
-                add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd), p_, n_, uv, T, uv1=u1)
+                add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd, ao_map(no, slots, fx)), p_, n_, uv, T, uv1=u1)
             elif vb_ and road_material(vb_, None, gnd):
                 add('col', road_material(vb_, None, gnd), p_, n_, uv, T, uv1=u1); surf[f'far_vblend:{gnd}'] += len(T)
             else:
-                add('col', material(layers[0] if layers else ts[0], gnd), p_, n_, uv, T)
+                ao_ = ao_map(no, slots, fx) if r1 is not None and not vb_ else None      # u1 is the blend mask's UV1 here
+                add('col', material(layers[0] if layers else ts[0], gnd, ao=ao_), p_, n_, uv, T, uv1=u1 if ao_ else None)
             surf[f'far{tier_}'] += len(T)
             raster(new_, g_[T]); raster(Cov, g_[T])
         if mine_:       # after the whole mesh, as its own sections share vertices along their edges
@@ -1499,11 +1668,14 @@ def model_groups(no):
             glow = IDX[ids[sl_[gs_]]][0] if gs_ is not None and gs_ < len(sl_) and sl_[gs_] < len(ids) else None
             fx_ = SHADERS[MT[no][1][M[mi][0]]] if mi < len(M) and M[mi][0] < len(MT[no][1]) else ''
             u1 = None if card or cloth else uv1_box(m, s['fl'])
-            ao, lm = object_maps(no, sl_, fx_) if u1 is not None else (None, None)
-            mt = material(ts[0], alpha=True, two=True, glow=glow, ao=ao, lm=None if lm == 'draw' else lm)
+            ao, lm, win = object_maps(no, sl_, fx_) if u1 is not None else (None, None, None)
+            lm_ = None if lm == 'draw' else lm; info_ = TX.get(ts[0])
+            emis = bake_emissive(lm_, info_['rgb'], win, box_uv(r0, s['fl']), u1, T) if lm_ and win and info_ else None
+            sp_ = spec_map(no, sl_, fx_) if u1 is not None else None
+            mt = material(ts[0], alpha=True, two=True, glow=glow, ao=ao, lm=lm_, win=win, emis=emis, spec=sp_)
             if mt is None:
                 continue
-            if glow is not None or lm not in (None, 'draw'):      # stays a TSStatic, which core_environment lights at night
+            if glow is not None or lm_ or win:      # stays a TSStatic, which core_environment lights at night
                 GLOWING.add(no)
             if card or cloth:
                 uv = box_uv(r0, s['fl'])
@@ -1514,7 +1686,7 @@ def model_groups(no):
             idx, inv = np.unique(T, return_inverse=True)
             # the last entry lets a placement remake the material with its own lightmap (see the free-roam objects)
             groups.append((mt, pb[idx], nb[idx], uv[idx], inv.astype(np.int64).ravel(), (uv if u1 is None else u1)[idx],
-                           dict(tid=ts[0], glow=glow, ao=ao, nm=NM.get(ts[0]), draw=lm == 'draw')))
+                           dict(tid=ts[0], glow=glow, ao=ao, win=win, sp=sp_, nm=NM.get(ts[0]), draw=lm == 'draw')))
             lo = np.minimum(lo, pb.min(0)); hi = np.maximum(hi, pb.max(0))
     return groups, lo, hi, label
 
@@ -1715,8 +1887,9 @@ for no, it in list(defs.items()):
         for lvl_, top_, g in [(((0,) if it['low'] else (0, 1, far_)), True, g) for g in it['groups']] + [((1, far_), False, g) for g in it['low']]:
             mat, pb, nb, uv, t, uv1, spec = g
             if lm_ is not None and spec['draw'] and top_:       # the lightmap is laid out for this mesh's UV1, not its LOD1's
-                nm_keep = NM; NM = {spec['tid']: spec['nm']} if spec['nm'] else {}
-                mat = material(spec['tid'], alpha=True, two=True, glow=spec['glow'], ao=spec['ao'], lm=lm_) or mat; NM = nm_keep
+                nm_keep = NM; NM = {spec['tid']: spec['nm']} if spec['nm'] else {}; info_ = TX.get(spec['tid'])
+                emis = bake_emissive(lm_, info_['rgb'], spec['win'], uv, uv1, t.reshape(-1, 3)) if spec['win'] and info_ else None
+                mat = material(spec['tid'], alpha=True, two=True, glow=spec['glow'], ao=spec['ao'], lm=lm_, win=spec['win'], emis=emis, spec=spec['sp']) or mat; NM = nm_keep
             P = pb @ Rm.T + pos; N_ = nb @ Rm.T; N_ = N_ / np.maximum(np.linalg.norm(N_, axis=1, keepdims=True), 1e-9)
             c = P.mean(0)
             if (np.abs(c[:2]) >= HALF - 4).any():

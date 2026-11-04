@@ -43,7 +43,12 @@ SCENE = {'theLevelInfo': {'globalEnviromentMap': 'fh1_sky_cubemap', 'fogDensity'
          # Tuned against in-game shots. ScatterSky's own light is already blue in shade and warm in sun, so these stay near stock.
          # fogScale is FH1's Redrock fog template. skyBrightness and the flare are stock
          'sunsky': {'sunScale': [1, .82, .55, 1], 'ambientScale': [1, .89, .78, 1], 'fogScale': [.84, .94, 1, 1], 'skyBrightness': 220,
-                    'flareType': 'BNG_Sunflare_3', 'flareScale': 5}}
+                    'flareType': 'BNG_Sunflare_3', 'flareScale': 5,
+                    # FH1's night keeps a light on: its sun never sets, and at night it's SunColor (0.094, 0.136, 0.268) at SunColorMult
+                    # 0.15, with a sky ambient of HLTop/HLBottom (0.011, 0.016, 0.018) between them. Stock BeamNG levels leave both black,
+                    # and the user found night far too dark between lamps (2026-11-04). These are FH1's hues: the ambient at 0.15 and the
+                    # moon light's blue lifted to 0.56, 0.82, 1, both by eye. Tunable live in the World Editor: ScatterSky's Night Color and Moon Light Color
+                    'nightColor': [.61 * .15, .89 * .15, 1 * .15, 1], 'moonLightColor': [.35 * 1.6, .51 * 1.6, 1, 1]}}
 # FH1's look by area: PostProcessingZones_Safe.xml gives each zone a fog and a bloom template (dynamicpost.zip) and a fade time in seconds.
 # Its colour grade also changes by zone, which BeamNG 0.40 can't do at runtime. Fog density is relative to Redrock's 2.35, as the level's
 # fog was tuned at Red Rock. fh1Extras.lua eases towards the zone under the camera

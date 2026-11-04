@@ -25,6 +25,10 @@ LM_SLOT = 7; LM = re.compile(r'_lm(\d|_|$)')
 LIT = 8; FIT = .6
 # Chosen by eye: how bright a full-white lightmap texel glows (20 looked a little dim in-game), how far above the ground the overlay sits, and how far it draws
 NITS = 40; LIFT = .04; FAR = 600.0; PX = 1250.0
+# The overlays doubled the SpotLights' light on the same ground: tested live (2026-11-04), they washed the streets to flat white and
+# pulled the exposure down so facades went black, and from above the lamps alone carry the warm street glow. The pools still place the
+# lamps. FH1_NIGHT_OVERLAYS=1 writes them again
+OVERLAYS = os.environ.get('FH1_NIGHT_OVERLAYS', '0') != '0'
 # Pool centres: local maxima at least POOL_GAP metres apart and brighter than POOL_MIN of 255, used to place and colour the lamps' lights
 POOL_GAP = 6.0; POOL_MIN = 40
 # Lights, so cars, walls and props are lit too. FH1's lamp props carry one at the head: LAMPS gives each shape's head in its own axes, measured
@@ -40,7 +44,10 @@ MATCH = 10.0; POOL_HEIGHT = 6.0
 # Range and outer angle grow with the head's height, from the 4.2 m street light to the 7.9 m lamp post. Only lamp-post heads cast shadows:
 # pool-only lights may be in the open, where a shadow from nothing would look wrong
 BRIGHTNESS = 12000.0 / (20000 * np.pi); PEAK = .72; LUMENS_PER_BRIGHTNESS = 5000.0
-RANGE = (45.0, 70.0); OUTER = (150.0, 160.0); INNER = 25.0; HEIGHTS = (4.2, 7.9); DOWN = [1, 0, 0, 0, 0, -1, 0, 1, 0]
+# The ground under a lamp already has the overlay's light, so the lamp doubled it, and up close the tonemapper washed both to white.
+# By eye: 0.5 while the overlays doubled the ground's light; 1.0 with them gone, tested live with 1.5 times the range
+LAMP_GAIN = 1.0
+RANGE = (67.5, 105.0); OUTER = (150.0, 160.0); INNER = 25.0; HEIGHTS = (4.2, 7.9); DOWN = [1, 0, 0, 0, 0, -1, 0, 1, 0]
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX, SH = pickle.load(open('../texshader.pkl', 'rb'))
 
 
@@ -73,7 +80,10 @@ def pools(lum, img, lo, span):
     out = []
     for r, c in np.argwhere((sm == ni.maximum_filter(sm, win)) & (sm > POOL_MIN)):
         v = sm[r, c]; lab, _ = ni.label(sm > v / 2); area = lab == lab[r, c]
-        rgb = (img[area].astype('f4') / 255) ** 2.2
+        # colour from the pool's falloff, 10 to 50% of its peak: FH1's cores are near white, and its warmth is in the edges, which
+        # are what the overlay shows from afar. Lamps coloured by the core went white up close (user, 2026-11-04)
+        lab2, _ = ni.label(sm > v / 10); ring = (lab2 == lab2[r, c]) & ~area
+        rgb = (img[ring if ring.sum() > 3 else area].astype('f4') / 255) ** 2.2
         fx = lo[0] + (c + .5) / w * span[0]; fz = lo[1] + (r + .5) / h * span[1]
         out.append((fx - CX, -(fz - CZ), float(v) / 255, rgb.mean(0) / max(rgb.mean(0).max(), 1e-3), float(np.sqrt(area.sum() / np.pi)) * texel))
     return out
@@ -155,6 +165,8 @@ for tid, parts in sorted(geo.items()):
     near = pools(lum, img, lo, span)
     if near:
         _, j = cKDTree(P_[:, :2]).query([q[:2] for q in near]); found += [(x, y, float(P_[k, 2]), *rest) for (x, y, *rest), k in zip(near, j)]
+    if not OVERLAYS:
+        continue
     P_ = P_ + N_ * LIFT; ctr = (P_.min(0) + P_.max(0)) / 2; R_ = float(np.linalg.norm(P_.max(0) - P_.min(0)) / 2)
     name = f'lm{tid:X}'; mat = f'fh1_night_{name}'
     dds.save(out / f'{name}.color.dds', img)
@@ -205,7 +217,7 @@ for q, u in zip(pool, used):
     x, y, z, peak, rgb, rad = q; lights.append((np.array([x, y, z + POOL_HEIGHT]), peak, rgb, POOL_HEIGHT, False)); stats['pool_lights'] += 1
 lamp_rows = []
 for i, (p, peak, rgb, rise, shadows) in enumerate(lights):
-    b = BRIGHTNESS * float(np.clip(peak / PEAK, .4, 1.5)); t = float(np.clip((rise - HEIGHTS[0]) / (HEIGHTS[1] - HEIGHTS[0]), 0, 1))
+    b = BRIGHTNESS * LAMP_GAIN * float(np.clip(peak / PEAK, .4, 1.5)); t = float(np.clip((rise - HEIGHTS[0]) / (HEIGHTS[1] - HEIGHTS[0]), 0, 1))
     lamp_rows.append({'class': 'SpotLight', 'name': f'fh1_lamp_{i}', '__parent': 'fh1_lamps', 'position': [round(float(v), 2) for v in p], 'rotationMatrix': DOWN,
                       'color': [round(float(c), 3) for c in rgb] + [1], 'intensity': round(b * LUMENS_PER_BRIGHTNESS, 2), 'intensityUnit': 'lm', 'brightness': b,
                       'range': round(RANGE[0] + t * (RANGE[1] - RANGE[0]), 1), 'innerAngle': INNER, 'outerAngle': round(OUTER[0] + t * (OUTER[1] - OUTER[0]), 1),
