@@ -4,19 +4,20 @@
     python buildq.py status          what's running, queued and recently built, with each request's note
     python buildq.py wait <id>       block until the build covering request <id> ends, then print its result
     python buildq.py cancel <id>     drop a queued request
-    python buildq.py stop            kill the running build
+    python buildq.py stop [chunk]    kill the running build of a chunk, or every running build
 
-One runner builds at a time. Pending requests with the same chunk and flags fold into one build of the newest code, which covers
-them all. Before starting, the runner waits until no file in pipeline/ has changed for SETTLE seconds, so it doesn't catch a
-session halfway through an edit, and while BeamNG is open, as a build wipes the level it may have loaded. It then copies
-pipeline/ to fh1/build_snapshot/ and builds from the copy, so edits made during a build go into the next one. `submit` starts the
-runner if none is alive, and the runner exits when the queue is empty. State lives in fh1/buildq/."""
+Each chunk has its own lane: a runner that builds that chunk's requests one at a time, so a Clear Springs build runs beside a
+whole-map one, as they write different level folders. Pending requests with the same chunk and flags fold into one build of the
+newest code, which covers them all. Before starting, a lane waits until no file in pipeline/ has changed for SETTLE seconds, so it
+doesn't catch a session halfway through an edit, and while BeamNG is open, as a build wipes the level it may have loaded. It then
+copies pipeline/ to fh1/build_snapshot_<chunk>/ and builds from the copy, so edits made during a build go into the next one.
+`submit` starts the lane's runner if none is alive, and a runner exits when its lane is empty. State lives in fh1/buildq/."""
 import sys, os, json, time, shutil, hashlib, argparse, subprocess, ctypes
 from pathlib import Path
 
 PIPE = Path(__file__).resolve().parent; FH1 = PIPE.parent
-Q = Path(os.environ.get('BUILDQ_DIR', FH1 / 'buildq')); PENDING = Q / 'pending'; RUNS = Q / 'runs'; LOCK = Q / 'runner.lock'; CURRENT = Q / 'current.json'; HISTORY = Q / 'history.jsonl'
-SNAP = Path(os.environ.get('BUILDQ_SNAP', FH1 / 'build_snapshot'))      # one level under fh1/, like pipeline/, so the scripts' ../ paths still reach the data
+Q = Path(os.environ.get('BUILDQ_DIR', FH1 / 'buildq')); PENDING = Q / 'pending'; RUNS = Q / 'runs'; HISTORY = Q / 'history.jsonl'
+SNAPS = Path(os.environ.get('BUILDQ_SNAP', FH1))      # snapshots sit one level under fh1/, like pipeline/, so the scripts' ../ paths still reach the data
 SETTLE = int(os.environ.get('BUILDQ_SETTLE', 15)); POLL = 15
 NOWIN = 0x08000000       # CREATE_NO_WINDOW. The runner has no visible console, so every console program it starts would open a window
 BUILD = os.environ.get('BUILDQ_CMD', 'build3.py')          # BUILDQ_DIR, BUILDQ_SNAP, BUILDQ_CMD and BUILDQ_SETTLE are for testing the queue itself
@@ -26,6 +27,18 @@ for d_ in (PENDING, RUNS):
 
 def now():
     return time.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def lock(chunk):
+    return Q / f'runner.{chunk}.lock'
+
+
+def current(chunk):
+    return Q / f'current.{chunk}.json'
+
+
+def snap(chunk):
+    return SNAPS / f'build_snapshot_{chunk}'
 
 
 def alive(pid):
@@ -50,6 +63,11 @@ def read_json(p):
 
 def pending():
     return sorted(filter(None, (read_json(p) for p in PENDING.glob('*.json'))), key=lambda r: r['id'])
+
+
+def lanes():
+    """chunks with runner state or a pending request"""
+    return sorted({p.name[len('current.'):-len('.json')] for p in Q.glob('current.*.json')} | {r['chunk'] for r in pending()})
 
 
 def history(n=None):
@@ -77,11 +95,11 @@ class PROCESSENTRY32W(ctypes.Structure):
 def exe_names():
     """names of running programs, from the Windows API rather than tasklist, which would be one more process every poll"""
     k = ctypes.windll.kernel32; k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    snap = k.CreateToolhelp32Snapshot(2, 0); e = PROCESSENTRY32W(); e.dwSize = ctypes.sizeof(e); names = set()
-    ok = k.Process32FirstW(ctypes.c_void_p(snap), ctypes.byref(e))
+    snap_ = k.CreateToolhelp32Snapshot(2, 0); e = PROCESSENTRY32W(); e.dwSize = ctypes.sizeof(e); names = set()
+    ok = k.Process32FirstW(ctypes.c_void_p(snap_), ctypes.byref(e))
     while ok:
-        names.add(e.szExeFile.lower()); ok = k.Process32NextW(ctypes.c_void_p(snap), ctypes.byref(e))
-    k.CloseHandle(ctypes.c_void_p(snap))
+        names.add(e.szExeFile.lower()); ok = k.Process32NextW(ctypes.c_void_p(snap_), ctypes.byref(e))
+    k.CloseHandle(ctypes.c_void_p(snap_))
     return names
 
 
@@ -90,47 +108,50 @@ def beamng_open():
 
 
 def hand_build():
-    """a build3.py started outside the queue, which would fight ours for RAM and the level folder"""
-    out = subprocess.run(['powershell', '-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | ForEach-Object { $_.CommandLine }"],
+    """a build3.py started outside the queue, which would fight ours for RAM and the level folder. Other lanes' builds don't count"""
+    ours = {int(c['pid']) for c in (read_json(p) for p in Q.glob('current*.json')) if c and c.get('state') == 'running' and c.get('pid')}      # current.json: a runner from before lanes
+    out = subprocess.run(['powershell', '-NoProfile', '-Command',
+                          "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }"],
                          capture_output=True, text=True, creationflags=NOWIN).stdout
-    return any('build3.py' in l for l in out.splitlines())
+    rows = [l.split(' ', 1) for l in out.splitlines() if l.split(' ', 1)[0].isdigit()]
+    return any(len(r) > 1 and 'build3.py' in r[1] and int(r[0]) not in ours for r in rows)
 
 
 def key(r):
     return r['chunk'], tuple(sorted(r['env'].items()))
 
 
-def runner_pid():
-    d = read_json(LOCK)
+def runner_pid(chunk):
+    d = read_json(lock(chunk))
     return d['pid'] if d and alive(d['pid']) else None
 
 
-def start_runner():
-    if runner_pid():
+def start_runner(chunk):
+    if runner_pid(chunk):
         return
     flags = NOWIN | 0x00000200          # a hidden console that the build and its scripts inherit, and CREATE_NEW_PROCESS_GROUP
     args = dict(cwd=PIPE, stdin=subprocess.DEVNULL, stdout=open(Q / 'runner.out', 'a'), stderr=subprocess.STDOUT, close_fds=True)
     try:
-        subprocess.Popen([sys.executable, '-u', str(PIPE / 'buildq.py'), 'run'], creationflags=flags | 0x01000000, **args)   # break away from the session's job
+        subprocess.Popen([sys.executable, '-u', str(PIPE / 'buildq.py'), 'run', chunk], creationflags=flags | 0x01000000, **args)   # break away from the session's job
     except OSError:
-        subprocess.Popen([sys.executable, '-u', str(PIPE / 'buildq.py'), 'run'], creationflags=flags, **args)
+        subprocess.Popen([sys.executable, '-u', str(PIPE / 'buildq.py'), 'run', chunk], creationflags=flags, **args)
 
 
-def set_state(cur, **kw):
-    cur.update(kw); write_json(CURRENT, cur)
+def run(chunk):
+    LOCK, CURRENT, SNAP = lock(chunk), current(chunk), snap(chunk)
 
-
-def run():
+    def set_state(cur, **kw):
+        cur.update(kw); write_json(CURRENT, cur)
     try:
         fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        if runner_pid():
+        if runner_pid(chunk):
             return
         LOCK.unlink(missing_ok=True); fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     os.write(fd, json.dumps({'pid': os.getpid(), 'since': now()}).encode()); os.close(fd)
     try:
         while True:
-            reqs = pending()
+            reqs = [r for r in pending() if r['chunk'] == chunk]
             if not reqs:
                 CURRENT.unlink(missing_ok=True)
                 return
@@ -160,7 +181,7 @@ def run():
             changed = (sorted(f for f in man if prev['manifest'].get(f) != man[f]) + sorted(f'{f} (deleted)' for f in prev['manifest'] if f not in man)) if prev                 else [f'first queued build of {k[0]}']
             for r in group:
                 (PENDING / f"{r['id']}.json").unlink(missing_ok=True)
-            out = RUNS / f'{rid}.out'; env = dict(os.environ, FH1_CHUNK=k[0], PYTHONUNBUFFERED='1', **dict(k[1]))
+            out = RUNS / f'{rid}-{chunk}.out'; env = dict(os.environ, FH1_CHUNK=k[0], PYTHONUNBUFFERED='1', **dict(k[1]))
             env.setdefault('NUMBA_CACHE_DIR', str(FH1 / 'numbacache'))      # the snapshot is copied without __pycache__, which held numba's compiled code
             t0 = time.time()
             with open(out, 'w', encoding='utf8') as f_:
@@ -184,9 +205,9 @@ def submit(a):
         sys.exit('use --chunk, not --env FH1_CHUNK')
     r = {'id': 'q' + time.strftime('%Y%m%d-%H%M%S') + f'{time.time() % 1:.3f}'[1:] + f'-{os.getpid() % 1000:03d}', 'by': a.by, 'note': a.message, 'chunk': a.chunk,
          'env': env, 'beamng_ok': a.beamng_ok, 'submitted': now()}
-    write_json(PENDING / f"{r['id']}.json", r); start_runner()
-    cur = read_json(CURRENT); ahead = cur and cur.get('state') == 'running'
-    print(f"queued {r['id']} ({a.chunk}). " + ('A build is running; this goes in the next one.' if ahead else 'It starts once pipeline/ has been quiet for %d s.' % SETTLE))
+    write_json(PENDING / f"{r['id']}.json", r); start_runner(a.chunk)
+    cur = read_json(current(a.chunk)); ahead = cur and cur.get('state') == 'running'
+    print(f"queued {r['id']} ({a.chunk}). " + (f'A {a.chunk} build is running; this goes in the next one.' if ahead else 'It starts once pipeline/ has been quiet for %d s.' % SETTLE))
     print(f'check: python buildq.py status   or wait: python buildq.py wait {r["id"]}')
 
 
@@ -195,8 +216,14 @@ def fmt_req(r):
 
 
 def status(a):
-    cur = read_json(CURRENT); pid = runner_pid()
-    if cur and pid:
+    covered = []; any_ = False
+    for chunk in lanes():
+        cur = read_json(current(chunk)); pid = runner_pid(chunk)
+        if not (cur and pid):
+            if cur:
+                current(chunk).unlink(missing_ok=True)
+            continue
+        any_ = True
         if cur['state'] == 'running':
             text = Path(cur['out']).read_text(encoding='utf8', errors='replace').splitlines() if Path(cur['out']).exists() else []
             mins = (time.time() - time.mktime(time.strptime(cur['started'], '%Y-%m-%d %H:%M:%S'))) / 60
@@ -205,20 +232,19 @@ def status(a):
             print('  changed since the last build of this chunk: ' + (', '.join(cur['changed']) or 'nothing'))
         else:
             print(f"WAITING to build {cur['chunk']}: {cur.get('why', '')}")
-            cur['requests'] = [r for r in pending() if key(r) == (cur['chunk'], tuple(sorted(cur['env'].items())))]
+            cur['requests'] = [r for r in pending() if key(r) == (cur['chunk'], tuple(sorted(cur['env'].items())))]; covered += [r['id'] for r in cur['requests']]
         for r in cur['requests']:
             print('  covers ' + fmt_req(r))
-    else:
-        print('no build running' + (' (stale runner state cleared)' if cur else ''))
-        if cur:
-            CURRENT.unlink(missing_ok=True)
-    q = [r for r in pending() if not (cur and pid and cur['state'] == 'waiting' and r in cur['requests'])]      # the rest go in later builds
+    if not any_:
+        print('no build running')
+    q = [r for r in pending() if r['id'] not in covered]      # the rest go in later builds
     if q:
-        print('QUEUED (requests with the same chunk and flags fold into one build of the newest code)')
+        print('QUEUED (each chunk builds in its own lane; requests with the same chunk and flags fold into one build of the newest code)')
         for r in q:
             print('  ' + fmt_req(r))
-        if not pid:
-            print('  no runner alive: starting one'); start_runner()
+        for chunk in sorted({r['chunk'] for r in q}):
+            if not runner_pid(chunk):
+                print(f'  no {chunk} runner alive: starting one'); start_runner(chunk)
     print('RECENT')
     for h in history(a.n)[::-1]:
         print(f"  {h['run']}  {h['chunk']}  {h['result']}  {h['minutes']} min  started {h['started']}  log {h['log']}")
@@ -236,25 +262,30 @@ def wait(a):
             print(f"{h['run']} {h['result']} after {h['minutes']} min, log {h['log']}")
             print('\n'.join(h['tail']))
             sys.exit(0 if h['result'] == 'ok' else 1)
-        if not runner_pid() and not (PENDING / f'{a.id}.json').exists():
+        r = read_json(PENDING / f'{a.id}.json')
+        running = any(any(q['id'] == a.id for q in c.get('requests', [])) for c in filter(None, (read_json(p) for p in Q.glob('current.*.json'))))
+        if not r and not running:
             sys.exit(f'{a.id} is neither queued nor in the history')
-        if not runner_pid():
-            start_runner()
+        if r and not runner_pid(r['chunk']):
+            start_runner(r['chunk'])
         time.sleep(POLL)
 
 
 def cancel(a):
     p = PENDING / f'{a.id}.json'
     if not p.exists():
-        sys.exit(f'{a.id} is not queued (a running build can only be stopped as a whole: buildq.py stop)')
+        sys.exit(f'{a.id} is not queued (a running build can only be stopped as a whole: buildq.py stop <chunk>)')
     p.unlink(); print('cancelled', a.id)
 
 
 def stop(a):
-    cur = read_json(CURRENT)
-    if not cur or cur.get('state') != 'running' or not alive(cur['pid']):
+    done = 0
+    for chunk in ([a.chunk] if a.chunk else lanes()):
+        cur = read_json(current(chunk))
+        if cur and cur.get('state') == 'running' and alive(cur['pid']):
+            subprocess.run(['taskkill', '/PID', str(cur['pid']), '/T', '/F'], capture_output=True, creationflags=NOWIN); print('stopped', cur['run'], chunk); done += 1
+    if not done:
         sys.exit('no build running')
-    subprocess.run(['taskkill', '/PID', str(cur['pid']), '/T', '/F'], capture_output=True, creationflags=NOWIN); print('stopped', cur['run'])
 
 
 if __name__ == '__main__':
@@ -265,6 +296,7 @@ if __name__ == '__main__':
     s = sp.add_parser('status'); s.add_argument('-n', type=int, default=5, help='recent builds to show')
     s = sp.add_parser('wait'); s.add_argument('id')
     s = sp.add_parser('cancel'); s.add_argument('id')
-    sp.add_parser('stop'); sp.add_parser('run')
+    s = sp.add_parser('stop'); s.add_argument('chunk', nargs='?')
+    s = sp.add_parser('run'); s.add_argument('chunk')
     a = ap.parse_args()
-    {'submit': submit, 'status': status, 'wait': wait, 'cancel': cancel, 'stop': stop, 'run': lambda a: run()}[a.cmd](a)
+    {'submit': submit, 'status': status, 'wait': wait, 'cancel': cancel, 'stop': stop, 'run': lambda a: run(a.chunk)}[a.cmd](a)

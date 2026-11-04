@@ -1,8 +1,22 @@
 """DXT1 and BC5 .dds writers. A top mip that is already DXT1 or BC5 is kept as FH1's own blocks; everything else is encoded here."""
-import struct
+import os, struct
 import numpy as np
 from numba import njit
 from PIL import Image
+
+
+def write(path, data):
+    """Whole or not at all, through a temporary file, as two builds can write one cache file at once (buildq.py runs a lane per chunk)
+    and the other may be copying it. If the other build's copy got there first and is open, keep it: both hold the same texture"""
+    tmp = f'{path}.{os.getpid()}.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    try:
+        os.replace(tmp, path)
+    except PermissionError:
+        os.remove(tmp)
+        if not os.path.exists(path):
+            raise
 
 
 @njit(cache=True)
@@ -63,8 +77,7 @@ def save(path, a, blocks=None, limit=1 << 30, peak=False):
         a = a.reshape(h, 2, w, 2, 3).max((1, 3)) if peak else np.asarray(Image.fromarray(a).resize((w, h), Image.BOX))
     hdr = b'DDS ' + struct.pack('<7I', 124, 0xA1007, H, W, len(mips[0]), 0, len(mips)) + bytes(44)
     hdr += struct.pack('<2I4s5I', 32, 4, b'DXT1', 0, 0, 0, 0, 0) + struct.pack('<5I', 0x401008, 0, 0, 0, 0)
-    with open(path, 'wb') as f:
-        f.write(hdr); f.write(b''.join(mips))
+    write(path, hdr + b''.join(mips))
 
 
 @njit(cache=True)
@@ -111,5 +124,4 @@ def save_bc5(path, rg, blocks=None, limit=1 << 30):
         rg = np.dstack([np.asarray(Image.fromarray(np.ascontiguousarray(rg[..., c])).resize((w, h), Image.BOX)) for c in range(2)])
     hdr = b'DDS ' + struct.pack('<7I', 124, 0xA1007, H, W, len(mips[0]), 0, len(mips)) + bytes(44)
     hdr += struct.pack('<2I4s5I', 32, 4, b'BC5U', 0, 0, 0, 0, 0) + struct.pack('<5I', 0x401008, 0, 0, 0, 0)
-    with open(path, 'wb') as f:
-        f.write(hdr); f.write(b''.join(mips))
+    write(path, hdr + b''.join(mips))
