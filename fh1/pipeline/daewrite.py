@@ -5,6 +5,9 @@ sys.path.insert(0, os.path.abspath('../..'))
 from kn5port.level import _fmt
 
 FARCUT = 3
+# Three-detail shapes skip their middle level: LOD0 draws out to the LOD1 distance, then LOD2. Each detail node is its own cooked copy,
+# and the user has fps to spare, not RAM. FH1_MIDLOD=1 keeps it
+SKIPMID = os.environ.get('FH1_MIDLOD', '0') != '1'
 
 
 def has_col(groups, collide, colmesh=None):
@@ -20,6 +23,12 @@ def weld(pos, nrm, uv, uv1, idx):
     key = np.rint(np.c_[pos * 1e4, nrm * 1e3, uv * 1e5, uv1 * 1e5]).astype(np.int64)
     _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
     return pos[first], nrm[first], uv[first], uv1[first], inv.ravel()[idx]
+
+
+def weld_positions(pos, idx):
+    """weld for collision, which needs no normals or UVs, so seams in those don't keep vertices apart"""
+    _, first, inv = np.unique(np.rint(pos * 1e4).astype(np.int64), axis=0, return_index=True, return_inverse=True)
+    return pos[first], inv.ravel()[idx]
 
 
 BOX_TRIS = np.array([[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]])
@@ -53,20 +62,24 @@ def write_lod(path, groups, origin, sizes, collide, extra=(), colmesh=None):
     for m in mats:
         w(f'<material id="{m}" name="{m}"><instance_effect url="#{m}-fx"/></material>\n')
     w('</library_materials>\n<library_geometries>\n'); nodes = []; coll = []
+    skip = SKIPMID and len(sizes) == 3; sz = (sizes[1], sizes[1], sizes[2]) if skip else sizes
     ident = '<matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>'
 
     def geometry(g, local, nrm, uv, uv1, tris):
-        """one <geometry>, with a <triangles> for each (material, indices) in tris -> its instance_geometry"""
+        """one <geometry>, with a <triangles> for each (material, indices) in tris -> its instance_geometry. nrm None writes positions only"""
         n = len(local); w(f'<geometry id="{g}" name="{g}"><mesh>\n')
-        for sid, arr, fmt, params in ((f'{g}-p', local, '%.4f', 'XYZ'), (f'{g}-n', nrm, '%.3f', 'XYZ'),
-                                      (f'{g}-t', np.c_[uv[:, 0], 1 - uv[:, 1]], '%.5f', 'ST'), (f'{g}-u', np.c_[uv1[:, 0], 1 - uv1[:, 1]], '%.5f', 'ST')):
+        srcs = [(f'{g}-p', local, '%.4f', 'XYZ')]
+        if nrm is not None:
+            srcs += [(f'{g}-n', nrm, '%.3f', 'XYZ'), (f'{g}-t', np.c_[uv[:, 0], 1 - uv[:, 1]], '%.5f', 'ST'), (f'{g}-u', np.c_[uv1[:, 0], 1 - uv1[:, 1]], '%.5f', 'ST')]
+        for sid, arr, fmt, params in srcs:
             w(f'<source id="{sid}"><float_array id="{sid}-a" count="{arr.size}">'); w(_fmt(arr, fmt))
             w(f'</float_array><technique_common><accessor source="#{sid}-a" count="{n}" stride="{len(params)}">')
             w(''.join(f'<param name="{c}" type="float"/>' for c in params)); w('</accessor></technique_common></source>\n')
         w(f'<vertices id="{g}-v"><input semantic="POSITION" source="#{g}-p"/></vertices>\n')
+        rest = '' if nrm is None else (f'<input semantic="NORMAL" source="#{g}-n" offset="0"/><input semantic="TEXCOORD" source="#{g}-t" offset="0" set="0"/>'
+                                       f'<input semantic="TEXCOORD" source="#{g}-u" offset="0" set="1"/>')
         for mat, idx in tris:
-            w(f'<triangles material="{mat}" count="{len(idx) // 3}"><input semantic="VERTEX" source="#{g}-v" offset="0"/><input semantic="NORMAL" source="#{g}-n" offset="0"/>'
-              f'<input semantic="TEXCOORD" source="#{g}-t" offset="0" set="0"/><input semantic="TEXCOORD" source="#{g}-u" offset="0" set="1"/><p>')
+            w(f'<triangles material="{mat}" count="{len(idx) // 3}"><input semantic="VERTEX" source="#{g}-v" offset="0"/>{rest}<p>')
             w(' '.join(map(str, np.asarray(idx).tolist()))); w('</p></triangles>\n')
         w('</mesh></geometry>\n')
         bind = ''.join(f'<instance_material symbol="{m}" target="#{m}"/>' for m in dict.fromkeys(m for m, _ in tris))
@@ -77,17 +90,21 @@ def write_lod(path, groups, origin, sizes, collide, extra=(), colmesh=None):
         local, nrm, uv, uv1, idx = weld(pos - origin, nrm, uv, uv1, idx)
         if collide is not None and collide in levels or collide == 2 and FARCUT in levels:
             coll.append((mat, local, nrm, uv, uv1, idx))
-        draws = [lv for lv in levels if lv != 'box' and lv < len(sizes)]
+        draws = [lv for lv in levels if lv != 'box' and lv < len(sizes) and not (skip and lv == 1)]
         if draws:
             inst = geometry(f'g{gi}', local, nrm, uv, uv1, [(mat, idx)])
             for lv in draws:
-                nm_ = f'o{gi}_a{sizes[lv]}'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
+                nm_ = f'o{gi}_a{sz[lv]}'; nodes.append(f'<node id="{nm_}" name="{nm_}" type="NODE">{ident}{inst}</node>\n')
     col = bool(coll)
-    if col:     # all of it in one mesh, a <triangles> per material so each keeps its groundType
+    if col:     # all of it in one mesh, a <triangles> per material so each keeps its groundType. Positions only: a cooked mesh keeps
+        # whatever vertex data it's given, and collision reads none of the rest
         at = np.cumsum([0] + [len(c[1]) for c in coll]); by = {}
         for c, o_ in zip(coll, at):
             by.setdefault(c[0], []).append(np.asarray(c[5]) + o_)
-        inst = geometry('gcol', *(np.concatenate([c[k] for c in coll]) for k in range(1, 5)), [(m, np.concatenate(v)) for m, v in by.items()])
+        cp, ci = np.concatenate([c[1] for c in coll]), {m: np.concatenate(v) for m, v in by.items()}
+        cp, cat_ = weld_positions(cp, np.concatenate(list(ci.values())))
+        bounds = np.cumsum([0] + [len(v) for v in ci.values()])
+        inst = geometry('gcol', cp, None, None, None, [(m, cat_[a:b]) for m, a, b in zip(ci, bounds[:-1], bounds[1:])])
         nodes.append(f'<node id="Colmesh_0-1" name="Colmesh_0-1" type="NODE">{ident}{inst}</node>\n')
     w('</library_geometries>\n<library_visual_scenes><visual_scene id="Scene" name="Scene">\n')
     w(f'<node id="base00" name="base00" type="NODE">{ident}<node id="start01" name="start01" type="NODE">{ident}\n'); out.extend(nodes); w('</node>\n')

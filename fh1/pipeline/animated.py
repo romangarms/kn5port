@@ -201,7 +201,7 @@ def on_ground(T, xy, yaw):
 
 def ground_samples():
     """Points on the ground. The level has no TerrainBlock, as FH1's meshes are the ground, so this uses what stands on them: forest items and road waypoints."""
-    pts = [o['pos'] for f in (level / 'forest').glob('*.json') for o in map(json.loads, filter(str.strip, f.read_text().splitlines()))]
+    pts = [o['pos'] for f in (level / 'forest').glob('*.json') if not f.name.startswith('fh1_m') for o in map(json.loads, filter(str.strip, f.read_text().splitlines()))]
     pts += [o['position'] for o in map(json.loads, filter(str.strip, (mg / 'fh1_nav' / 'items.level.json').read_text().splitlines())) if 'position' in o]
     return np.array(pts, 'f8')
 

@@ -10,7 +10,7 @@ from scipy import ndimage as ni
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 import colfit, dds, frame, hexzones, rmb, tex
-from daewrite import FARCUT, has_col, write_lod
+from daewrite import FARCUT, SKIPMID, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
 from kn5port.level import safe
@@ -1560,6 +1560,11 @@ COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
 BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
                    r'(?<![a-z])bin[a-z]?(?![a-z])|bench|table|container|skip|haybale|crate|rack|hoarding|bollard', re.I)
 NOCOL = re.compile(r'rope', re.I)       # festival bunting, 35 m across, above the cars
+# Placed props go in the forest rather than one TSStatic each: 61k scene objects, each with its own shape instance, against a small record
+# per forest item. Glowing props stay TSStatics for their instance colour, as do the shapes animated.py swaps out (OBJECTS there).
+# FH1_PROPFOREST=0 keeps TSStatics, for comparison
+PROPFOREST = os.environ.get('FH1_PROPFOREST', '1') != '0'; PROPDATA = {}
+KEEPSTATIC = {6625, 6627, 6429}
 KEEPMESH = re.compile(r'bridge|ramp|jump|stage|platform|deck|road|tunnel|pavement|kerb|curb|car_?park|parking|dam(?![a-z])', re.I)
 
 
@@ -1576,12 +1581,22 @@ for no, objs in INST.items():
             stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (had - len(cm[1]) // 3)
     col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), collide, colmesh=cm)
     ct = 'Collision Mesh' if col else 'None'
+    glow = no in GLOWING or lod_sibling(no) in GLOWING
+    if PROPFOREST and not glow and no not in KEEPSTATIC:
+        it_ = f'fh1_m{no}'
+        PROPDATA[it_] = {'name': it_, 'internalName': it_, 'class': 'TSForestItemData', 'annotation': 'PROP', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0,
+                         'mass': 1, 'rigidity': 1, 'shapeFile': f'{rel}/art/shapes/fh1/m{no}.dae', 'windScale': 0}
+        (fdir / f'{it_}.forest4.json').write_text(''.join(json.dumps({'ctxid': 0, 'pos': o['pos'], 'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(),
+                                                                     'scale': o['scale'], 'type': it_}) + '\n' for o in objs))
+        continue
     for i_, o in enumerate(objs):
         items.append({'class': 'TSStatic', 'name': f'fh1_m{no}_{i_}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
                       'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(),     # a TSStatic lists its axes as rows, measured on stock guardrail chains
                       'scale': [o['scale']] * 3, 'collisionType': 'None' if o['smash'] else ct, 'decalType': 'None' if o['smash'] else ct,
-                      **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if no in GLOWING or lod_sibling(no) in GLOWING else {})})
-print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes')
+                      **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if glow else {})})
+if PROPDATA:
+    mf_ = level / 'art' / 'forest' / 'managedItemData.json'; mf_.write_text(json.dumps({**json.loads(mf_.read_text()), **PROPDATA}, indent=2))
+print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes,', len(PROPDATA), 'shapes as forest items')
 print('simple collision', {k[4:-7]: v for k, v in stats.items() if k.startswith('col_') and k.endswith('_shapes')}, 'shapes,', stats['col_tris_saved'], 'collision triangles saved')
 # barrier collision for the whole level at once, so walls run on across cell lines; each is carried by the cell its first piece is in
 RAILMESH, (RAIL_SEGS, RAIL_CHAINS) = colfit.rails({u: np.concatenate(t) for u, t in RAILS.items()}, POOL) if COLBOX else ({}, (0, 0))
@@ -1622,7 +1637,7 @@ POOL.shutdown()
 lap('shape writers finishing')
 cam = g2b(np.array([[-5681., 350., 5301.]]))[0]; drawn = [0, 0, 0, 0]; before = 0
 for org, R_, cat, tr in METRIC:
-    d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[0] else 1 if d_ < LOD_DIST[1] else 2
+    d_ = float(np.linalg.norm(org - cam)); lv = 0 if d_ < LOD_DIST[SKIPMID] else 1 if d_ < LOD_DIST[1] else 2
     if cat not in ('col', 'wat', 'bak') and d_ > PROP_FAR:
         lv = 3
     before += tr[0]
