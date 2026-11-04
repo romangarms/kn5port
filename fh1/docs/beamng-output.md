@@ -4,6 +4,8 @@ How FH1 data becomes a level. Constants are at the top of `build3.py`.
 
 ## Terrain and ground
 
+**Ground is chosen by FH1's zone hexes** (`HEXGROUND`, the default; `FH1_HEXGROUND=0` goes back to the far tiers below). Each 100 m hex lists what FH1 draws while the player is in it, and each zone record gives its LOD group's switch distances. `hex_selection` gives each 16 m cell the groups that the nearest hex listing each group draws at that distance; cells no hex draws take the finest ground over them. `hex_split` keeps a triangle up to two cells across whole where any cell it covers is chosen, so groups overlap by a triangle where they hand over rather than leaving slivers, and splits bigger ones only where the selection changes under them. Cutting on the cell lines left T-junction cracks. Far tiers, coverage clipping and water and rock rules don't touch ground in this mode, and `TERR_CUBE` is never drawn: as a fill it put Carson's town-block boxes through the houses, and height rules for water and rock dropped ground along walls and at waterlines. The user checked Clear Springs on 2026-11-04: no visible holes. Offline on Clear Springs, no cell within reach of a hex lacks ground and 1.3% of cells hold two groups within 1 m of height, nearly all ground against a river's surface mesh.
+
 FH1's own terrain meshes are the visible ground and the collision. The level has no `TerrainBlock`: the user tested hiding it and asked for it to go. The heightfield notes below are history.
 
 Far ground near a road is kept and capped just under road height, not cut away. `TERR_CUBE` stays out: enabling it added almost no coverage. Sections listing a red and green blend mask as a colour layer use a real layer instead (`rgmask`), or they draw yellow.
