@@ -390,6 +390,76 @@ def decal_material(tid, mask, alpha):
     return key
 
 
+def skirt_material(tid):
+    """h_road *_blend skirts: FH1 fades them by vertex byte 3, from 255 out on the verge to 0 at the road's edge, over road and terrain
+    that share their vertices. The byte goes in UV set 1 through a ramp, as decal alpha does"""
+    t = TX.get(tid)
+    if t is None:
+        return None
+    n_ = NM.get(tid); key = f"fh1_{t['name']}_sk" + (f'_n{n_:X}' if n_ else '')
+    if key not in MATS:
+        st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': ramp(0, 1), 'opacityMapUseUV': 1}
+        if n_:
+            st['normalMap'] = TX.normal(n_)
+        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
+                     'translucent': True, 'translucentZWrite': False, 'translucentRecvShadows': True, 'castShadows': False}
+    return key
+
+
+def ramp_product(gain=RAMP_GAIN):
+    """opacity u * ramp(v) over UV set 1: the skirt's second layer, weighted by vertex byte 1 within the skirt's own byte 3"""
+    name = f'fh1_ramp_uv{gain:g}'; p_ = TX.d / f'{name}.data.dds'
+    if not p_.exists():
+        w = np.linspace(0, 1, RAMP_N); a = np.outer(np.clip(w * gain, 0, 1), w)
+        cooked(p_, (a * 255 + .5).astype('u1'), limit=TEXMAX)
+    return f'{rel}/art/textures/{p_.name}'
+
+
+def skirt_blend_material(base, tids, noise, nbase):
+    """a skirt over the road section it shares vertices with, as one opaque material: the road's own texture, then the skirt's layers faded
+    in by byte 3 (UV1 u), the second also by byte 1 (UV1 v). Both sections use the same UV box, so the road layer lines up with the road"""
+    key = f'fh1_s_{base:X}_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + (f'_n{nbase:X}' if nbase else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+    if key in MATS:
+        return key
+    info = [TX.get(t) for t in [base] + tids]
+    if any(i is None for i in info):
+        return None
+    st = [{'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0} for i_ in info]
+    if nbase:
+        st[0]['normalMap'] = TX.normal(nbase)
+    for t, s_ in zip(tids, st[1:]):
+        if t in NM:
+            s_['normalMap'] = TX.normal(NM[t])
+    st[1].update({'opacityMap': ramp(0, 1), 'opacityMapUseUV': 1})
+    if len(st) > 2:
+        st[2].update({'opacityMap': ramp_product(), 'opacityMapUseUV': 1})
+        if noise and grey(noise):
+            st[2].update({'opacityDetailMap': grey(noise), 'detailScale': [1, 1], 'detailOpacityMapStrength': ROAD_NOISE})
+    while len(st) < 4:
+        st.append({})
+    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng',
+                 'translucentBlendOp': 'None'}
+    return key
+
+
+def skirt_roads(no, m, M):
+    """for each h_road *_blend section of a mesh, the plain road section sharing most of its vertices: what the skirt fades into.
+    -> {section index: (road base texture, its normal map)}"""
+    rs = []; out = {}
+    for i_, s in enumerate(m['secs']):
+        if s['ints'][2] < len(M):
+            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
+            if fx.startswith('h_road'):
+                rs.append((i_, '_blend' in fx, slots, set(np.unique(rmb.tris(s['ib'], m['nv'], s['ints'][1])).tolist())))
+    for i_, bl, _, vs in rs:
+        if bl:
+            n_, slots = max(((len(vs & v2), sl2) for _, b2, sl2, v2 in rs if not b2), default=(0, None), key=lambda x: x[0])
+            base = slot_at(no, slots, 0) if n_ else None
+            if base:
+                out[i_] = (base, section_normals(no, slots).get(base))
+    return out
+
+
 def slot_at(no, slots, k):
     """the colour texture at a material's slot position k, or None"""
     ids = MT[no][0]
@@ -423,6 +493,12 @@ def box_uv(t, fl):
     shifted every UV by half the box, which tiling textures hide and atlases (signs, cars, facades) don't, and reading fl[6:8] as the
     high corner squashed billboard text. See formats.md"""
     return np.array(fl[4:6]) + t * np.array(fl[6:8])
+
+
+def blend_slots(fx):
+    """slot positions of a ground shader's colour layers. h_blnd2 has two: its slot 5 is a 64 px grey AO map, which drawn as a third
+    layer laid white blotches over the ground wherever the mask's green was on. h_blnd3 has a colour layer there"""
+    return (0, 1) if fx.startswith(('h_blnd1', 'h_blnd2')) else (0, 1, 5)
 
 
 def rgmask(t):
@@ -615,14 +691,15 @@ def lone_copies(cs):
     """Meshes alone in their ring with a finer LOD of the same name over them: spare LOD2 copies such as Reservoir_Area6_PATCH_01_LOD02 in
     file 14474 (g 0x7814), beside the real ring 13203-13205. Each is its own group's best, so it went in as close ground over the fine tiles"""
     ring_n = collections.Counter(RING.values()); by = defaultdict(list); out = set()
+    key = lambda n: lodkey(re.sub(r'_CHOP\d+', '', n))     # Reservoir_Area6_PATCH_02_CHOP21_LOD02: a piece of _PATCH_02's LOD2 over its LOD00, in one 256 px texture
     for c in cs:
-        by[lodkey(c['name'])].append(c)
+        by[key(c['name'])].append(c)
     for c in cs:
         t = int(c['f'].split('.')[1])
         if t not in RING or ring_n[RING[t]] > 1:
             continue
         if any(lod(d['name']) < lod(c['name']) and int(d['f'].split('.')[1]) != t and d['mn'][0] < c['mx'][0] and c['mn'][0] < d['mx'][0]
-               and d['mn'][2] < c['mx'][2] and c['mn'][2] < d['mx'][2] for d in by[lodkey(c['name'])]):
+               and d['mn'][2] < c['mx'][2] and c['mn'][2] < d['mx'][2] for d in by[key(c['name'])]):
             out.add((c['f'], c['mi']))
     return out
 
@@ -714,8 +791,8 @@ for f, cs in byfile.items():
         # a group's coarsest mesh also stands in for any lower LODs it lacks
         LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 or isterr and rel_ == 1 else (rel_,)
         FIX = group_cell(gkey(c))
-        near_ = rel_ == 0
-        for s in m['secs']:
+        near_ = rel_ == 0; SR = skirt_roads(no, m, M) if vw is not None else {}
+        for si_, s in enumerate(m['secs']):
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             q_ = MT[no][1]
             if len(T) and s['ints'][2] < len(q_) and SHADERS[q_[s['ints'][2]]].startswith('lake'):      # materials() can't read this shader's record
@@ -739,12 +816,25 @@ for f, cs in byfile.items():
             if not ts:
                 stats['sec_notex'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
+            skirt = fx.startswith('h_road') and '_blend' in fx and vw is not None
+            # 300k of the 327k triangles drawn twice up close were these skirts, opaque on the road and terrain under them. Over their own
+            # road they're one opaque blend of road and verge, 1 cm up so road decals stay above. Without one, a translucent overlay
+            lay_ = [x for x in (ts[0], slot_at(no, slots, 1) if 'diff2' in fx or 'diff3' in fx else None) if x] if skirt else []
+            sk_ = skirt_blend_material(SR[si_][0], lay_, slot_at(no, slots, 2) if 'noise' in fx else None, SR[si_][1]) if skirt and si_ in SR else None
+            if skirt and (sk_ or skirt_material(ts[0])):
+                if near_:
+                    raster(Cov if isterr else Road, g[T])
+                if sk_:
+                    add('vis', sk_, p, nr, uv, T, lift=.01, uv1=ramp_uv(vw[:, [3, 1]])); surf['road_skirt_blend'] += len(T)
+                else:
+                    add('vis', skirt_material(ts[0]), p, nr, uv, T, lift=.02, uv1=ramp_uv(vw[:, [3, 3]])); surf['road_skirt'] += len(T)
+                continue
             if isterr:
                 if near_:
                     raster(Cov, g[T])
                 layers = []
                 ids = MT[no][0]
-                for q in (0, 1, 5):
+                for q in blend_slots(fx):
                     if q < len(slots) and slots[q] < len(ids):
                         tid = IDX[ids[slots[q]]][0]
                         if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71:
@@ -903,6 +993,12 @@ def structures():
 BQ = 16.0; BSINK = 4.0      # backdrop coverage grid, and how far coarser ground sinks under finer, in metres
 
 
+def tkeys(k):
+    """a key per triangle from its corners' vkeys, in any order"""
+    k = np.sort(k, 1)
+    return k[:, 0] * 1000003 ^ k[:, 1] * 999983 ^ k[:, 2]
+
+
 def vkeys(p):
     """a key per vertex, to 5 cm: FH1's copies of a mesh, such as NOLOD pieces of the Uber shell, repeat its vertices exactly"""
     q = np.round(np.asarray(p, 'f8') * 20).astype(np.int64)
@@ -971,12 +1067,17 @@ lap('far tier lookup')
 for tier_ in range(NT):
     if not any((t__ == tier_).any() for e_ in TIERS for t__ in e_):
         continue
-    SEEN = np.zeros(0, np.int64)      # vertex keys drawn in this tier
+    SEEN = np.zeros(0, np.int64)      # triangle keys drawn in this tier
     new_ = np.full((N, N), np.nan, 'f8'); hide = shown | road | np.isfinite(Rock) | np.isfinite(Water)      # road shaders also draw town grass and paving. Far ground would cover a river
+    if os.environ.get('FH1_DUMPMASKS') and tier_ == 0:      # what keeps far ground off, for checking where it went missing
+        np.savez_compressed(Path('../logs') / f'{LVL}-masks.npz', shown=shown, road=road, rock=np.isfinite(Rock), water=np.isfinite(Water), X0=X0, Z0=Z0, SQ=SQ, N=N)
     if tier_ % 2:       # the shell has festival tents baked into it. In a small hole in finer ground, it's held to that ground's height
         lab_, n_ = ni.label(~shown); small = np.bincount(lab_.ravel()) * SQ * SQ < 150000; small[0] = False
         lump = np.where(small[lab_], pyramid_fill(Cov) + 1, np.inf)
     dout = ni.distance_transform_edt(~hide) * SQ; din = ni.distance_transform_edt(hide) * SQ; dsink = ni.distance_transform_edt(shown | np.isfinite(Rock)) * SQ
+    # FH1's own close-range ground ignores water: a river's surface mesh runs on under its banks, and this dropped the banks along
+    # Clear Springs' river (Reservoir_Area5_PATCH14), leaving holes to the sky. Under the water it's the river bed, which stays anyway
+    din0 = ni.distance_transform_edt(shown | road | np.isfinite(Rock)) * SQ if tier_ == 0 else None
     top = ni.minimum_filter(np.nan_to_num(np.fmax(Cov, Rock), nan=np.inf), 3)      # raster keeps a cell's highest point, so take the lowest nearby
     for e_ in ORDER:
         (coarse_, no, M, m, p, nr, r0, r1, g, _), tiers_ = FARQ[e_], TIERS[e_]; BPRI = (0, FINE[e_])
@@ -986,11 +1087,13 @@ for tier_ in range(NT):
             if not len(T) or s['ints'][2] >= len(M):
                 continue
             T = T[ti_ == tier_]; vk_ = vkeys(p)
-            if len(SEEN):       # all three corners already drawn in this tier: a copy, such as a NOLOD piece of the Uber shell. SEEN stays sorted
-                k_ = vk_[T]; T = T[~(SEEN[np.minimum(np.searchsorted(SEEN, k_), len(SEEN) - 1)] == k_).all(1)]
+            tk_ = tkeys(vk_[T])
+            if len(SEEN):       # the same triangle already drawn in this tier: a copy, such as a NOLOD piece of the Uber shell. SEEN stays sorted.
+                # Tested corner by corner, it also dropped every far triangle filling a small hole in nearer ground, whose corners its neighbours share
+                c_ = SEEN[np.minimum(np.searchsorted(SEEN, tk_), len(SEEN) - 1)] == tk_; stats['far_copies'] += int(c_.sum()); T = T[~c_]; tk_ = tk_[~c_]
             if not len(T):
                 continue
-            mine_.append(vk_[T].ravel())
+            mine_.append(tk_)
             uv = box_uv(r0, s['fl'])
             si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
             vb_ = vblend_pair(no, slots, fx) if m['sd'] >= 28 else None
@@ -1005,7 +1108,7 @@ for tier_ in range(NT):
                 # clip_far's road cap and its hold to the lowest nearby ground tore it open at their seams: a slit down Redstone's canyon
                 # walls, the cliff beside Clear Springs' road. Kept as it is, unless it lies wholly over near ground
                 c_ = togrid(np.concatenate([p[T], p[T].mean(1, keepdims=True)], 1).reshape(-1, 3)).reshape(-1, 4, 3)
-                T = T[~(din[np.clip(c_[..., 1].astype(int), 0, N - 1), np.clip(c_[..., 0].astype(int), 0, N - 1)].min(1) > LIP)]
+                T = T[~(din0[np.clip(c_[..., 1].astype(int), 0, N - 1), np.clip(c_[..., 0].astype(int), 0, N - 1)].min(1) > LIP)]
                 V = A[T].reshape(-1, A.shape[1])
             else:
                 V, T = clip_far(A, T, dout, din)
@@ -1018,7 +1121,7 @@ for tier_ in range(NT):
             if not ts:
                 continue
             gnd = role_ground(s['name']); layers = []
-            for q in (0, 1, 5):
+            for q in blend_slots(fx):
                 if q < len(slots) and slots[q] < len(ids):
                     tid = IDX[ids[slots[q]]][0]
                     if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71:
