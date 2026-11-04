@@ -1556,7 +1556,7 @@ for tier_ in range(NT):
             if BACKDROP:        # clip_far would hold ground beyond the square to the edge cells' heights. add() sends it to the backdrop
                 k_ = (np.abs(g2b(p[T].mean(1))[:, :2]) < HALF - 4).all(1); o_ = A[T[~k_]].reshape(-1, A.shape[1]); T = T[k_]
             if HEXGROUND:       # where FH1's hexes draw it, as it is: no tiers, no clipping, no water or rock rules
-                V, T = hex_split(no, A, T); V = V.copy()
+                V, T = hex_split(no, A, T); V = V[T].reshape(-1, A.shape[1])      # as triangle rows: a mesh with no hex group comes back indexed
             elif tier_ == 0:      # FH1 draws this from its own hexes: real close-range ground beside the near tiles, only named PATCH or MIDDIST.
                 # clip_far's road cap and its hold to the lowest nearby ground tore it open at their seams: a slit down Redstone's canyon
                 # walls, the cliff beside Clear Springs' road. Kept as it is, unless it lies wholly over near ground
