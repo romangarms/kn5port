@@ -1,14 +1,14 @@
 """FH1's animated objects: windmills, wind turbines, tractors, combines and the crop duster. The fan is cut out of the built shape and given an "ambient" animation, which BeamNG plays by itself,
 as West Coast USA's pump jacks do. Vehicles follow the route in their ANIM_*.pgeo the same way. Moving parts have no collision.
 Run after build3.py, which wipes the level: python animated.py [fh1_colorado]. Safe to run twice. Needs no rebuild."""
-import json, os, pickle, re, struct, sys
+import json, os, pickle, re, struct, subprocess, sys
 from pathlib import Path
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from daewrite import FARCUT, write_lod
-import frame, gamezip, granny, mission, rmb
+import dds, frame, gamezip, granny, mission, rmb, tex
 from animsets import records
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -31,8 +31,8 @@ VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', gr
             'combine': dict(mesh=(6621, 6622), model='ANIM_CombineHarvester_001.pgeo', group='clrd_festival_combineharvester', lod=(40, 14, 1), front=-1, key=.25,
                             parts={'reel': dict(mesh=6623, hub=(0, -5.607, .992), seconds=1.5)})}
 KEY_SECONDS = 1.0; STOPPED = .05; AXLES = 1.4; TRACK = 1.0
-# Planes come from Granny meshes, which have no decoded UVs, so colour is the median of their texture. The route is level in FH1 once its tilted frame is removed
-FLYERS = {'cropduster': dict(model='ANIM_CropDuster_Zone_05_001.pgeo', group='cropduster_zone_05_001', colour=(117, 16, 10), lod=(60, 20, 1))}
+# Planes come from Granny meshes. texture: the track pool texture its UVs land on (formats.md, animatedobjects.zip). The route is level in FH1 once its tilted frame is removed
+FLYERS = {'cropduster': dict(model='ANIM_CropDuster_Zone_05_001.pgeo', group='cropduster_zone_05_001', texture=0x4FA4, lod=(60, 20, 1))}
 FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; GRAVITY = 9.81
 
 
@@ -379,9 +379,11 @@ for kind, w in FLYERS.items():
     if not inside(records(w['group'])[0]):
         print(kind, 'not in this level')
         continue
-    q, tri = granny.mesh(w['model']); t, c = route(w['model'])
+    q, tri, uv = granny.mesh(w['model']); t, c = route(w['model'])
     path = out / f'{kind}.dae'; mat = f'fh1_{kind}'
-    write_lod(path, [((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, tri), np.zeros((len(q), 2)), tri.ravel(), np.zeros((len(q), 2)))], np.zeros(3), w['lod'], None)
+    write_lod(path, [((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, tri), uv, tri.ravel(), np.zeros((len(q), 2)))], np.zeros(3), w['lod'], None)
+    a_, t_ = tex.load(w['texture']); tname = f'anim{w["texture"]:X}'      # in art/textures, so grade.py grades it with the rest
+    dds.save(level / 'art' / 'textures' / f'{tname}.color.dds', a_, tex.blocks(w['texture']) if t_['fmt'] == 0x52 else None)
     r = records(w['group'])[0]; pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
     times, p, yaw, pitch, bank = flight(t, level_route(c))
     near = cKDTree(g[:, :2]).query_ball_point(pos[:2] + p[:, :2], GROUND_RADIUS)
@@ -390,7 +392,7 @@ for kind, w in FLYERS.items():
     animate(path, [('location.X', 'X', times, p[:, 0]), ('location.Y', 'Y', times, p[:, 1]), ('location.Z', 'Z', times, p[:, 2]), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
                    ('rotationY.ANGLE', 'ANGLE', times, bank), ('rotationX.ANGLE', 'ANGLE', times, pitch)], bounds(lo, hi))
     (out / 'main.materials.json').write_text(json.dumps({mat: {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'doubleSided': True,
-                                                               'Stages': [{'baseColorFactor': [v / 255 for v in w['colour']] + [1], 'roughnessFactor': .55, 'metallicFactor': 0}]}}))
+                                                               'Stages': [{'baseColorMap': f'/levels/{LVL}/art/textures/{tname}.color.dds', 'roughnessFactor': .55, 'metallicFactor': 0}]}}))
     rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_0', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
                  'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     world_p = pos + p
@@ -405,4 +407,6 @@ with mission.edit(mg / 'fh1' / 'items.level.json') as r_:       # water.py edits
 (mg / 'fh1_anim' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
 mission.add_groups(items, 'fh1_anim')
 (level / 'fh1_animated.json').unlink(missing_ok=True)
+if (level / 'art' / 'textures_ungraded').exists():       # grade.py already ran: grade the new textures too. It grades from ungraded copies, so rerunning is safe
+    subprocess.run([sys.executable, 'grade.py', LVL], check=True)
 print('done', len(rows), 'objects ->', level)

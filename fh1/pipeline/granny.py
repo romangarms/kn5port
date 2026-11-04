@@ -1,5 +1,4 @@
-"""Meshes from the Granny files in animatedobjects.zip. These are stored flat, without usable pointers, so vertices and triangles are found by shape. Layout is in docs/formats.md.
-UVs aren't decoded, so this gives geometry only."""
+"""Meshes from the Granny files in animatedobjects.zip. These are stored flat, without usable pointers, so vertices and triangles are found by shape. Layout is in docs/formats.md."""
 import struct
 import numpy as np
 from scipy.spatial import cKDTree
@@ -24,6 +23,13 @@ def vertices(b):
     n = (len(b) - first) // 12
     p = np.frombuffer(b, '>f2', n * 6, first).astype('f8').reshape(-1, 6)[:, :3]
     return sec1, first, np.c_[p[:, 0], p[:, 2], p[:, 1]]
+
+
+def uvs(b, first, n):
+    """U is the big-endian half-float at byte 6 of each vertex, V the s16 at byte 8, both with V down as FH1's textures are stored. U runs past 1 and wraps"""
+    raw = np.frombuffer(b, 'u1', n * 12, first).reshape(-1, 12)
+    u = raw[:, 6:8].copy().view('>f2')[:, 0].astype('f8'); v = .4977 + raw[:, 8:10].copy().view('>i2')[:, 0].astype('f8') * 1.5395e-5
+    return np.c_[u, v]
 
 
 def triangles(b, sec1, first, p):
@@ -79,10 +85,10 @@ def smooth_normals(p, t):
 
 
 def mesh(name):
-    """Positions and triangles of a model's first whole mesh, which opens the index area, set upright with only the used vertices kept. Faces point outward."""
+    """Positions, triangles and UVs of a model's first whole mesh, which opens the index area, set upright with only the used vertices kept. Faces point outward."""
     b = gamezip.read('animatedobjects.zip', name)
     sec1, first, p = vertices(b); r = triangles(b, sec1, first, p)[0]
     used, inv = np.unique(r, return_inverse=True); q = upright(p, [r])[used]; t = inv.reshape(-1, 3)
     if (np.cross(q[t[:, 0]], q[t[:, 1]]) * q[t[:, 2]]).sum() < 0:
         t = t[:, ::-1]
-    return q, t
+    return q, t, uvs(b, first, len(p))[used]
