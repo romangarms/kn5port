@@ -218,11 +218,14 @@ def mesh_groups(nos):
         for s_ in m['secs']:
             T = rmb.tris(s_['ib'], m['nv'], s_['ints'][1])
             names = [f'fh1_d{IDX[i][0]:X}' for i in MT[no][0] if i in IDX]
-            mat = next((n for n in names if n in mats), None)
+            # the plain name, else one with build3.py's suffixes, such as _o<id> for an AO map
+            mat = next((n for n in names if n in mats), None) or next((k for n in names for k in mats if k.startswith(n + '_')), None)
             if mat is None:
                 sys.exit(f'no built material for mesh {no}: {names}')
             uv = np.array(s_['fl'][4:6]) + r0 * np.array(s_['fl'][6:8])
-            out.append(((mat, (lv,)), pb, nb, uv, T.ravel(), uv))
+            # UV1, which AO maps read: the same box as UV0, as uv1_box in build3.py
+            uv1 = np.array(s_['fl'][4:6]) + np.frombuffer(a[:, 20:24].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535 * np.array(s_['fl'][6:8]) if m['sd'] >= 24 else uv
+            out.append(((mat, (lv,)), pb, nb, uv, T.ravel(), uv1))
     return out
 
 

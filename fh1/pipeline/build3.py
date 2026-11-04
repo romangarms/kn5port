@@ -9,7 +9,7 @@ from numba import njit
 from scipy import ndimage as ni
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
-import colfit, dds, frame, hexzones, rmb, tex
+import colfit, dds, frame, hexzones, rmb, tex, xenos
 from daewrite import FARCUT, SKIPMID, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -71,6 +71,20 @@ shutil.rmtree(level, ignore_errors=True)        # everything here is generated, 
 inst = beamng.find_install()
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb'))
 IDX, SHADERS = pickle.load(open('../texshader.pkl', 'rb')); DRAW = np.load('../mt.npy')
+
+
+def samplers():
+    """{shader name: (AO slot, lightmap slot)}, from each shader's own pixel shader: a sampler's register is its material slot (see formats.md, .fxobj shaders)"""
+    out = {}
+    for f_ in glob.glob('../x/shaders_track_*.fxobj'):
+        ps_ = [s_ for s_ in xenos.shaders(open(f_, 'rb').read()) if s_['kind'] == 'ps']
+        if ps_:
+            r_ = {n_: reg for n_, set_, reg, _, _ in ps_[0]['consts'] if set_ == 3}
+            out[Path(f_).stem[len('shaders_track_'):].lower()] = (r_.get('AOMapSampler'), r_.get('Light_MapSampler'))
+    return out
+
+
+SAMP = samplers()
 lap('wipe and load tables')
 
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
@@ -205,6 +219,10 @@ MATS = {}
 # under instanceEmissive, and the TSStatics carry nightEmissive with a black instanceColor, so stock core_environment lights only the glass from
 # 18:00 to 6:00. GLOW: model name prefixes and the mask's slot position. GLOW_NITS by eye from West Coast's floodlight (4000) and traffic lights (5000)
 GLOW = {'OBJ_CLRD_LampPost': 3, 'OBJ_CLRD_StreetLight': 3}; GLOW_NITS = 3000; GLOWING = set()
+# Object lightmaps: FH1 adds the lightmap to the light falling on a surface, so it shows times the surface colour (formats.md, .fxobj shaders).
+# Here it's an emissive map on UV1 tinted by the texture's mean colour, under instanceEmissive, lit at night as GLOW is. LM_NITS by eye: a full-white
+# texel on a mid-grey wall comes out near nightlights.py's ground pools (NITS 40). LM_LIT: share of texels above 40 of 255 for a lightmap to be used
+LM_NITS = 80; LM_LIT = .002; LITMAP = {}
 NM = {}; PAIR = load_(PAIR_P)       # NM: the current section's normal map for each colour texture, from section_normals
 
 
@@ -238,19 +256,27 @@ def section_normals(no, slots):
     return out
 
 
-def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None):
-    """glow: an emissive mask texture, lit at night through the TSStatic's instance colour (see GLOW)"""
-    t = TX.get(tid); g_ = TX.get(glow) if glow is not None else None
+def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None, ao=None, lm=None):
+    """glow: an emissive mask texture, lit at night through the TSStatic's instance colour (see GLOW). ao and lm: an AO map and a lightmap,
+    both on UV1 (see object_maps). A lightmap lights at night like glow, which wins if both are given"""
+    t = TX.get(tid); g_ = TX.get(glow) if glow is not None else None; o_ = TX.get(ao) if ao is not None else None
+    l_ = TX.get(lm) if lm is not None and g_ is None else None
     if t is None:
         return None
     use_a = (alpha or translucent) and t['cut'] > 0.002; n_ = NM.get(tid)
-    key = f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '') + (f'_e{glow:X}' if g_ else '')
+    key = (f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '') + (f'_e{glow:X}' if g_ else '')
+           + (f'_o{ao:X}' if o_ else '') + (f'_l{lm:X}' if l_ else ''))
     if key not in MATS:
         st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
         if n_:
             st['normalMap'] = TX.normal(n_)
+        if o_:
+            st.update({'ambientOcclusionMap': f"{rel}/art/textures/{o_['name']}.color.dds", 'ambientOcclusionMapUseUV': 1})
         if g_:
             st.update({'emissiveMap': f"{rel}/art/textures/{g_['name']}.color.dds", 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': GLOW_NITS, 'instanceEmissive': True})
+        elif l_:
+            st.update({'emissiveMap': f"{rel}/art/textures/{l_['name']}.color.dds", 'emissiveMapUseUV': 1, 'emissiveFactor': [round(float(v_) / 255, 3) for v_ in t['rgb']],
+                       'emissiveIntensityNits': LM_NITS, 'instanceEmissive': True})
         m = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng'}
         if use_a:
             st['opacityMap'] = f"{rel}/art/textures/{t['name']}_o.data.dds"
@@ -488,6 +514,39 @@ def uv_sets(m):
     return r0, r1
 
 
+def uv1_box(m, fl):
+    """An object's second UV set, TEXCOORD1: bytes 20-23 as u16 fractions of the same UV box as UV0. Lightmaps and AO maps read it.
+    None for strides under 24, which have none"""
+    if m['sd'] < 24:
+        return None
+    a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
+    return box_uv(np.frombuffer(a[:, 20:24].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535, fl)
+
+
+def lit_map(tid):
+    """whether a lightmap has any light in it: most are black, or only exist as the bundles' 16 px stand-ins"""
+    if tid not in LITMAP:
+        r_ = tex.load(tid) if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71 else None
+        LITMAP[tid] = bool(r_ and r_[0] is not None and (r_[0][..., :3].mean(2) > 40).mean() > LM_LIT)
+    return LITMAP[tid]
+
+
+def object_maps(no, slots, fx, key=None):
+    """(AO map, lightmap) texture ids of an object material, at the slots its shader samples them from. A lightmap slot of 0xFFFFFFFF
+    takes the placement's own lightmap: key, the draw table's s[1] for that placement. 'draw' when that's wanted but no key is given.
+    Lightmaps without light are left out"""
+    a_, l_ = SAMP.get(fx, (None, None)); ids = MT[no][0]; ao = lm = None
+    if a_ is not None and a_ < len(slots) and slots[a_] < len(ids):
+        t_ = IDX[ids[slots[a_]]][0]
+        ao = t_ if tex.bix(t_) and tex.bix(t_)['fmt'] != 0x71 else None
+    if l_ is not None and l_ < len(slots):
+        if slots[l_] == 0xFFFFFFFF:
+            lm = 'draw' if key is None else (IDX[key][0] if key in IDX and lit_map(IDX[key][0]) else None)
+        elif slots[l_] < len(ids) and lit_map(IDX[ids[slots[l_]]][0]):
+            lm = IDX[ids[slots[l_]]][0]
+    return ao, lm
+
+
 def box_uv(t, fl):
     """UVs are u16 fractions t = v / 65535 of the mesh's UV box: fl[4:6] is its low corner and fl[6:8] its size. Reading them as s16
     shifted every UV by half the box, which tiling textures hide and atlases (signs, cars, facades) don't, and reading fl[6:8] as the
@@ -713,14 +772,14 @@ def lod_level(c):
     return LEVEL.get(int(c['f'].split('.')[1]), lod(c['name']))
 
 
-moved = set(); movedno = set(); atzero = set(); SHELL = set(); COARSE = set()      # SHELL: FH1 never culls these. They're the coarse ground behind everything
+moved = set(); movedno = set(); atzero = set(); SHELL = set(); COARSE = set(); WORLDLM = {}      # SHELL: FH1 never culls these. They're the coarse ground behind everything
 for (did, p_), r_ in ZREC.items():
     t = int(DRAW['t'][did])
     if abs(r_['pos'][0]) + abs(r_['pos'][2]) >= 1:
         movedno.add(t)
         moved.update(gkey(c) for c in FILEMESH.get(t, ()) if gkey(c)[0] == 'ring' or not GENERIC.match(lodkey(c['name'])))
     elif not (r_['lst'] or r_['name']):
-        atzero.add(t)
+        atzero.add(t); WORLDLM[t] = int(DRAW['s'][did][1])     # the draw's own lightmap, for materials that take one from it
         if r_['lod'][0] >= 1e5:
             SHELL.add(t)
 
@@ -884,17 +943,22 @@ for f, cs in byfile.items():
                 else:
                     add('col', material(tid, gnd), p, nr, uv, T)
                 surf[f'road:{gnd}'] += len(T)
-            elif re.search(r'cable|tether', n, re.I):
-                add('vis', material(tid, alpha=opac), p, nr, uv, T); surf['cable'] += len(T)
-            elif re.search(r'armco|barrier|fence|rail', n, re.I):
-                lv_ = LV; LV = tuple(FARCUT if x == 2 else x for x in LV)      # barriers stop at 800 m, and their copies add up
-                add('bar', material(tid, 'METAL', alpha=opac), p, nr, uv, T); surf['barrier'] += len(T); LV = lv_
-            elif re.search(r'rock|wall|cliff', n, re.I) or 'vblnd' in fx:
-                add('col', material(tid, 'ROCK', alpha=opac), p, nr, uv, T); surf['rock'] += len(T)
-                if near_:
-                    raster(Rock, g[T])
-            else:
-                add('pro', material(tid, alpha=opac), p, nr, uv, T); surf['prop'] += len(T)
+            else:       # objects: AO map and lightmap on UV1 (object_maps). A lit lightmap puts the section in a 'lit' cell, lit at night
+                u1 = uv1_box(m, s['fl']) if 'vblnd' not in fx else None
+                ao, lm = object_maps(no, slots, fx, WORLDLM.get(no)) if u1 is not None else (None, None)
+                lm = None if lm == 'draw' else lm
+                if re.search(r'cable|tether', n, re.I):
+                    add('vis', material(tid, alpha=opac, ao=ao), p, nr, uv, T, uv1=u1); surf['cable'] += len(T)
+                elif re.search(r'armco|barrier|fence|rail', n, re.I):
+                    lv_ = LV; LV = tuple(FARCUT if x == 2 else x for x in LV)      # barriers stop at 800 m, and their copies add up
+                    add('bar', material(tid, 'METAL', alpha=opac, ao=ao), p, nr, uv, T, uv1=u1); surf['barrier'] += len(T); LV = lv_
+                elif re.search(r'rock|wall|cliff', n, re.I) or 'vblnd' in fx:
+                    add('col', material(tid, 'ROCK', alpha=opac, ao=ao), p, nr, uv, T, uv1=u1); surf['rock'] += len(T)
+                    if near_:
+                        raster(Rock, g[T])
+                else:
+                    add('lit' if lm else 'pro', material(tid, alpha=opac, ao=ao, lm=lm), p, nr, uv, T, uv1=u1); surf['prop_lit' if lm else 'prop'] += len(T)
+                surf['ao'] += len(T) if ao else 0
 LV = (0, 1, 2); FIX = None; NM = {}
 print('dropped sections by mesh', DROPPED.most_common(24))
 lap('world meshes')
@@ -1388,10 +1452,13 @@ def model_groups(no):
             gs_ = next((v_ for k_, v_ in GLOW.items() if NAME_.get(no, '').startswith(k_)), None)
             sl_ = M[mi][1] if mi < len(M) else []
             glow = IDX[ids[sl_[gs_]]][0] if gs_ is not None and gs_ < len(sl_) and sl_[gs_] < len(ids) else None
-            mt = material(ts[0], alpha=True, two=True, glow=glow)
+            fx_ = SHADERS[MT[no][1][M[mi][0]]] if mi < len(M) and M[mi][0] < len(MT[no][1]) else ''
+            u1 = None if card or cloth else uv1_box(m, s['fl'])
+            ao, lm = object_maps(no, sl_, fx_) if u1 is not None else (None, None)
+            mt = material(ts[0], alpha=True, two=True, glow=glow, ao=ao, lm=None if lm == 'draw' else lm)
             if mt is None:
                 continue
-            if glow is not None:
+            if glow is not None or lm not in (None, 'draw'):      # stays a TSStatic, which core_environment lights at night
                 GLOWING.add(no)
             if card or cloth:
                 uv = box_uv(r0, s['fl'])
@@ -1400,7 +1467,9 @@ def model_groups(no):
             else:
                 uv = box_uv(r0, s['fl'])
             idx, inv = np.unique(T, return_inverse=True)
-            groups.append((mt, pb[idx], nb[idx], uv[idx], inv.astype(np.int64).ravel()))
+            # the last entry lets a placement remake the material with its own lightmap (see the free-roam objects)
+            groups.append((mt, pb[idx], nb[idx], uv[idx], inv.astype(np.int64).ravel(), (uv if u1 is None else u1)[idx],
+                           dict(tid=ts[0], glow=glow, ao=ao, nm=NM.get(ts[0]), draw=lm == 'draw')))
             lo = np.minimum(lo, pb.min(0)); hi = np.maximum(hi, pb.max(0))
     return groups, lo, hi, label
 
@@ -1555,9 +1624,9 @@ for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     base = re.sub(r'_LOD\d+.*$', '', nm_)
     k_ = (base, round(x, 1), round(z, 1))
     if k_ not in uniq or lod(nm_) < lod(uniq[k_][1]):
-        uniq[k_] = (t, nm_, x, y, z, r_['rot'].tolist())
+        uniq[k_] = (t, nm_, x, y, z, r_['rot'].tolist(), did)
 print('free-roam objects', len(uniq), dict(skip))
-for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
+for (base, kx, kz), (t, nm_, x, y, z, Rr, did) in uniq.items():
     l_ = lod(nm_); t0 = t
     for d_ in range(1, l_ + 1):                  # use the LOD0 sibling when the game had a lower one loaded
         if re.sub(r'_LOD\d+.*$', '', names_.get(t - d_, '')) == base and lod(names_[t - d_]) == 0:
@@ -1574,6 +1643,12 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr) in uniq.items():
     rows[it['item']].append(dict(ctxid=0, pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=[round(float(q), 5) for q in Rm.ravel()], scale=round(float(np.clip(sc, .2, 5)), 3), type=it['item']))
     if SMASH.query([x, z])[0] < .05:
         rows[it['item']][-1]['smash'] = True; kept['smashable'] += 1
+    # The placement's own lightmap, for models whose material takes one from the draw. Only when this record's mesh is the one drawn:
+    # a LOD1 record's lightmap is laid out for LOD1's UV1
+    if t0 == t and any(g[6]['draw'] for g in it['groups']):
+        k_ = int(DRAW['s'][did][1])
+        if k_ in IDX and lit_map(IDX[k_][0]):
+            rows[it['item']][-1]['lm'] = IDX[k_][0]; kept['own lightmap'] += 1
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
 lap('smashables and free-roam objects')
@@ -1583,20 +1658,27 @@ for no, it in list(defs.items()):
     if not it or PLANT.search(it['item']) or it['item'] not in rows:
         continue
     for o in rows.pop(it['item']):
-        SOLIDS[it['item']] += 1; smash_ = o.pop('smash', False)
+        SOLIDS[it['item']] += 1; smash_ = o.pop('smash', False); lm_ = o.pop('lm', None)
         Rm = np.array(o['rotationMatrix']).reshape(3, 3) * o['scale']; pos = np.array(o['pos'])
-        if np.linalg.det(Rm) > 0 and (np.abs(pos[:2]) < HALF - 4).all():       # one shape per model. Mirrored objects stay baked
+        # one shape per model. Mirrored objects stay baked, as do placements with their own lightmap, which a shared shape can't carry
+        if np.linalg.det(Rm) > 0 and (np.abs(pos[:2]) < HALF - 4).all() and lm_ is None:
             INST[no].append(dict(o, smash=smash_)); solid += 1
             continue
         far_ = FARCUT if max(it['h'], it['w']) < 15 else 2                       # small objects stop at 800 m
-        for lvl_, (mat, pb, nb, uv, t) in [(((0,) if it['low'] else (0, 1, far_)), g) for g in it['groups']] + [((1, far_), g) for g in it['low']]:
+        # 'lit' cells are TSStatics that core_environment lights at night, for lightmaps and glowing glass
+        cat_ = 'vis' if smash_ else 'lit' if lm_ is not None or no in GLOWING else 'pro'
+        for lvl_, top_, g in [(((0,) if it['low'] else (0, 1, far_)), True, g) for g in it['groups']] + [((1, far_), False, g) for g in it['low']]:
+            mat, pb, nb, uv, t, uv1, spec = g
+            if lm_ is not None and spec['draw'] and top_:       # the lightmap is laid out for this mesh's UV1, not its LOD1's
+                nm_keep = NM; NM = {spec['tid']: spec['nm']} if spec['nm'] else {}
+                mat = material(spec['tid'], alpha=True, two=True, glow=spec['glow'], ao=spec['ao'], lm=lm_) or mat; NM = nm_keep
             P = pb @ Rm.T + pos; N_ = nb @ Rm.T; N_ = N_ / np.maximum(np.linalg.norm(N_, axis=1, keepdims=True), 1e-9)
             c = P.mean(0)
             if (np.abs(c[:2]) >= HALF - 4).any():
                 continue
             key = np.floor((c[:2] + HALF) / CELL).astype(int); u = int(key[0]) * 1000 + int(key[1])
-            cells[(u, 'vis' if smash_ else 'pro')][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv))
-            stats['pro'] += len(t) // 3
+            cells[(u, cat_)][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv1))
+            stats['pro'] += len(t) // 3; stats['own_lightmap_tris'] += len(t) // 3 if lm_ is not None else 0
         solid += 1
 print('pgeo problems', {k: v for k, v in stats.items() if k.startswith(('pgeo', 'proc'))}, LOSTSET.most_common(8))
 print('solid placed objects', solid, 'plant instances', sum(len(v) for v in rows.values()), 'plant items', len(rows))
@@ -1715,7 +1797,7 @@ for (u, cat), mm in cells.items():
     R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
     # a mesh drawn at every LOD is cooked once per detail level, so those go in a one-detail shape: one copy instead of three
     whole = [((g[0][0], (0,)),) + tuple(g[1:]) for g in groups if {0, 1, 2} <= set(g[0][1])]
-    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 0, 'pro': 2}.get(cat)
+    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 0, 'pro': 2, 'lit': 2}.get(cat)
     rail = RAILMESH.get(u) if cat == 'bar' else None
     if cat == 'bar' and not COLBOX:
         collide = 2
@@ -1731,7 +1813,8 @@ for (u, cat), mm in cells.items():
         col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide, colmesh=cm)
         ct = 'Collision Mesh' if col else 'None'
         items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
-                      'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct})
+                      'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct,
+                      **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if cat == 'lit' else {})})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
 print('rail collision', RAIL_CHAINS, 'walls from', RAIL_SEGS, 'pieces,', stats['col_rail_tris'], 'triangles, for', sum(len(t) for v in RAILS.values() for t in v), 'barrier triangles at LOD0')
 lap('shapes queued')
