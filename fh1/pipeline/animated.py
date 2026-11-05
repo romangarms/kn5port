@@ -33,15 +33,23 @@ VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', gr
                             parts={'reel': dict(mesh=6623, hub=(0, -5.607, .992), seconds=1.5)})}
 KEY_SECONDS = 1.0; STOPPED = .05; AXLES = 1.4; TRACK = 1.0
 # Planes come from Granny meshes. texture: the track pool texture its UVs land on (formats.md, animatedobjects.zip). The route is level in FH1 once its tilted frame is removed
-FLYERS = {'cropduster': dict(model='ANIM_CropDuster_Zone_05_001.pgeo', group='cropduster_zone_05_001', texture=0x4FA4, lod=(60, 20, 1))}
+# The crop duster flies with the rides now: its decoded route is level once its skeleton's placement is applied. This path is kept for another plane
+FLYERS = {}
 FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; GRAVITY = 9.81
-# Rides, balloons and inflatables from the track's own copies (animcopy.py). Every bone that carries geometry becomes a part, a shape keyed to the
-# bone's motion from its bind pose; only the most detailed meshes are used. Parts that never move, or smaller than TINY metres across, go together in
-# one still shape. Each part's keys are as far apart as an error at its corners of KEY_ERROR of its size allows, at least KEY_ERROR_MIN metres, against
+# Rides, balloons, inflatables, sprinklers and flying birds from the track's own copies (animcopy.py). Every bone that carries geometry becomes a part,
+# a shape keyed to the bone's motion from its bind pose; only the most detailed meshes are used. Parts that never move, or smaller than TINY metres
+# across (the blimp's tether boxes) unless their kind is in SMALL_PARTS, go together in one still shape. Each kind's parts go in one shape, written once, with
+# keys for each moving part's nodes, and every placement stands a TSStatic of it, turned as the placement is. Each part's keys are as far apart as an error at its corners of KEY_ERROR of its size allows, at least KEY_ERROR_MIN metres, against
 # the motion sampled every KEY_MIN seconds. The quantised curves wobble a little between their own keys, so a large part can't be held closer
 # STILL: metres and degrees a part may move and still count as still
 RIDES = {'balloon': 'ANIM_FRGND_HotAirBalloonCircle', 'ferris': 'ANIM_FRGND_Ferris', 'zipper': 'ANIM_FRGND_Zipper', 'booster': 'ANIM_ITLY_Ride_Booster',
-         'fan': 'ANIM_ITLY_Ride_Fan', 'nofear': 'ANIM_ITLY_Ride_NoFear', 'roundup': 'ANIM_ITLY_Ride_Roundup', 'blimp': 'ANIM_FRGND_InflatableShip'}
+         'fan': 'ANIM_ITLY_Ride_Fan', 'nofear': 'ANIM_ITLY_Ride_NoFear', 'roundup': 'ANIM_ITLY_Ride_Roundup', 'blimp': 'ANIM_FRGND_InflatableShip',
+         'sprinkler': 'ANIM_WaterSprinkler', 'sprinklersmall': 'ANIM_WaterSprinklerSmall', 'birds': 'ANIM_Birds_Flying_Field_', 'cropduster': 'ANIM_CropDuster_Zone_05_'}
+# Meshes left out: the crop duster carries a 3473-triangle P51 Mustang propeller on its own propeller's bone, over the biplane's 84-triangle blur disc
+SKIP_MESHES = {'P51_Mustang_Propeller'}
+# Kinds that travel: their placement is lifted if the largest part's route passes under the ground samples, to FLIGHT_CLEARANCE metres above them
+FLIGHTS = {'cropduster'}; FLIGHT_CLEARANCE = 5.0
+SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
 # ANIM_FRGND_InflatableSprayGun is left out: FH1's only three are 5 km out, 200 m under the background mountains, where nothing shows them
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
 EULER = ('ZYX', 'XYZ', 'YXZ', 'YZX', 'ZXY', 'XZY')
@@ -67,12 +75,16 @@ def transforms(order='ZYX'):
 
 
 def animate(path, curves, extra='', order='ZYX'):
-    """Give each LOD node the separate transforms that animation channels address, as in the stock pump jacks. curves: (target, param, times, values)."""
+    """Give each LOD node the separate transforms that animation channels address, as in the stock pump jacks. curves: (target, param, times, values),
+    or {group: (curves, order)} for each write_lod group that moves on its own; other groups' nodes stay put."""
     text = path.read_text(); anims = []
     for node in re.findall(r'<node id="(o\d+_a\d+)"', text):
+        cs, o = (curves, order) if not isinstance(curves, dict) else curves.get(int(node[1:node.index('_')]), (None, None))
+        if cs is None:
+            continue
         m = re.search(rf'(<node id="{node}"[^>]*>\s*)<matrix sid="transform">[^<]*</matrix>', text)
-        text = text[:m.start()] + m.group(1) + transforms(order) + text[m.end():]
-        anims += [channel(node, *c) for c in curves]
+        text = text[:m.start()] + m.group(1) + transforms(o) + text[m.end():]
+        anims += [channel(node, *c) for c in cs]
     if not anims:
         raise ValueError(f'no LOD nodes in {path}')
     i = text.index('<library_visual_scenes')
@@ -476,7 +488,7 @@ for kind, model in RIDES.items():
     # triangles of each bone, by material, from the most detailed meshes. A skinned triangle goes with its first vertex's bone
     parts = {}
     for m in ms:
-        if animcopy.lod(m, ms):
+        if animcopy.lod(m, ms) or m['name'] in SKIP_MESHES:
             continue
         tri_bone = m['bones'][m['idx'][:, 0]] if m['skin'] else np.full(m['T'], m['bone'])
         for slots, first, count in m['segs']:
@@ -485,35 +497,43 @@ for kind, model in RIDES.items():
                 t_ = m['idx'][first:first + count][tri_bone[first:first + count] == k]
                 parts.setdefault((m['model'], int(k)), []).append((mat, m, t_))
     dur = animcopy.duration(b); times = np.r_[np.arange(0, dur - KEY_MIN / 2, KEY_MIN), dur]; W, B_, _ = animcopy.poses(b, times)
+    # Granny x, up, z -> BeamNG x, y, up, as an unturned placement converts. That swap mirrors, so faces are turned back.
+    # Every part goes in one shape, a write_lod group per material, and each moving part's groups get its own keys
+    S = np.eye(4)[[0, 2, 1, 3]]; groups = []; curves = {}; swept = []; n_moving = 0; n_keys = []; route = np.zeros((0, 3))
+    for (s, k), pieces in sorted(parts.items()):
+        T = S @ W[s][k] @ np.linalg.inv(B_[s][k]) @ S
+        own = []
+        for mat, m, t_ in pieces:
+            used, inv = np.unique(t_, return_inverse=True); q = (S[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1]
+            own.append(((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, t_), m['uv'][used], t_.ravel(), np.zeros((len(q), 2))))
+        p = np.concatenate([g[1] for g in own])
+        moves = np.abs(T[:, :3, 3] - T[:1, :3, 3]).max() > STILL[0] or np.degrees((Rotation.from_matrix(T[:, :3, :3]) * Rotation.from_matrix(T[0, :3, :3]).inv()).magnitude()).max() > STILL[1]
+        if not moves or (np.ptp(p, 0).max() < TINY and kind not in SMALL_PARTS):
+            groups += [(g[0], (T[0, :3, :3] @ g[1].T).T + T[0, :3, 3], (T[0, :3, :3] @ g[2].T).T) + g[3:] for g in own]
+            swept.append((T[0, :3, :3] @ p.T).T + T[0, :3, 3])
+            continue
+        box = np.array(list(itertools.product(*zip(p.min(0), p.max(0))))); swept.append((np.einsum('nij,kj->nki', T[:, :3, :3], box) + T[:, None, :3, 3]).reshape(-1, 3))
+        ix, order, a = keys(T, box); n_keys.append(len(ix)); n_moving += 1
+        if len(p) > len(route):
+            route = p.mean(0) @ T[:, :3, :3].transpose(0, 2, 1) + T[:, :3, 3]
+        c = ([(f'location.{c_}', c_, times[ix], T[ix, n, 3]) for n, c_ in enumerate('XYZ')] + [(f'rotation{c_}.ANGLE', 'ANGLE', times[ix], a[:, n]) for n, c_ in enumerate(order)], order)
+        curves.update({len(groups) + n: c for n in range(len(own))}); groups += own
+    swept = np.concatenate(swept); path = out / f'{kind}.dae'; c = (swept.min(0) + swept.max(0)) / 2
+    write_lod(path, groups, np.zeros(3), ride_sizes(np.linalg.norm(np.concatenate([g[1] for g in groups]) - c, axis=1).max()), None)
+    if curves:
+        animate(path, curves, bounds(swept.min(0) - 2, swept.max(0) + 2))
     for i, r in enumerate(recs):
-        # FH1 x, up, z -> BeamNG x, y, z through the placement's rotation, as the records are converted. That swap mirrors, so faces are turned back
-        L = np.eye(4); L[:3, :3] = np.array([r[0:3], r[4:7], r[8:11]]).T[[0, 2, 1]]; flip = np.linalg.det(L) < 0
-        pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT]); still = []; shapes = []; n_keys = []
-        for j, ((s, k), pieces) in enumerate(sorted(parts.items())):
-            T = L @ W[s][k] @ np.linalg.inv(B_[s][k]) @ np.linalg.inv(L)
-            groups = []
-            for mat, m, t_ in pieces:
-                used, inv = np.unique(t_, return_inverse=True); q = (L[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1] if flip else inv.reshape(-1, 3)
-                groups.append(((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, t_), m['uv'][used], t_.ravel(), np.zeros((len(q), 2))))
-            p = np.concatenate([g[1] for g in groups]); c = (p.min(0) + p.max(0)) / 2
-            moves = np.abs(T[:, :3, 3] - T[:1, :3, 3]).max() > STILL[0] or np.degrees((Rotation.from_matrix(T[:, :3, :3]) * Rotation.from_matrix(T[0, :3, :3]).inv()).magnitude()).max() > STILL[1]
-            if not moves or np.ptp(p, 0).max() < TINY:
-                still += [(g[0], (T[0, :3, :3] @ g[1].T).T + T[0, :3, 3], (T[0, :3, :3] @ g[2].T).T) + g[3:] for g in groups]
-                continue
-            path = out / f'{kind}_{i}_{j}.dae'; write_lod(path, groups, np.zeros(3), ride_sizes(np.linalg.norm(p - c, axis=1).max()), None)
-            box = np.array(list(itertools.product(*zip(p.min(0), p.max(0))))); swept = np.einsum('nij,kj->nki', T[:, :3, :3], box) + T[:, None, :3, 3]
-            ix, order, a = keys(T, box); n_keys.append(len(ix))
-            animate(path, [(f'location.{c_}', c_, times[ix], T[ix, n, 3]) for n, c_ in enumerate('XYZ')] + [(f'rotation{c_}.ANGLE', 'ANGLE', times[ix], a[:, n]) for n, c_ in enumerate(order)],
-                    bounds(swept.reshape(-1, 3).min(0) - 2, swept.reshape(-1, 3).max(0) + 2), order)
-            shapes.append(f'{kind}_{i}_{j}')
-        if still:
-            p = np.concatenate([g[1] for g in still]); c = (p.min(0) + p.max(0)) / 2
-            write_lod(out / f'{kind}_{i}_still.dae', still, np.zeros(3), ride_sizes(np.linalg.norm(p - c, axis=1).max()), None); shapes.append(f'{kind}_{i}_still')
-        for s_ in shapes:
-            rows.append({'class': 'TSStatic', 'name': f'fh1_{s_}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{s_}.dae', 'position': [round(float(v), 3) for v in pos],
-                         'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
-        print(kind, i, [round(float(v)) for v in pos], len(parts), 'parts,', len(shapes) - bool(still), 'moving,', sum(len(t_) for ps in parts.values() for _, _, t_ in ps), 'triangles,',
-              sum(n_keys), 'keys over', round(dur, 1), 's')
+        # The placement's turn in BeamNG axes: its records convert as S R^T, which is this turn after S
+        Rm = S[:3, :3] @ np.array([r[0:3], r[4:7], r[8:11]]).T @ S[:3, :3]; pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
+        if kind in FLIGHTS:
+            w_ = pos + route @ Rm.T; near = cKDTree(g[:, :2]).query_ball_point(w_[:, :2], GROUND_RADIUS)
+            low = min(w_[k, 2] - g[i_, 2].max() for k, i_ in enumerate(near) if i_)
+            pos[2] += max(FLIGHT_CLEARANCE - low, 0)
+            print(kind, i, 'lowest', round(float(low), 1), 'm over the ground within', GROUND_RADIUS, 'm, lifted', round(float(max(FLIGHT_CLEARANCE - low, 0)), 1))
+        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
+                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+    print(kind, len(recs), 'placed', [[round(float(v)) for v in (r[12] - CX, r[14] + CZ)] for r in recs][:4], len(parts), 'parts,', n_moving, 'moving,',
+          sum(len(t_) for ps in parts.values() for _, _, t_ in ps), 'triangles,', sum(n_keys), 'keys over', round(dur, 1), 's')
 (out / 'main.materials.json').write_text(json.dumps(mats_))
 moved = {o['name']: o['shapeName'] for o in world if o.get('shapeName') != was.get(o.get('name'))}
 with mission.edit(mg / 'fh1' / 'items.level.json') as r_:       # water.py edits this file too, while this runs: only the shapes this swapped change

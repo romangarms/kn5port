@@ -118,9 +118,9 @@ def bind(b, ms):
 
 
 def lod(m, ms):
-    """detail level of a mesh: from its bone's name (LOD00, LOD01...), or for skinned meshes its rank by size among its model's skinned meshes"""
+    """detail level of a mesh: from its bone's name (LOD00, LOD01_...), or for skinned meshes its rank by size among its model's skinned meshes"""
     if not m['skin']:
-        r = re.search(r'LOD0*(\d+)$', m['name'])
+        r = re.search(r'LOD0*(\d+)_?$', m['name'])
         return int(r.group(1)) if r else 0
     return sorted((x['T'] for x in ms if x['skin'] and x['model'] == m['model']), reverse=True).index(m['T'])
 
@@ -177,6 +177,10 @@ def knots_controls(d, kind, dim):
     if kind.startswith('D9I3'):
         n = len(kc) // 4; c = kc[n:].reshape(-1, 3) * values(d['ControlScales']) + values(d['ControlOffsets'])
         return kc[:n] / one, np.array([np.diag(x).ravel() for x in c])
+    if kind in ('DaK16uC16u', 'DaK8uC8u'):
+        # any dimension: the scales, then the offsets, one per component
+        so = values(d['ControlScaleOffsets']); n_ = len(so) // 2; n = len(kc) // (n_ + 1)
+        return kc[:n] / one, kc[n:].reshape(n, n_) * so[:n_] + so[n_:]
     raise ValueError(f'curve {kind} not read')
 
 

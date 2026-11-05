@@ -15,6 +15,7 @@ local MAX_PARTICLE_NODES = 80
 -- Particles alive at once across running emitters, from each entry's count. Nearer emitters win. Set after the user saw fps drop
 local PARTICLE_BUDGET = 4000
 local SKY_SECONDS = 2
+local SEQUENCE_SECONDS = 1 -- how often the sequences near the camera are picked
 
 local data
 local levelDir
@@ -38,6 +39,9 @@ local shots = {} -- playing one-shots: { id, ends }
 local nextShot = {} -- one-shot group -> clock time
 local sources = {} -- sound file -> { id, volume }
 local targets = {} -- sound file -> volume to fade towards
+local sequences -- fh1_sequences.json: ANIM models' effect bones (the geyser, fireworks), switched and moved on their loops
+local running = {} -- sequences near the camera and in their hours
+local sinceSequences = 0
 
 local function deleteSource(entry)
   local sound = scenetree.findObjectById(entry.id)
@@ -175,6 +179,64 @@ local function updateParticles(x, y)
 end
 
 -- Puts one of sky.py's bakes on the skybox, reflections and rivers, and hides the skybox for bakes marked hideBox. Only does work when the quarter hour picks a different bake
+-- A moving node's place at time t along its keys { t, x, y, z }
+local function along(path, t)
+  if t <= path[1][1] then return path[1] end
+  for i = 2, #path do
+    if t <= path[i][1] then
+      local a, b = path[i - 1], path[i]
+      local f = (t - a[1]) / math.max(b[1] - a[1], 1e-6)
+      return { t, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f }
+    end
+  end
+  return path[#path]
+end
+
+local function stopSequence(s)
+  for _, n in ipairs(s.nodes) do
+    if n.on then setAwake(n[1], false) end
+    n.on = false
+  end
+end
+
+-- Sequences run within their distance and hours, as other emitters do
+local function pickSequences(x, y)
+  local hour = hourNow()
+  local want = {}
+  for _, s in ipairs(sequences) do
+    local dx, dy = x - s.x, y - s.y
+    local hours = {} -- inWindow reads an emitter entry's window from [6] and [7]
+    if s.hours then hours[6], hours[7] = s.hours[1], s.hours[2] end
+    if dx * dx + dy * dy < s.dist * s.dist and inWindow(hours, hour) then want[s] = true end
+  end
+  for s in pairs(running) do
+    if not want[s] then stopSequence(s) end
+  end
+  running = want
+end
+
+-- Each frame: every node of a running sequence is on during its windows of the loop, and a moving one is put on its path first
+local function playSequences()
+  for s in pairs(running) do
+    local t = (clock + s.phase) % s.period
+    for _, n in ipairs(s.nodes) do
+      local on = false
+      for _, w in ipairs(n[2]) do
+        if t >= w[1] and t < w[2] then on = true break end
+      end
+      if on and n[3] then
+        local node = scenetree.findObject(n[1])
+        local p = along(n[3], t)
+        if node then node:setPosition(vec3(p[2], p[3], p[4])) end
+      end
+      if on ~= n.on then
+        setAwake(n[1], on)
+        n.on = on
+      end
+    end
+  end
+end
+
 -- nightlights.py's lightmap overlays are hidden by day: their black additive surface still shows a sheen in shade. Same 18:00 to 6:00 window as
 -- stock core_environment's nightEmissive switch, which makes them glow. Only does work when day turns to night or back
 local NIGHT_FROM, NIGHT_TO = 18, 6
@@ -343,6 +405,9 @@ local function start()
   sinceParticles = PARTICLE_SECONDS
   emitters = FS:fileExists(levelDir .. 'fh1_particles.json') and jsonReadFile(levelDir .. 'fh1_particles.json') or nil
   sky = FS:fileExists(levelDir .. 'fh1_sky.json') and jsonReadFile(levelDir .. 'fh1_sky.json') or nil
+  sequences = FS:fileExists(levelDir .. 'fh1_sequences.json') and jsonReadFile(levelDir .. 'fh1_sequences.json') or nil
+  running = {}
+  sinceSequences = SEQUENCE_SECONDS
   skyBake = nil
   restoreBloom()
   lookZone = nil
@@ -375,6 +440,20 @@ local function onUpdate(dtReal)
     if not ok then
       log('E', logTag, tostring(err) .. ', particles are off')
       emitters = nil
+    end
+  end
+  sinceSequences = sinceSequences + dtReal
+  if sequences then
+    local ok, err = true, nil
+    if sinceSequences >= SEQUENCE_SECONDS then
+      sinceSequences = 0
+      local x, y = core_camera.getPositionXYZ()
+      ok, err = pcall(pickSequences, x, y)
+    end
+    if ok then ok, err = pcall(playSequences) end
+    if not ok then
+      log('E', logTag, tostring(err) .. ', the geyser and fireworks are off')
+      sequences = nil
     end
   end
   if sinceUpdate >= UPDATE_SECONDS then
