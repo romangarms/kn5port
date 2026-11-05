@@ -41,8 +41,8 @@ FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; G
 # the motion sampled every KEY_MIN seconds. The quantised curves wobble a little between their own keys, so a large part can't be held closer
 # STILL: metres and degrees a part may move and still count as still
 RIDES = {'balloon': 'ANIM_FRGND_HotAirBalloonCircle', 'ferris': 'ANIM_FRGND_Ferris', 'zipper': 'ANIM_FRGND_Zipper', 'booster': 'ANIM_ITLY_Ride_Booster',
-         'fan': 'ANIM_ITLY_Ride_Fan', 'nofear': 'ANIM_ITLY_Ride_NoFear', 'roundup': 'ANIM_ITLY_Ride_Roundup', 'blimp': 'ANIM_FRGND_InflatableShip',
-         'spraygun': 'ANIM_FRGND_InflatableSprayGun'}
+         'fan': 'ANIM_ITLY_Ride_Fan', 'nofear': 'ANIM_ITLY_Ride_NoFear', 'roundup': 'ANIM_ITLY_Ride_Roundup', 'blimp': 'ANIM_FRGND_InflatableShip'}
+# ANIM_FRGND_InflatableSprayGun is left out: FH1's only three are 5 km out, 200 m under the background mountains, where nothing shows them
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
 EULER = ('ZYX', 'XYZ', 'YXZ', 'YZX', 'ZXY', 'XZY')
 PLAIN = (.55, .55, .55, 1)            # draws whose colour slot is empty

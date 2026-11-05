@@ -214,11 +214,13 @@ def duration(b):
 
 def poses(b, times):
     """World transforms of every bone at each time, [skeleton][bone] -> (n, 4, 4), for column vectors in Granny axes, and the bind pose of each, from
-    InverseWorldTransform. Bones without a track keep their rest transform"""
+    InverseWorldTransform. Bones without a track keep their rest transform. A track group's InitialPlacement places its skeleton's root: NoFear's arm
+    pivots 16 m up and turned, and the Zipper's cars hang from the boom, only through it"""
     g = granny2.File(b); t = g.tree(); groups = {tg['Name']: tg for a in t['Animations'][:1] for tg in a['TrackGroups']}
     out = []; rest = []
     for s in t['Skeletons']:
-        tracks = {tr['Name']: tr for tr in groups.get(s['Name'], {}).get('TransformTracks', [])}
+        tg = groups.get(s['Name'], {}); tracks = {tr['Name']: tr for tr in tg.get('TransformTracks', [])}
+        x = tg.get('InitialPlacement'); P = np.eye(4) if x is None else local(x['position'][None].astype('f8'), x['orientation'][None].astype('f8'), x['scale_shear'][None].astype('f8'))[0]
         W = []; B = []
         for bone in s['Bones']:
             tr = tracks.get(bone['Name'])
@@ -232,7 +234,7 @@ def poses(b, times):
                 q = sample(k, q, degree, times)
                 L = local(sample(*curve(g, tr['PositionCurve']['CurveData'], 3), times), q, sample(*curve(g, tr['ScaleShearCurve']['CurveData'], 9), times))
             parent = int(bone['ParentIndex'])
-            W.append(L if parent < 0 else W[parent] @ L)
+            W.append(P @ L if parent < 0 else W[parent] @ L)
             B.append(np.linalg.inv(np.asarray(bone['InverseWorldTransform'], 'f8').reshape(4, 4)).T)
         out.append(W); rest.append(B)
     return out, rest, float(t['Animations'][0]['Duration'])
