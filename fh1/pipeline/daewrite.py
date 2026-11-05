@@ -43,7 +43,8 @@ def box_mesh(boxes):
 
 
 def write_lod(path, groups, origin, sizes, collide, extra=(), colmesh=None):
-    """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2).
+    """base00 > start01 > o<i>_a<size> per LOD, as stock shapes. groups: ((material, levels), pos, normal, uv, idx, uv2). A third column
+    of uv2 is a grey vertex colour, which materials with vertColor multiply their colour by.
     A trailing number on those node names is the detail size. Geometry of level `collide` is copied into one Colmesh_0-1: BeamNG's vehicle
     physics drops some of a shape's collision meshes when it has several (c21029_col lost one of its eight, the same one every load), and the
     same pieces as one mesh collide.
@@ -71,13 +72,16 @@ def write_lod(path, groups, origin, sizes, collide, extra=(), colmesh=None):
         srcs = [(f'{g}-p', local, '%.4f', 'XYZ')]
         if nrm is not None:
             srcs += [(f'{g}-n', nrm, '%.3f', 'XYZ'), (f'{g}-t', np.c_[uv[:, 0], 1 - uv[:, 1]], '%.5f', 'ST'), (f'{g}-u', np.c_[uv1[:, 0], 1 - uv1[:, 1]], '%.5f', 'ST')]
+            if uv1.shape[1] > 2:
+                srcs.append((f'{g}-c', np.repeat(np.clip(uv1[:, 2:3], 0, 1), 3, 1), '%.3f', 'RGB'))
         for sid, arr, fmt, params in srcs:
             w(f'<source id="{sid}"><float_array id="{sid}-a" count="{arr.size}">'); w(_fmt(arr, fmt))
             w(f'</float_array><technique_common><accessor source="#{sid}-a" count="{n}" stride="{len(params)}">')
             w(''.join(f'<param name="{c}" type="float"/>' for c in params)); w('</accessor></technique_common></source>\n')
         w(f'<vertices id="{g}-v"><input semantic="POSITION" source="#{g}-p"/></vertices>\n')
         rest = '' if nrm is None else (f'<input semantic="NORMAL" source="#{g}-n" offset="0"/><input semantic="TEXCOORD" source="#{g}-t" offset="0" set="0"/>'
-                                       f'<input semantic="TEXCOORD" source="#{g}-u" offset="0" set="1"/>')
+                                       f'<input semantic="TEXCOORD" source="#{g}-u" offset="0" set="1"/>'
+                                       + (f'<input semantic="COLOR" source="#{g}-c" offset="0" set="0"/>' if uv1.shape[1] > 2 else ''))
         for mat, idx in tris:
             w(f'<triangles material="{mat}" count="{len(idx) // 3}"><input semantic="VERTEX" source="#{g}-v" offset="0"/>{rest}<p>')
             w(' '.join(map(str, np.asarray(idx).tolist()))); w('</p></triangles>\n')

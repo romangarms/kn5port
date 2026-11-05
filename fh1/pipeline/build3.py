@@ -132,7 +132,8 @@ def n2b(n):
 
 
 def materials(b, p):
-    """[(shader index, [slots])] for a file, by material index"""
+    """[(shader index, [slots], constants)] for a file, by material index. A record's word 6 counts its constants, the shader's c360_i
+    registers in order, as big-endian float4s right after it: (n, 4) floats. The slot list follows (formats.md)"""
     e = p['end']; q = b.find(b'shaders', e)
     if q < 0:
         return []
@@ -143,7 +144,8 @@ def materials(b, p):
             for j in range(i + 7, min(i + 70, k - 2)):
                 n = w[j + 1]
                 if w[j] == 1 and 1 <= n <= 12 and j + 2 + n <= k and all(x < 96 or x >= 0xfffffff0 for x in w[j + 2:j + 2 + n]):
-                    out.append((w[i + 1], list(w[j + 2:j + 2 + n])))
+                    nc = w[i + 6] if i + 7 + 4 * w[i + 6] <= j else 0
+                    out.append((w[i + 1], list(w[j + 2:j + 2 + n]), np.array(struct.unpack_from('>%df' % (4 * nc), b, e + 4 * (i + 7))).reshape(nc, 4)))
                     break
     return out
 
@@ -288,7 +290,7 @@ def section_normals(no, slots):
 AO = os.environ.get('FH1_AO', '0') == '1'
 
 
-def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None, ao=None, lm=None, win=None, emis=None, tone=1.0, spec=None):
+def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=None, ao=None, lm=None, win=None, emis=None, spec=None):
     """glow: an emissive mask texture, lit at night through the TSStatic's instance colour (see GLOW). ao and lm: an AO map and a lightmap,
     both on UV1 (see object_maps). win: a window mask on UV0 (window_mask). emis: a baked UV1 emissive (bake_emissive) holding both.
     One emissive map per material, taken in that order: glow, emis, lm, win. All light at night. spec: a specular map, as the roughness (rough_texture)"""
@@ -300,14 +302,12 @@ def material(tid, ground=None, alpha=False, translucent=False, two=False, glow=N
     use_a = (alpha or translucent) and t['cut'] > 0.002; n_ = NM.get(tid)
     key = (f"fh1_{t['name']}" + ('_a' if use_a else '') + ('_t' if translucent else '') + (f'_{ground}' if ground else '') + (f'_n{n_:X}' if n_ else '') + (f'_e{glow:X}' if g_ else '')
            + (f'_o{ao:X}' if o_ else '') + (f'_l{lm:X}' if l_ else '') + (f'_w{w_[0][0]}{w_[1]:X}' if w_ else '') + (f"_{Path(e_).name.split('.')[0]}" if e_ else '')
-           + (f'_k{round(tone * 100)}' if tone < 1 else '') + (f'_s{spec:X}' if spec is not None else ''))
+           + (f'_s{spec:X}' if spec is not None else ''))
     if key not in MATS:
         st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}
         r_ = rough_texture(spec) if spec is not None else None
         if r_:
             st['roughnessMap'] = r_; del st['roughnessFactor']
-        if tone < 1:        # road_tone
-            st['baseColorFactor'] = [tone, tone, tone, 1]
         if n_:
             st['normalMap'] = TX.normal(n_)
         if o_ and AO:
@@ -341,10 +341,31 @@ def write_dae(path, groups, origin):
     return write_lod(path, [((g[0], (0,)),) + tuple(g[1:]) for g in groups], origin, (1,), None)
 
 
-def blend_material(tids, masktid, ground, ao=None):
-    """FH1 h_blnd: layer 0 plus layers masked by the red and green channels, on the second UV set. ao: the ground's AO map, which FH1 reads
-    where it reads the mask, on every layer"""
-    key = 'fh1_b_' + '_'.join(f'{t:X}' for t in tids) + f'_m{masktid:X}' + (f'_{ground}' if ground else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM) + (f'_o{ao:X}' if ao is not None and TX.get(ao) else '')
+def blend_layers(no, slots, fx, cs):
+    """a ground shader's colour layers as [(texture, (sx, sy))]: FH1 tiles A at c360_0.xy, B at c360_0.zw and C at c360_1.xy over UV0,
+    mostly 4 or 6 times (formats.md, .fxobj shaders). Normal maps and blend masks listed where a colour layer should be are left out"""
+    ids = MT[no][0]; c0, c1 = (mat_const(cs, 0), mat_const(cs, 1)) if fx.startswith('h_blnd') else (np.ones(4), np.ones(4)); out = []
+    for q in blend_slots(fx):
+        if q < len(slots) and slots[q] < len(ids):
+            tid = IDX[ids[slots[q]]][0]
+            if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71 and not rgmask(tid):
+                out.append((tid, layer_scale({0: c0[:2], 1: c0[2:], 5: c1[:2]}[q], c0[:2])))
+    return out
+
+
+def layer_scale(sc, base):
+    """a layer's UV0 scale from its material's constants, as a tuple. A zero scale, as on 442 h_vblnd materials (c360_0 1, 1, 0, 0), would
+    read one texel: those take the base layer's"""
+    return tuple(float(v_) for v_ in (sc if (np.asarray(sc) > 0).all() else base if (np.asarray(base) > 0).all() else (1, 1)))
+
+
+def blend_material(lays, masktid, ground, ao=None):
+    """FH1 h_blnd: layer 0 plus layers masked by the red and green channels, on the second UV set. lays: blend_layers' (texture, scale),
+    UV0 going out at layer 0's scale, and layers at another scale drawn from detail maps (layer_stage). ao: the ground's AO map, which
+    FH1 reads where it reads the mask, on every layer"""
+    tids = [t for t, _ in lays]; sc = [np.array(v_) / np.array(lays[0][1]) for _, v_ in lays]
+    key = ('fh1_b_' + '_'.join(f'{t:X}' for t in tids) + f'_m{masktid:X}' + (f'_{ground}' if ground else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
+           + (f'_o{ao:X}' if ao is not None and TX.get(ao) else '') + ''.join(f'_s{v_[0]:g}x{v_[1]:g}' for v_ in sc[1:] if not np.allclose(v_, 1)))
     if key in MATS:
         return key
     info = [TX.get(t) for t in tids]; m_ = TX.get(masktid)
@@ -354,13 +375,11 @@ def blend_material(tids, masktid, ground, ao=None):
         p_ = TX.d / f"{m_['name']}_{nm}.data.dds"
         if not p_.exists():
             cooked(p_, m_['src'][..., ch], limit=TEXMAX)
-    st = [{'baseColorMap': f"{rel}/art/textures/{info[0]['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0}]
-    for k_, i_ in enumerate(info[1:]):
-        st.append({'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .92, 'metallicFactor': 0,
-                   'opacityMap': f"{rel}/art/textures/{m_['name']}_{'rg'[k_]}.data.dds", 'opacityMapUseUV': 1})
-    for t, s_ in zip(tids, st):
-        if t in NM:
-            s_['normalMap'] = TX.normal(NM[t])
+    st = [layer_stage(t, d_) for t, d_ in zip(tids, sc)]
+    for k_, s_ in enumerate(st):
+        del s_['vertColor']; s_['roughnessFactor'] = .92
+        if k_:
+            s_.update({'opacityMap': f"{rel}/art/textures/{m_['name']}_{'rg'[k_ - 1]}.data.dds", 'opacityMapUseUV': 1})
     if ao is not None and TX.get(ao) and AO:
         for s_ in st:
             s_.update({'ambientOcclusionMap': grey(ao), 'ambientOcclusionMapUseUV': 1})
@@ -373,14 +392,21 @@ def blend_material(tids, masktid, ground, ao=None):
     return key
 
 
-# FH1 paints road wear, cracks and dirt edges as colour layers weighted per vertex: bytes 1 and 2 of the vertex's last 4 weight the slot 1
-# and slot 5 layers, broken up by slot 2's noise. BeamNG reads layer opacity from a map, not the vertex, so the weights go in UV set 1 and a
-# shared ramp texture turns them back into opacity: interpolated across each triangle as FH1's are. A multiply can't copy FH1's noise exactly
-# (it subtracts), so the ramp is steeper than linear and the noise softer. Both by eye. Decal alpha (byte 0) goes the same way
-RAMP_N = 64; RAMP_GAIN = 1.5; ROAD_NOISE = .5
+# FH1's road and h_vblnd ground shaders (formats.md, .fxobj shaders) draw layer A, then B and C over it. B's weight is
+# saturate(c4.x (x - 1/2) + c4.y (noise.r - 1/2) + 1/2), C's the same with c4.z, c4.w, y and noise.g: x and y are the colour vertex's bytes 1
+# and 2, c4 the material's constant c360_4. h_vblnd has no noise. Each layer tiles UV0 at its own scale: A at c360_0.xy, B at .zw, C at
+# c360_1.xy, the noise at c360_1.zw. The colour is then times w squared (byte 0), and times 0.05 + 0.95 AO for *_ao shaders, the AO map read
+# at TEXCOORD2. Skirts (*_blend) are drawn over the ground at alpha 1 - z, z byte 3.
+#
+# BeamNG gives a layer two textures for opacity, multiplied: opacityMap, and saturate(1 + 2d - 1) from the opacity detail map d at strength 1,
+# so storing v / 2 there multiplies by exactly v. One holds the weight's curve over UV set 1, where the vertex bytes go (ramp_uv), and
+# the other the noise's. FH1 adds the weight to the noise before clamping, which no product can do, so blend_fit finds the product nearest
+# to it. BeamNG has no per-layer UV scale: a layer drawn at another scale than UV0's takes its colour from a detail map, whose detailScale
+# is its own. The darkening is the vertex colour (vertColor), so it changes from vertex to vertex as FH1's does, not by section
+RAMP_N = 64
 
 
-def ramp(axis, gain=RAMP_GAIN, half=False):
+def ramp(axis, gain=1, half=False):
     """A ramp texture: opacity along u (axis 0) or v (axis 1) of UV set 1, for weights put there by ramp_uv. half: as an opacity detail
     map, whose blend is saturate(1 + (2d - 1)), so storing w / 2 multiplies opacity by exactly w"""
     name = f"fh1_ramp_{'uv'[axis]}{gain:g}{'h' if half else ''}"; p_ = TX.d / f'{name}.data.dds'
@@ -396,7 +422,7 @@ def ramp_uv(w):
 
 
 def grey(tid):
-    """a texture's red channel as a .data.dds, for noise and decal masks"""
+    """a texture's red channel as a .data.dds, for decal masks"""
     t = TX.get(tid)
     if t is None:
         return None
@@ -406,88 +432,211 @@ def grey(tid):
     return f'{rel}/art/textures/{p_.name}'
 
 
-def road_modulate(no, slots, fx, vw, T):
-    """(modulate map, the section's mean weight) for a *_modulate road shader, or None. FH1 multiplies the road colour by
-    lerp(1, modulate, z), z the colour vertex's byte 3: as a BeamNG layer, black at opacity z (1 - modulate), which road_material adds"""
-    mo_ = SAMP.get(fx, (None,) * 5)[3]; ids = MT[no][0]
-    if vw is None or 'modulate' not in fx or mo_ is None or mo_ >= len(slots) or slots[mo_] >= len(ids):
-        return None
-    t_ = IDX[ids[slots[mo_]]][0]; v = np.unique(T); v = v[v < len(vw)]
-    return (t_, round(float(vw[v, 3].mean()) * 20) / 20) if TX.get(t_) and len(v) else None
-
-
-def road_tone(no, slots, fx, m, s, vw, T, mod_layer=False):
-    """How much FH1's road shader darkens a section's colour, averaged over its vertices, as a BeamNG material can't read vertex bytes.
-    The colour vertex (the last 4 bytes) reads x, y, z, w = bytes 1, 2, 3, 0: the colour is times w squared, times lerp(1, modulate map, z)
-    for *_modulate shaders, times 0.05 + 0.95 AO for *_ao ones, the AO map read at TEXCOORD2 (bytes 24-27, the same UV box), which also
-    dims the sun on roads (formats.md, .fxobj shaders). Rounded to 0.05, so sections share materials. 1 with no vertex colour.
-    mod_layer: the modulate map is drawn per pixel by road_modulate's layer, so it stays out of the average"""
-    if vw is None:
-        return 1.0
-    v = np.unique(T); v = v[v < len(vw)]; f = vw[v, 0] ** 2; a_, _, _, mo_, _ = SAMP.get(fx, (None,) * 5); ids = MT[no][0]
-    if 'modulate' in fx and not mod_layer and mo_ is not None and mo_ < len(slots) and slots[mo_] < len(ids):
-        r_ = tex.load(IDX[ids[slots[mo_]]][0])
-        if r_ and r_[0] is not None:
-            f = f * (1 + (r_[0][..., :3].mean() / 255 - 1) * vw[v, 3])
-    if '_ao' in fx and a_ is not None and a_ < len(slots) and slots[a_] < len(ids) and m['sd'] >= 28:
-        r_ = tex.load(IDX[ids[slots[a_]]][0])
-        if r_ and r_[0] is not None:
-            A = r_[0][..., :3].mean(2) / 255; h_, w_ = A.shape; a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
-            u2 = box_uv(np.frombuffer(a[v, 24:28].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535, s['fl'])
-            f = f * (.05 + .95 * A[np.clip((u2[:, 1] * h_).astype(int), 0, h_ - 1), np.clip((u2[:, 0] * w_).astype(int), 0, w_ - 1)])
-    return round(float(np.clip(f.mean(), .05, 1)) * 20) / 20
-
-
-def mod_opacity(tid):
-    """1 - a modulate map, as the opacity of road_material's black layer: q<id>.data.dds"""
-    p_ = TX.d / f'q{tid:X}.data.dds'
+def data_map(prefix, a):
+    """a 0..1 array as a BC5 .data.dds, whose red BeamNG reads as opacity: 8 bits, where DXT1 keeps 5. Named by content"""
+    a = np.clip(a, 0, 1); name = f"{prefix}_{hashlib.md5(np.round(a, 4).tobytes()).hexdigest()[:10]}"; p_ = TX.d / f'{name}.data.dds'
     if not p_.exists():
-        cooked(p_, (255 - TX.get(tid)['src'][..., :3].mean(2)).astype('u1'), limit=TEXMAX)
+        v_ = (a * 255 + .5).astype('u1'); cooked(p_, np.dstack([v_, v_]), None, TEXMAX, save=dds.save_bc5)
     return f'{rel}/art/textures/{p_.name}'
 
 
-def road_material(tids, noise, ground, tone=1.0, mod=None):
-    """h_road diff2 and diff3: layer 0, then slot 1 and slot 5 layers whose opacity is ramp(UV1 u) and ramp(UV1 v) times the noise on UV0.
-    tone: road_tone, as every layer's baseColorFactor. mod: road_modulate's (map, weight), as a last black layer at opacity weight x
-    (1 - map) on UV0, which multiplies what's under it by lerp(1, map, weight) per pixel. FH1 reads it at UV1 times a per-material scale
-    (c360_2) that isn't decoded; UV0 runs along the road too"""
-    key = ('fh1_r_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + f'_{ground}' + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
-           + (f'_k{round(tone * 100)}' if tone < 1 else '') + (f'_q{mod[0]:X}_{round(mod[1] * 100)}' if mod and mod[1] > 0 else ''))
-    if key in MATS:
-        return key
-    info = [TX.get(t) for t in tids]
-    if any(i is None for i in info):
-        return None
-    st = [{'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0} for i_ in info]
-    if tone < 1:
-        for s_ in st:
-            s_['baseColorFactor'] = [tone, tone, tone, 1]
-    nz = grey(noise) if noise else None
-    for k_, s_ in enumerate(st[1:]):
-        s_.update({'opacityMap': ramp(k_), 'opacityMapUseUV': 1})
-        if nz:
-            s_.update({'opacityDetailMap': nz, 'detailScale': [1, 1], 'detailOpacityMapStrength': ROAD_NOISE})
-    for t, s_ in zip(tids, st):
-        if t in NM:
-            s_['normalMap'] = TX.normal(NM[t])
-    if mod and mod[1] > 0 and len(st) < 4:
-        st.append({'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': mod_opacity(mod[0]), 'opacityFactor': mod[1]})
-    n_ = len(st)
-    while len(st) < 4:
-        st.append({})
-    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': n_, 'materialTag0': 'beamng',
-                 'translucentBlendOp': 'None', 'groundType': ground}
-    return key
+def curve_map(P, axis, half=False, Q=None):
+    """P sampled at RAMP_N weights from 0 to 1, as a ramp along UV1 axis 0 (u) or 1 (v), halved for an opacity detail map. Q: a second
+    curve, along the other axis, multiplied in"""
+    P = np.asarray(P, 'f8') / (2 if half else 1); a = np.outer(np.ones(RAMP_N) if Q is None else Q, P)        # rows v, columns u
+    return data_map('fh1_c', a if axis == 0 else a.T)
 
 
-def vblend_pair(no, slots, fx):
-    """h_vblnd ground: slot 0, and slot 1 faded in by vertex weight 1. Slots 5 and 7 are small light and AO maps. Taking slot 0 alone left
-    Redstone's canyon walls one 256 px grass texture stretched down 10 m triangles, where FH1 blends in rock on half the vertices"""
+def srgb(lin):
+    return np.where(lin <= .0031308, lin * 12.92, 1.055 * np.power(np.maximum(lin, 0), 1 / 2.4) - .055)
+
+
+def half_color(tid):
+    """a colour texture at half its linear value, as a layer's detail map at strength 1, whose blend is saturate(2 d): the layer's own
+    colour at its own scale. Stored as sRGB, so the halving costs little precision"""
+    t = TX.get(tid); p_ = TX.d / f"{t['name']}_h.color.dds"
+    if not p_.exists():
+        c = t['src'][..., :3] / 255; lin = np.where(c <= .04045, c / 12.92, ((c + .055) / 1.055) ** 2.4)
+        cooked(p_, (srgb(lin / 2) * 255 + .5).astype('u1'), limit=TEXMAX)
+    return f'{rel}/art/textures/{p_.name}'
+
+
+FITS = {}
+
+
+def blend_fit(a, b, noise, ch):
+    """FH1's layer weight saturate(a (x - 1/2) + b (n - 1/2) + 1/2), x a vertex weight and n the noise texture's channel ch, as the product
+    P(x) Q(n) nearest to it in the mean square, over x from 0 to 1 and n as the texture has it. -> (P at RAMP_N weights, the noise texture
+    remapped by Q as a halved opacity detail map). Without noise (b 0) P is exact. Measured on 11505's red: rms error 0.11 to 0.28 by slope,
+    against 0.19 to 0.32 for the hand-set ramp and noise it replaced"""
+    k_ = (round(a, 3), round(b, 3), noise, ch)
+    if k_ in FITS:
+        return FITS[k_]
+    xs = np.linspace(0, 1, RAMP_N); t = TX.get(noise) if noise is not None and b else None
+    if t is None:
+        FITS[k_] = (np.clip(a * (xs - .5) + .5, 0, 1), None)
+        return FITS[k_]
+    n_ = t['src'][..., ch].astype('f8') / 255; h_, e_ = np.histogram(n_, 64, (0, 1)); wn = h_ / h_.sum(); nc = (e_[:-1] + e_[1:]) / 2
+    T = np.clip(a * (xs[:, None] - .5) + b * (nc[None] - .5) + .5, 0, 1)
+    P = T.mean(1); Q = np.ones(len(nc))
+    for _ in range(100):        # alternating least squares, weighted by how often each noise value occurs
+        Q = (wn * T * P[:, None]).sum(0) / np.maximum((wn * P[:, None] ** 2).sum(0), 1e-12)
+        P = (wn * T * Q[None]).sum(1) / np.maximum((wn * Q[None] ** 2).sum(1), 1e-12)
+    s_ = max(P.max(), 1e-9); P = P / s_; Q = np.clip(Q * s_, 0, 1)
+    FITS[k_] = (P, data_map(f'fh1_q{noise:X}{"rg"[ch]}', np.interp(n_, nc, Q) / 2))
+    return FITS[k_]
+
+
+def mat_const(cs, i):
+    """the material's constant c360_i, as 4 floats. Ones when the record has none"""
+    return np.array(cs[i], 'f8') if cs is not None and i < len(cs) else np.ones(4)
+
+
+def slot_grey(no, slots, k):
+    """the texture at slot position k as a noise, AO or modulate map: any format but normal maps"""
     ids = MT[no][0]
-    if not fx.startswith('h_vblnd') or 'decal' in fx or len(slots) < 2 or max(slots[0], slots[1]) >= len(ids):
+    if k is not None and k < len(slots) and slots[k] < len(ids):
+        tid = IDX[ids[slots[k]]][0]; t = tex.bix(tid)
+        if t and t['fmt'] != 0x71 and TX.get(tid):
+            return tid
+    return None
+
+
+def shader_layers(no, slots, fx, cs):
+    """the colour layers of an h_road or h_vblnd material, bottom up: [(texture, (sx, sy), weight)], weight None for layer A, else
+    (vertex byte, a, b, noise channel) for the weight above. -> (layers, (noise texture, scale) or None), or None when layer A has no texture.
+    h_vblnd blends only DXT1 pairs: its decal variants and blend masks aren't colour layers"""
+    c0, c1, c4 = mat_const(cs, 0), mat_const(cs, 1), mat_const(cs, 4); A = slot_at(no, slots, 0); sA = layer_scale(c0[:2], (1, 1))
+    if A is None:
         return None
-    t_ = [IDX[ids[slots[q]]][0] for q in (0, 1)]
-    return t_ if all(tex.bix(x) and tex.bix(x)['fmt'] == 0x52 and not rgmask(x) for x in t_) else None
+    if fx.startswith('h_vblnd'):
+        B = slot_at(no, slots, 1)
+        if 'decal' in fx or B is None or not all(tex.bix(x)['fmt'] == 0x52 for x in (A, B)):
+            return [(A, sA, None)], None
+        return [(A, sA, None), (B, layer_scale(c0[2:], sA), (1, c4[0], 0, 0))], None
+    nt_ = slot_grey(no, slots, 2) if 'noise' in fx else None; noise = (nt_, layer_scale(c1[2:], sA)) if nt_ else None; out = [(A, sA, None)]
+    if ('diff2' in fx or 'diff3' in fx) and slot_at(no, slots, 1):
+        out.append((slot_at(no, slots, 1), layer_scale(c0[2:], sA), (1, c4[0], c4[1] if noise else 0, 0)))
+    if 'diff3' in fx and slot_at(no, slots, 5):
+        out.append((slot_at(no, slots, 5), layer_scale(c1[:2], sA), (2, c4[2], c4[3] if noise else 0, 1)))
+    return out, noise
+
+
+def vertex_shade(no, slots, fx, m, s):
+    """FH1's darkening of an h_road or h_vblnd section's colour, per vertex of the mesh: w squared, w the colour vertex's byte 0, times
+    0.05 + 0.95 AO for *_ao shaders, the AO map read at TEXCOORD2 (bytes 24-27, through the section's UV box), as the vertex colour.
+    The AO map is 64 px over the mesh, so reading it per vertex keeps it. None without a colour vertex"""
+    if m['sd'] < 28:
+        return None
+    a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd']); f = (a[:, -4].astype('f8') / 255) ** 2
+    t_ = slot_grey(no, slots, SAMP.get(fx, (None,) * 5)[0]) if '_ao' in fx and m['sd'] >= 32 else None
+    if t_:
+        A = TX.get(t_)['src'][..., :3].mean(2) / 255; h_, w_ = A.shape
+        u2 = box_uv(np.frombuffer(a[:, 24:28].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535, s['fl'])
+        f = f * (.05 + .95 * ni.map_coordinates(A, [u2[:, 1] * h_ - .5, u2[:, 0] * w_ - .5], order=1, mode='nearest'))
+    return f
+
+
+def layer_stage(tid, d):
+    """a layer drawing tid, its colour from baseColorMap, or at detail scale d (when not 1, 1) from half_color. Darkened by the vertex colour"""
+    t = TX.get(tid); n_ = NM.get(tid); st = {'roughnessFactor': .9, 'metallicFactor': 0, 'vertColor': True}
+    if np.allclose(d, 1):
+        st['baseColorMap'] = f"{rel}/art/textures/{t['name']}.color.dds"
+        if n_:
+            st['normalMap'] = TX.normal(n_)
+    else:
+        st.update({'detailMap': half_color(tid), 'detailBaseColorMapStrength': 1, 'detailScale': [round(float(v_), 4) for v_ in d]})
+        if n_:
+            st.update({'detailNormalMap': TX.normal(n_), 'detailNormalMapStrength': 1})
+    return st
+
+
+def layered(no, slots, fx, cs, ground):
+    """the material for an h_road or h_vblnd section, and how to write its UVs: (key, S0, bytes, div), or None. UV0 goes out at FH1's
+    UVs times S0, and UV1 is ramp_uv of the colour vertex's bytes `bytes` (u, v), divided by div (layered_uv1). Each layer above A puts
+    its weight's curve on its own axis of UV1, and the noise (blend_fit) on a texture over UV0. A layer takes the first of these that keeps
+    every scale: its colour on UV0 when it's at UV0's scale S0, the noise then on the detail map; both at the detail scale when they share
+    it; or the noise on UV0 (when S0 is the noise's scale) and the colour on the detail map, the curve then on the detail map too, over
+    UV1, which detailScale also scales: div undoes it. S0 is A's scale, or else the noise's.
+    *_modulate: FH1 multiplies by lerp(1, modulate map, z), z byte 3: a black layer at opacity z (1 - map), z on a free UV1 axis.
+    FH1 reads the map at TEXCOORD1 times c360_2.xy, which is UV0 here (TEXCOORD1 isn't decoded for roads)"""
+    sl = shader_layers(no, slots, fx, cs)
+    if sl is None or any(TX.get(t) is None for t, _, _ in sl[0]):
+        return None
+    lay, noise = sl; sA = np.array(lay[0][1]); sn = np.array(noise[1]) if noise else None; nz = any(w and w[2] for _, _, w in lay)
+
+    def plan_for(S0):
+        out = []
+        for _, sc, w in lay[1:]:
+            sc = np.array(sc)
+            if not (w[2] and nz):
+                out.append('ramp')
+            elif np.allclose(sc, S0):
+                out.append('colour')
+            elif np.allclose(sc, sn):
+                out.append('shared')
+            elif np.allclose(S0, sn):
+                out.append('noise')
+            else:
+                return None
+        return out
+    S0 = sA; plan = plan_for(sA)
+    if plan is None:
+        S0 = sn; plan = plan_for(sn)
+    st = [layer_stage(lay[0][0], sA / S0)]; bytes_ = [0, 0]; div = np.ones(2); free = [0, 1]
+    for (tid, sc, w), how in zip(lay[1:], plan):
+        ax = w[0] - 1; free.remove(ax); bytes_[ax] = w[0]; d = np.array(sc) / S0; P, q_ = blend_fit(w[1], w[2], noise[0] if noise else None, w[3])
+        s_ = layer_stage(tid, d)
+        if how == 'ramp' or q_ is None:     # opacityMap reads UV1 unscaled
+            s_.update({'opacityMap': curve_map(P, ax), 'opacityMapUseUV': 1})
+        elif how in ('colour', 'shared'):       # the noise on the detail map, at the noise's scale over UV0
+            s_.update({'opacityMap': curve_map(P, ax), 'opacityMapUseUV': 1, 'opacityDetailMap': q_, 'detailOpacityMapStrength': 1,
+                       'detailScale': [round(float(v_), 4) for v_ in sn / S0]})
+        else:       # 'noise': the noise on UV0 at S0, the curve on the detail map over UV1, which detailScale scales and div undoes
+            s_.update({'opacityMap': q_, 'opacityDetailMap': curve_map(P, ax, half=True), 'opacityDetailMapUseUV': 1, 'detailOpacityMapStrength': 1})
+            div[ax] = d[ax]
+        st.append(s_)
+    mt_ = slot_grey(no, slots, SAMP.get(fx, (None,) * 5)[3]) if 'modulate' in fx else None
+    if mt_ and free and len(st) < 4:
+        ax = free[0]; bytes_[ax] = 3
+        st.append({'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': curve_map(np.linspace(0, 1, RAMP_N), ax),
+                   'opacityMapUseUV': 1, 'opacityDetailMap': data_map(f'fh1_m{mt_:X}', (1 - TX.get(mt_)['src'][..., :3].mean(2) / 255) / 2),
+                   'detailOpacityMapStrength': 1, 'detailScale': [round(float(v_), 4) for v_ in mat_const(cs, 2)[:2] / S0]})
+    key = f"fh1_L{lay[0][0]:X}_" + hashlib.md5(json.dumps([st, ground]).encode()).hexdigest()[:10]
+    if key not in MATS:
+        n_ = len(st)
+        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st + [{}] * (4 - n_), 'activeLayers': n_,
+                     'materialTag0': 'beamng', 'translucentBlendOp': 'None', **({'groundType': ground} if ground else {})}
+    return key, S0, bytes_, div
+
+
+def layered_uv1(vw, shade, bytes_, div):
+    """UV set 1 for layered(): the colour vertex's bytes on the ramps, then the vertex colour as a third column, which write_lod writes"""
+    return np.c_[ramp_uv(vw[:, bytes_]) / div, shade if shade is not None else np.ones(len(vw))]
+
+
+def skirt_passes(no, slots, fx, cs):
+    """an h_road *_blend skirt: a verge FH1 lays over the ground at alpha 1 - z, z byte 3, which is 0 at the road's edge (95% of those
+    vertices lie on the road's footprint) and 1 out over the terrain. Layers B and C blend in by their weights under that. BeamNG mixes a
+    translucent material's layer weights into its alpha, so each layer is a translucent pass of its own, B and C at alpha (1 - z) t: exact
+    where the skirt is opaque, close where it fades. -> [(key, scale, bytes, lift)], UV0 at the layer's scale, UV1 (z, weight) by ramp_uv"""
+    sl = shader_layers(no, slots, fx, cs)
+    if sl is None:
+        return []
+    lay, noise = sl; out = []; fade = 1 - np.linspace(0, 1, RAMP_N)
+    for k_, (tid, sc, w) in enumerate(lay):
+        if TX.get(tid) is None:
+            continue
+        P, q_ = blend_fit(w[1], w[2], noise[0] if noise else None, w[3]) if w else (np.ones(RAMP_N), None)
+        st = layer_stage(tid, (1, 1)); st.update({'opacityMap': curve_map(fade, 0, Q=P), 'opacityMapUseUV': 1})
+        if q_:
+            st.update({'opacityDetailMap': q_, 'detailOpacityMapStrength': 1, 'detailScale': [round(float(v_), 4) for v_ in np.array(noise[1]) / np.array(sc)]})
+        key = f"fh1_K{tid:X}_" + hashlib.md5(json.dumps(st).encode()).hexdigest()[:10]
+        if key not in MATS:
+            MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
+                         'translucent': True, 'translucentZWrite': False, 'translucentRecvShadows': True, 'castShadows': False}
+        out.append((key, np.array(sc), [3, w[0] if w else 3], .01 + .002 * k_))
+    return out
 
 
 def decal_material(tid, mask, alpha):
@@ -512,80 +661,6 @@ def decal_material(tid, mask, alpha):
         MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
                      'translucent': True, 'translucentZWrite': False, 'translucentRecvShadows': True, 'castShadows': False}
     return key
-
-
-def skirt_material(tid):
-    """h_road *_blend skirts: FH1 fades them by vertex byte 3, from 255 out on the verge to 0 at the road's edge, over road and terrain
-    that share their vertices. The byte goes in UV set 1 through a ramp, as decal alpha does"""
-    t = TX.get(tid)
-    if t is None:
-        return None
-    n_ = NM.get(tid); key = f"fh1_{t['name']}_sk" + (f'_n{n_:X}' if n_ else '')
-    if key not in MATS:
-        st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': ramp(0, 1), 'opacityMapUseUV': 1}
-        if n_:
-            st['normalMap'] = TX.normal(n_)
-        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
-                     'translucent': True, 'translucentZWrite': False, 'translucentRecvShadows': True, 'castShadows': False}
-    return key
-
-
-def ramp_product(gain=RAMP_GAIN):
-    """opacity u * ramp(v) over UV set 1: the skirt's second layer, weighted by vertex byte 1 within the skirt's own byte 3"""
-    name = f'fh1_ramp_uv{gain:g}'; p_ = TX.d / f'{name}.data.dds'
-    if not p_.exists():
-        w = np.linspace(0, 1, RAMP_N); a = np.outer(np.clip(w * gain, 0, 1), w)
-        cooked(p_, (a * 255 + .5).astype('u1'), limit=TEXMAX)
-    return f'{rel}/art/textures/{p_.name}'
-
-
-def skirt_blend_material(base, tids, noise, nbase, tone=1.0):
-    """a skirt over the road section it shares vertices with, as one opaque material: the road's own texture, then the skirt's layers faded
-    in by byte 3 (UV1 u), the second also by byte 1 (UV1 v). Both sections use the same UV box, so the road layer lines up with the road"""
-    key = (f'fh1_s_{base:X}_' + '_'.join(f'{t:X}' for t in tids) + (f'_z{noise:X}' if noise else '') + (f'_n{nbase:X}' if nbase else '') + ''.join(f'_n{NM[t]:X}' for t in tids if t in NM)
-           + (f'_k{round(tone * 100)}' if tone < 1 else ''))
-    if key in MATS:
-        return key
-    info = [TX.get(t) for t in [base] + tids]
-    if any(i is None for i in info):
-        return None
-    st = [{'baseColorMap': f"{rel}/art/textures/{i_['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0} for i_ in info]
-    if tone < 1:        # road_tone of the skirt section
-        for s_ in st:
-            s_['baseColorFactor'] = [tone, tone, tone, 1]
-    if nbase:
-        st[0]['normalMap'] = TX.normal(nbase)
-    for t, s_ in zip(tids, st[1:]):
-        if t in NM:
-            s_['normalMap'] = TX.normal(NM[t])
-    st[1].update({'opacityMap': ramp(0, 1), 'opacityMapUseUV': 1})
-    if len(st) > 2:
-        st[2].update({'opacityMap': ramp_product(), 'opacityMapUseUV': 1})
-        if noise and grey(noise):
-            st[2].update({'opacityDetailMap': grey(noise), 'detailScale': [1, 1], 'detailOpacityMapStrength': ROAD_NOISE})
-    while len(st) < 4:
-        st.append({})
-    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st, 'activeLayers': len(info), 'materialTag0': 'beamng',
-                 'translucentBlendOp': 'None'}
-    return key
-
-
-def skirt_roads(no, m, M):
-    """for each h_road *_blend section of a mesh, the plain road section sharing most of its vertices: what the skirt fades into.
-    -> {section index: (road base texture, its normal map)}"""
-    rs = []; out = {}
-    for i_, s in enumerate(m['secs']):
-        if s['ints'][2] < len(M):
-            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
-            if fx.startswith('h_road'):
-                rs.append((i_, '_blend' in fx, slots, set(np.unique(rmb.tris(s['ib'], m['nv'], s['ints'][1])).tolist())))
-    for i_, bl, _, vs in rs:
-        if bl:
-            n_, slots = max(((len(vs & v2), sl2) for _, b2, sl2, v2 in rs if not b2), default=(0, None), key=lambda x: x[0])
-            base = slot_at(no, slots, 0) if n_ else None
-            if base:
-                out[i_] = (base, section_normals(no, slots).get(base))
-    return out
 
 
 def slot_at(no, slots, k):
@@ -832,7 +907,7 @@ def cell_split(b, nb, uv, uv1, T):
         S = np.concatenate(done)
     S = S[np.linalg.norm(np.cross(S[:, 1, :3] - S[:, 0, :3], S[:, 2, :3] - S[:, 0, :3]), axis=1) > 1e-6]
     V = S.reshape(-1, A.shape[1]); n_ = V[:, 3:6]; n_ /= np.maximum(np.linalg.norm(n_, axis=1, keepdims=True), 1e-9)
-    return V[:, :3], n_, V[:, 6:8], V[:, 8:10], np.arange(len(V)).reshape(-1, 3)
+    return V[:, :3], n_, V[:, 6:8], V[:, 8:], np.arange(len(V)).reshape(-1, 3)
 
 
 def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
@@ -1237,10 +1312,10 @@ for f, cs in byfile.items():
         # a group's coarsest mesh also stands in for any lower LODs it lacks
         LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 or isterr and rel_ == 1 else (rel_,)
         FIX = group_cell(gkey(c))
-        near_ = rel_ == 0; SR = skirt_roads(no, m, M) if vw is not None else {}; base_ = (p, nr, r0, r1, vw, g)
+        near_ = rel_ == 0; base_ = (p, nr, r0, r1, vw, g)
         for si_, s in enumerate(m['secs']):
             p, nr, r0, r1, vw, g = base_
-            T = rmb.tris(s['ib'], m['nv'], s['ints'][1]); T_raw = T      # road_tone reads the mesh's own vertex bytes, so it takes these after hex_split
+            T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
             q_ = MT[no][1]
             if len(T) and s['ints'][2] < len(q_) and SHADERS[q_[s['ints'][2]]].startswith('lake'):      # materials() can't read this shader's record
                 add('wat', water(), p, nr, box_uv(r0, s['fl']), T); surf['water'] += len(T); raster(Water, g[T])
@@ -1248,16 +1323,18 @@ for f, cs in byfile.items():
             if not len(T) or s['ints'][2] >= len(M):
                 stats['sec_nomat'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
-            si, slots = M[s['ints'][2]]; NM = section_normals(no, slots)
+            si, slots, cs_ = M[s['ints'][2]]; NM = section_normals(no, slots)
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
+            sh_ = vertex_shade(no, slots, fx, m, s) if fx.startswith(('h_road', 'h_vblnd')) and vw is not None else None      # read per vertex, before hex_split
             if HEXGROUND and no in HEXRING and (isterr or fx.startswith('h_road')):     # only where FH1's hexes draw this ground. Objects in
                 # the same mesh (rock, props) read their UV1 from its vertex buffer, so they stay whole
-                cols_ = [a_ for a_ in (p, nr, r0, r1, vw) if a_ is not None]; w_ = np.cumsum([0] + [a_.shape[1] for a_ in cols_])
+                cols_ = [a_ for a_ in (p, nr, r0, r1, vw, None if sh_ is None else sh_[:, None]) if a_ is not None]; w_ = np.cumsum([0] + [a_.shape[1] for a_ in cols_])
                 V_, T = hex_split(no, np.concatenate(cols_, 1), T)
                 if not len(T):
                     continue
                 it_ = iter(V_[:, a:b] for a, b in zip(w_[:-1], w_[1:]))
                 p, nr, r0 = next(it_), next(it_), next(it_); r1 = next(it_) if r1 is not None else None; vw = next(it_) if vw is not None else None; g = togrid(p)
+                sh_ = next(it_)[:, 0] if sh_ is not None else None
             uv = box_uv(r0, s['fl'])
             if fx.startswith('lake'):
                 add('wat', water(), p, nr, uv, T); surf['water'] += len(T); raster(Water, g[T])
@@ -1271,45 +1348,34 @@ for f, cs in byfile.items():
             if not ts:
                 stats['sec_notex'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
-            skirt = fx.startswith('h_road') and '_blend' in fx and vw is not None
-            # 300k of the 327k triangles drawn twice up close were these skirts, opaque on the road and terrain under them. Over their own
-            # road they're one opaque blend of road and verge, 1 cm up so road decals stay above. Without one, a translucent overlay
-            lay_ = [x for x in (ts[0], slot_at(no, slots, 1) if 'diff2' in fx or 'diff3' in fx else None) if x] if skirt else []
-            tone_ = road_tone(no, slots, fx, m, s, base_[4], T_raw) if skirt else 1.0
-            sk_ = skirt_blend_material(SR[si_][0], lay_, slot_at(no, slots, 2) if 'noise' in fx else None, SR[si_][1], tone_) if skirt and si_ in SR else None
-            if skirt and (sk_ or skirt_material(ts[0])):
+            sk_ = skirt_passes(no, slots, fx, cs_) if fx.startswith('h_road') and '_blend' in fx and vw is not None else []
+            if sk_:     # verges over the ground beside the road, a translucent pass per layer, under road decals (.02 up)
                 if near_:
                     raster(Cov if isterr else Road, g[T])
-                if sk_:
-                    add('vis', sk_, p, nr, uv, T, lift=.01, uv1=ramp_uv(vw[:, [3, 1]])); surf['road_skirt_blend'] += len(T)
-                else:
-                    add('vis', skirt_material(ts[0]), p, nr, uv, T, lift=.02, uv1=ramp_uv(vw[:, [3, 3]])); surf['road_skirt'] += len(T)
+                for key_, sc_, b_, lift_ in sk_:
+                    add('vis', key_, p, nr, uv * sc_, T, lift=lift_, uv1=layered_uv1(vw, sh_, b_, np.ones(2)))
+                surf['road_skirt'] += len(T); surf['road_skirt_passes'] += len(T) * len(sk_)
                 continue
             if isterr:
                 if near_:
                     raster(Cov, g[T])
-                layers = []
-                ids = MT[no][0]
-                for q in blend_slots(fx):
-                    if q < len(slots) and slots[q] < len(ids):
-                        tid = IDX[ids[slots[q]]][0]
-                        if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71:
-                            layers.append(tid)
-                layers = [x for x in layers if not rgmask(x)]; ts = [x for x in ts if not rgmask(x)] or ts
+                layers = blend_layers(no, slots, fx, cs_); ids = MT[no][0]
+                ts = [x for x in ts if not rgmask(x)] or ts
                 mask = None
                 if fx.startswith('h_blnd') and r1 is not None and len(slots) > 2 and slots[2] < len(ids):
                     mt = tex.bix(IDX[ids[slots[2]]][0])
                     if mt and mt['fmt'] == 0x52:
                         mask = TX.get(IDX[ids[slots[2]]][0])
-                gnd = role_ground(s['name']); vb_ = vblend_pair(no, slots, fx) if vw is not None else None
+                gnd = role_ground(s['name']); vb_ = layered(no, slots, fx, cs_, gnd) if fx.startswith('h_vblnd') and vw is not None else None
                 if mask is not None and len(layers) > 1:
                     mname = blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd, ao_map(no, slots, fx))
-                    add('col', mname, p, nr, uv, T, uv1=(r1 + 1) / 2); surf[f'terrain_blend:{gnd}'] += len(T)
-                elif vb_ and road_material(vb_, None, gnd):
-                    add('col', road_material(vb_, None, gnd), p, nr, uv, T, uv1=ramp_uv(vw[:, [1, 2]])); surf[f'terrain_vblend:{gnd}'] += len(T)
+                    add('col', mname, p, nr, uv * np.array(layers[0][1]), T, uv1=(r1 + 1) / 2); surf[f'terrain_blend:{gnd}'] += len(T)
+                elif vb_:
+                    add('col', vb_[0], p, nr, uv * vb_[1], T, uv1=layered_uv1(vw, sh_, *vb_[2:])); surf[f'terrain_vblend:{gnd}'] += len(T)
                 else:
                     ao_ = ao_map(no, slots, fx) if r1 is not None else None      # on UV1 where FH1 reads it, as the blend masks
-                    add('col', material(layers[0] if layers else ts[0], gnd, ao=ao_), p, nr, uv, T, uv1=(r1 + 1) / 2 if ao_ else None); surf[f'terrain:{gnd}'] += len(T)
+                    add('col', material(layers[0][0] if layers else ts[0], gnd, ao=ao_), p, nr, uv * np.array(layers[0][1] if layers else (1, 1)), T,
+                        uv1=(r1 + 1) / 2 if ao_ else None); surf[f'terrain:{gnd}'] += len(T)
                 continue
             tid = ts[0]; info = TX.get(tid)
             if info is None:
@@ -1332,17 +1398,11 @@ for f, cs in byfile.items():
                 gnd = 'DIRT' if brown else 'ASPHALT'
                 if near_:
                     raster(Road, g[T])
-                lay = [slot_at(no, slots, 1) if 'diff2' in fx or 'diff3' in fx else None, slot_at(no, slots, 5) if 'diff3' in fx else None]
-                mod_ = road_modulate(no, slots, fx, base_[4], T_raw); surf['road_modulated'] += len(T) if mod_ else 0
-                tone = road_tone(no, slots, fx, m, s, base_[4], T_raw, mod_layer=bool(mod_)); surf['road_tone_sum'] += tone * len(T)
-                rm_ = (road_material([tid] + [x for x in lay if x], slot_at(no, slots, 2) if 'noise' in fx else None, gnd, tone, mod_)
-                       if vw is not None and (any(lay) or mod_) else None)
+                rm_ = layered(no, slots, fx, cs_, gnd) if vw is not None else None
                 if rm_:
-                    w_ = vw[:, [1, 2]] if lay[0] else vw[:, [2, 1]]      # the first extra layer reads UV1 u
-                    add('col', rm_, p, nr, uv, T, uv1=ramp_uv(w_))
-                    surf['road_layers'] += len(T)
+                    add('col', rm_[0], p, nr, uv * rm_[1], T, uv1=layered_uv1(vw, sh_, *rm_[2:])); surf['road_layers'] += len(T)
                 else:
-                    add('col', material(tid, gnd, tone=tone), p, nr, uv, T)
+                    add('col', material(tid, gnd), p, nr, uv * np.array(layer_scale(mat_const(cs_, 0)[:2], (1, 1))), T)
                 surf[f'road:{gnd}'] += len(T)
             else:       # objects: AO map and lightmap on UV1 (object_maps). A lit lightmap puts the section in a 'lit' cell, lit at night
                 u1 = uv1_box(m, s['fl']) if 'vblnd' not in fx else None
@@ -1506,7 +1566,7 @@ def backdrop():
                     a_, b2, c2 = S_[:, 0], S_[:, 1], S_[:, 2]; ab, bc, ca = (a_ + b2) / 2, (b2 + c2) / 2, (c2 + a_) / 2
                     S_ = np.concatenate([np.stack(v, 1) for v in ((a_, ab, ca), (ab, b2, bc), (ca, bc, c2), (ab, bc, ca))]) if len(S_) else S_
                 V_ = np.concatenate(out_).reshape(-1, A_.shape[1]) if out_ else A_[:0]
-                b_, nb, uv, u1 = V_[:, :3], V_[:, 3:6], V_[:, 6:8], V_[:, 8:10]; T_ = np.arange(len(V_)).reshape(-1, 3)
+                b_, nb, uv, u1 = V_[:, :3], V_[:, 3:6], V_[:, 6:8], V_[:, 8:]; T_ = np.arange(len(V_)).reshape(-1, 3)
                 g = np.c_[(b_[:, :2] - lo) / BQ, b_[:, 2]]; i_ = np.clip(g[:, 0].astype(int), 0, nx - 1); j_ = np.clip(g[:, 1].astype(int), 0, ny - 1)
                 cov = hard[j_, i_]
             else:
@@ -1567,10 +1627,10 @@ for tier_ in range(NT):
             if not HEXGROUND:
                 mine_.append(tk_)
             uv = box_uv(r0, s['fl'])
-            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
-            vb_ = vblend_pair(no, slots, fx) if m['sd'] >= 28 else None
-            if vb_:     # vertex weights through clip_far as UV set 1, so split triangles interpolate them
-                u1 = ramp_uv(np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])[:, -3:-1].astype('f8') / 255)
+            si, slots, cs_ = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
+            vb_ = layered(no, slots, fx, cs_, role_ground(s['name'])) if fx.startswith('h_vblnd') and m['sd'] >= 28 else None
+            if vb_:     # vertex weights and shade through clip_far as UV set 1, so split triangles interpolate them
+                u1 = layered_uv1(np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])[:, -4:].astype('f8') / 255, vertex_shade(no, slots, fx, m, s), *vb_[2:])
             else:
                 u1 = (r1 + 1) / 2 if r1 is not None else uv
             A = np.c_[p, nr, uv, u1]; o_ = A[:0]
@@ -1596,18 +1656,12 @@ for tier_ in range(NT):
             V = np.concatenate([V, o_]); T = np.arange(len(V)).reshape(-1, 3)
             if not len(T):
                 continue
-            p_, n_, uv, u1 = V[:, :3], V[:, 3:6], V[:, 6:8], V[:, 8:10]; g_ = togrid(p_)
-            si, slots = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''; NM = section_normals(no, slots)
+            p_, n_, uv, u1 = V[:, :3], V[:, 3:6], V[:, 6:8], V[:, 8:]; g_ = togrid(p_)
+            si, slots, cs_ = M[s['ints'][2]]; fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''; NM = section_normals(no, slots)
             ts = slot_tex(no, [x for x in slots if x < 96])
             if not ts:
                 continue
-            gnd = role_ground(s['name']); layers = []
-            for q in blend_slots(fx):
-                if q < len(slots) and slots[q] < len(ids):
-                    tid = IDX[ids[slots[q]]][0]
-                    if tex.bix(tid) and tex.bix(tid)['fmt'] != 0x71:
-                        layers.append(tid)
-            layers = [x for x in layers if not rgmask(x)]; ts = [x for x in ts if not rgmask(x)]
+            gnd = role_ground(s['name']); layers = blend_layers(no, slots, fx, cs_); ts = [x for x in ts if not rgmask(x)]
             if not layers and not ts:
                 continue
             mask = None
@@ -1616,12 +1670,12 @@ for tier_ in range(NT):
                 if mt_ and mt_['fmt'] == 0x52:
                     mask = TX.get(IDX[ids[slots[2]]][0])
             if mask is not None and len(layers) > 1:
-                add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd, ao_map(no, slots, fx)), p_, n_, uv, T, uv1=u1)
-            elif vb_ and road_material(vb_, None, gnd):
-                add('col', road_material(vb_, None, gnd), p_, n_, uv, T, uv1=u1); surf[f'far_vblend:{gnd}'] += len(T)
+                add('col', blend_material(layers[:3], IDX[ids[slots[2]]][0], gnd, ao_map(no, slots, fx)), p_, n_, uv * np.array(layers[0][1]), T, uv1=u1)
+            elif vb_:
+                add('col', vb_[0], p_, n_, uv * vb_[1], T, uv1=u1); surf[f'far_vblend:{gnd}'] += len(T)
             else:
                 ao_ = ao_map(no, slots, fx) if r1 is not None and not vb_ else None      # u1 is the blend mask's UV1 here
-                add('col', material(layers[0] if layers else ts[0], gnd, ao=ao_), p_, n_, uv, T, uv1=u1 if ao_ else None)
+                add('col', material(layers[0][0] if layers else ts[0], gnd, ao=ao_), p_, n_, uv * np.array(layers[0][1] if layers else (1, 1)), T, uv1=u1 if ao_ else None)
             surf[f'far{tier_}'] += len(T)
             raster(new_, g_[T]); raster(Cov, g_[T])
         if mine_:       # after the whole mesh, as its own sections share vertices along their edges
@@ -2221,6 +2275,7 @@ for (u, cat), mm in cells.items():
         ps = []; ns = []; uv = []; ix = []; u2 = []; o = 0
         for a_, bb_, cc, t, d_ in parts:
             ps.append(a_); ns.append(bb_); uv.append(cc); ix.append((t + o).ravel()); u2.append(d_); o += len(a_)
+        wd_ = max(x.shape[1] for x in u2); u2 = [x if x.shape[1] == wd_ else np.c_[x, np.ones((len(x), wd_ - x.shape[1]))] for x in u2]      # a vertex colour column, else 1
         groups.append((mat, np.concatenate(ps), np.concatenate(ns), np.concatenate(uv), np.concatenate(ix), np.concatenate(u2)))
     allp = np.concatenate([g[1] for g in groups]); org = np.round((allp.min(0) + allp.max(0)) / 2)
     R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2

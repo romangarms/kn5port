@@ -86,14 +86,16 @@ def alu(d, vs):
         else:
             r = f"r{r}"
         return r + '.' + ''.join('xyzw'[i] for i in range(4) if mask >> i & 1)
-    out = []
+    out = []; vsat, ssat = ('_sat' if bits(a, 24 + k, 1) else '' for k in range(2))      # vector and scalar clamp to 0..1
     if vmask:
-        out.append(f"{VEC[vop] if vop < len(VEC) else vop} {dest(vdst, vmask)}, {', '.join(srcs[:VARGS[vop] if vop < len(VARGS) else 3])}")
-    if smask and 42 <= sop <= 47:     # mulsc, addsc, subsc: a constant's first component and a temp's second, the temp packed into opcode and src3 bits
-        sw3 = bits(b, 0, 8); temp = (sop & 1) | (bits(c, 29, 1) << 1) | (sw3 & 0x3C); comp = lambda k: 'xyzw'[((sw3 >> (2 * k)) + k) & 3]
-        out.append(f"{SCA[sop]} {dest(sdst, smask)}, {'-' if bits(b, 24, 1) else ''}c{bits(c, 0, 8)}.{comp(0)}, r{temp}.{comp(1)}")
+        out.append(f"{VEC[vop] if vop < len(VEC) else vop}{vsat} {dest(vdst, vmask)}, {', '.join(srcs[:VARGS[vop] if vop < len(VARGS) else 3])}")
+    if smask and 42 <= sop <= 47:     # mulsc, addsc, subsc: a constant and a temp, the temp packed into opcode and src3 bits. Components and the
+        # shared negate as Xenia reads them: the constant's from swizzle bits 6-7, less one, the temp's from bits 0-1. Checked on the road shaders,
+        # where it puts the temp on the register the noise was fetched into, and the shadow lookup's y flip reads 1 - y
+        sw3 = bits(b, 0, 8); temp = (sop & 1) | (bits(c, 29, 1) << 1) | (sw3 & 0x3C); ng = '-' if bits(b, 24, 1) else ''
+        out.append(f"{SCA[sop]}{ssat} {dest(sdst, smask)}, {ng}c{bits(c, 0, 8)}.{'xyzw'[((sw3 >> 6) - 1) & 3]}, {ng}r{temp}.{'xyzw'[sw3 & 3]}")
     elif smask:
-        out.append(f"{SCA[sop] if sop < len(SCA) else sop} {dest(sdst, smask)}, {srcs[2]}")
+        out.append(f"{SCA[sop] if sop < len(SCA) else sop}{ssat} {dest(sdst, smask)}, {srcs[2]}")
     return '   ||   '.join(out) or 'nop'
 
 
