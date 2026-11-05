@@ -19,7 +19,8 @@ level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL; rel = f'/l
 GRID = 3.0          # metres per raster cell
 MIN_AREA = 150.0    # m2: smaller pieces of water are dropped
 SPACING = 40.0      # most metres between River nodes
-MARGIN = 4.0        # metres added to the width, so the ribbon reaches under the banks
+MARGIN = 8.0        # metres added to the width, so the ribbon reaches under the banks. At 4, neighbouring ribbons left slivers of lakebed between
+                    # them, 9 more than 6 m from Clear Springs' shores; at 8, 2 of 9 m2
 LAKE_NORMALS = (0x1295, 0x1296)
 COLOUR = (18, 41, 51)       # build3.py's water colour, 0.07, 0.16, 0.2
 
@@ -208,7 +209,8 @@ print('rivers', len(rivers), 'nodes', sum(len(r) for r in rivers))
 
 RIVER = {'class': 'River', '__parent': 'fh1_water', 'annotation': 'WATER', 'baseColor': [*COLOUR, 255], 'cubemap': 'fh1_sky_cubemap', 'fullReflect': False,
          'rippleTex': ripple[0], 'foamTex': '/core/art/water/foam.dds', 'overallFoamOpacity': 0, 'depthGradientTex': '/core/art/water/river_depthcolor_ramp.png',
-         'depthGradientMax': 10, 'clarity': .3, 'fresnelBias': .1, 'fresnelPower': 4, 'flowMagnitudePhysics': 0, 'overallWaveMagnitude': .2,
+         # murky: FH1's lakes are 2 m deep over dirt, which clarity .3 and a 10 m depth ramp showed as a film of water over a brown lakebed
+         'depthGradientMax': 2.5, 'clarity': .05, 'waterFogDensity': .8, 'fresnelBias': .1, 'fresnelPower': 4, 'flowMagnitudePhysics': 0, 'overallWaveMagnitude': .2,
          'Ripples (texture animation)': [{'rippleDir': [0, 1], 'rippleMagnitude': .8, 'rippleSpeed': .06, 'rippleTexScale': [6, 6]},
                                          {'rippleDir': [.7, .7], 'rippleMagnitude': .5, 'rippleSpeed': .03, 'rippleTexScale': [16, 16]},
                                          {'rippleDir': [-.5, .86], 'rippleMagnitude': .3, 'rippleSpeed': .01, 'rippleTexScale': [40, 40]}],
