@@ -133,6 +133,8 @@ A `TSStatic`'s `rotationMatrix` lists its axes as rows: stock guardrail chains m
 
 Any world mesh whose zone record has a first LOD distance of 1e5 or more (`SHELL`) is coarse ground, whatever its name. This covers `Mountains_Area04A_Terrain_05`, which sits over the Finley Dam area and shares a `lodkey` with the fine tile `Terrain_LOD00_05`. No hex near the dam loads it, but the hex ground fallback (cells no hex draws ground for) filled the hole the dam stands in with it, so its 100 m triangles hung over the dam's face as a tan dome. Since 2026-11-04 the fallback skips cells under large placed structures (`STRUCTS`, the footprints `structures()` rasters for the far tiers). Clear Springs has none of those cells.
 
+World-space objects (not ground) go through the zones too: `zone_objects` keeps a mesh only where one of the 8 hexes nearest some point of its box loads its LOD ring. Colorado audit (2026-11-04): 5,886 of 6,062 objects pass over their whole box, 6 over most of it, and 170 nowhere. Those 170 are 58 power line spans no zone loads at all (817 others are loaded), about 100 catalog meshes whose only record is at the origin (drawn 22 m underground at FH1's 0, 0) and spare LODs such as `Barrier_020_Armco_LOD01_019`. Clear Springs drops 111 meshes, 10k triangles. The hex fallback still fills cells no hex loads ground for; the log line `hex fallback by ring` lists what fills them. In Clear Springs that's all 1,545 cells, mostly `TERR_CLRD_FEST_16_LOD01` (561) and `Reservoir_Area2_MID_06_NOLOD` (424), none loaded by a near hex.
+
 Far ground is hidden over water, and only sinks under near ground, not at road edges.
 
 ## Cooked shapes

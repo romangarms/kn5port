@@ -1156,6 +1156,44 @@ def hg_grid(p):
     return np.stack([(p[..., 0] - X0) / HG, (p[..., 2] - Z0) / HG], -1)
 
 
+def is_ground(c):
+    """ground for hex_selection: terrain by name, or meshes drawn only with ground and road shaders (lake sections allowed)"""
+    no = int(c['f'].split('.')[1]); fx_ = [SHADERS[s_] for s_ in MT[no][1]] if no < len(MT) else []
+    terr_ = TERR.search(c['name']) or FAR.search(c['name'])
+    return c['sd'] >= 20 and not NOTGROUND.search(c['name']) and bool(terr_ or fx_ and all(GROUNDFX.match(s_) or s_.startswith('lake') for s_ in fx_) and any(GROUNDFX.match(s_) for s_ in fx_))
+
+
+def zone_objects(cs):
+    """World-space objects (not ground: hex_selection gates that per cell) that some zone near them loads. A mesh is kept when, at any of up to
+    64 points over its box, one of the HEX_K nearest hexes loads its LOD ring. 5,886 of 6,062 pass over their whole box. The rest pass nowhere:
+    58 power line spans no zone loads at all (817 others are loaded), about 100 catalog meshes whose only record is at the origin, 22 m
+    underground there, and spare LODs such as Barrier_020_Armco_LOD01_019. -> the meshes kept"""
+    HX, _ = hexzones.hexes(); zn = sorted(HX); tree = cKDTree(np.array([HX[z] for z in zn])); loads = defaultdict(set)
+    for i, z in enumerate(zn):
+        for d in hexzones.drawn(z):
+            if d < len(DRAW):
+                loads[int(DRAW['t'][d])].add(i)
+    mem = defaultdict(list)
+    for f_, r_ in RING.items():
+        mem[r_].append(f_)
+    out = []
+    for c in cs:
+        no = int(c['f'].split('.')[1])
+        if is_ground(c):
+            out.append(c)
+            continue
+        zl = set().union(*[loads.get(f_, set()) for f_ in (mem[RING[no]] if no in RING else [no])])
+        if zl:
+            xs = np.linspace(c['mn'][0], c['mx'][0], int(np.clip((c['mx'][0] - c['mn'][0]) / 50, 2, 8)))
+            zs = np.linspace(c['mn'][2], c['mx'][2], int(np.clip((c['mx'][2] - c['mn'][2]) / 50, 2, 8)))
+            X, Z_ = np.meshgrid(xs, zs); _, h = tree.query(np.c_[X.ravel(), -Z_.ravel()], k=HEX_K)
+            if any(zn_ in zl for zn_ in h.ravel().tolist()):
+                out.append(c)
+                continue
+        stats['zone_objects_dropped'] += 1; stats['zone_objects_dropped_tris'] += c['nt']; DROPPED['no zone loads: ' + re.sub(r'\d+', '#', c['name'])[:30]] += c['nt']
+    return out
+
+
 def structure_tris():
     """Large placed structures, such as Finley Dam's 300 m wall, stand in holes in the terrain meshes. -> [(FH1 positions, triangles)], one per
     placement. Free-roam records only, at LOD0. Bridges, turbines, conveyors and light rigs span open ground, so they'd cut holes under themselves"""
@@ -1192,11 +1230,8 @@ def hex_selection(cs):
     ring_of = {}; foot = defaultdict(list); ntri = collections.Counter(); name_ = {}; buf = np.zeros(8_000_000, np.int64)
     byf = defaultdict(list)
     for c in cs:
-        no = int(c['f'].split('.')[1]); fx_ = [SHADERS[s_] for s_ in MT[no][1]] if no < len(MT) else []
-        terr_ = TERR.search(c['name']) or FAR.search(c['name'])
-        if c['sd'] < 20 or NOTGROUND.search(c['name']) or not (terr_ or fx_ and all(GROUNDFX.match(s_) or s_.startswith('lake') for s_ in fx_) and any(GROUNDFX.match(s_) for s_ in fx_)):
-            continue
-        byf[c['f']].append(c)
+        if is_ground(c):
+            byf[c['f']].append(c)
     for f_, cs_ in byf.items():
         P_ = rmb.parse(open('../x/' + f_, 'rb').read()); no = int(f_.split('.')[1])
         for c in cs_:
@@ -1263,6 +1298,8 @@ def hex_selection(cs):
     o_ = np.flatnonzero(~done[pc] & ~held[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], ~near[pr[o_]], pc[o_]))]
     stats['hex_cells_structure'] = int((held & ~done).sum())
     first = np.r_[True, pc[o_][1:] != pc[o_][:-1]]; sel[o_[first]] = True
+    fb = collections.Counter((name_[rings_[pr[i]]], bool(decided[i])) for i in o_[first])      # decided: a hex among the nearest loads it, past its cull distance
+    print('hex fallback by ring (name, loaded by a near hex): cells', fb.most_common(15))
     stats['hex_cells_fallback'] = int(first.sum()); stats['hex_cells_drawn'] = int(done.sum())
     out = {r_: np.sort(pc[sel & (pr == i)]) for i, r_ in enumerate(rings_)}
     print('hex ground', len(rings_), 'groups,', int(done.sum()), 'cells from hexes,', int(first.sum()), 'filled by the finest ground over them', flush=True)
@@ -1310,6 +1347,8 @@ if HEXGROUND:
     BARY = np.array([[a_, b_, 8 - a_ - b_] for a_ in range(9) for b_ in range(9 - a_)], 'f8') / 8
     HEXSEL, HEXRING = hex_selection(sel)
     lap('hex ground')
+    sel = zone_objects(sel)
+    lap('zone objects')
 byfile = defaultdict(list)
 for c in sel:
     byfile[c['f']].append(c)
