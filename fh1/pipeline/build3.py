@@ -635,7 +635,7 @@ def skirt_passes(no, slots, fx, cs):
         if key not in MATS:
             MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
                          'translucent': True, 'translucentZWrite': False, 'translucentRecvShadows': True, 'castShadows': False}
-        out.append((key, np.array(sc), [3, w[0] if w else 3], .01 + .002 * k_))
+        out.append((key, np.array(sc), [3, w[0] if w else 3], .02 + .01 * k_))
     return out
 
 
@@ -1156,6 +1156,30 @@ def hg_grid(p):
     return np.stack([(p[..., 0] - X0) / HG, (p[..., 2] - Z0) / HG], -1)
 
 
+def structure_tris():
+    """Large placed structures, such as Finley Dam's 300 m wall, stand in holes in the terrain meshes. -> [(FH1 positions, triangles)], one per
+    placement. Free-roam records only, at LOD0. Bridges, turbines, conveyors and light rigs span open ground, so they'd cut holes under themselves"""
+    byno = defaultdict(list); out = []; OPEN = re.compile(r'bridge|turbine|conveyor|^Lights', re.I)
+    for c in F:
+        if c['sd'] >= 20 and lod(c['name']) == 0 and max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) >= 50 and not (NOUSE.search(c['name']) or OPEN.search(c['name'])):
+            byno[int(c['f'].split('.')[1])].append(c)
+    for (did, p_), r_ in ZREC.items():
+        cs = byno.get(int(DRAW['t'][did]))
+        if not cs or r_['lst'] or r_['name'] or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
+            continue
+        Rg = np.array(r_['rot']).T; sc = float(np.linalg.norm(Rg[:, 1])); Rg = Rg / np.maximum(np.linalg.norm(Rg, axis=0, keepdims=True), 1e-6)
+        F_ = np.diag([1., 1., -1.]); R_ = (F_ @ Rg if np.linalg.det(Rg) < 0 else F_ @ Rg @ F_) * np.clip(sc, .2, 5)      # game_rot, defined further down
+        o_ = np.array([r_['pos'][0], r_['pos'][1], -r_['pos'][2]]); P_ = []; T_ = []
+        for c in cs:
+            m = rmb.parse(open('../x/' + c['f'], 'rb').read())['meshes'][c['mi']]; p, _, _ = rmb.verts(m)
+            T_ += [rmb.tris(s['ib'], m['nv'], s['ints'][1]) + sum(len(q) for q in P_) for s in m['secs']]; P_.append(p @ R_.T + o_)
+        out.append((np.concatenate(P_), np.concatenate(T_)))
+    return out
+
+
+STRUCTS = structure_tris()
+
+
 def hex_selection(cs):
     """-> {ring: sorted selected cells}, {file: ring}. cs: the world-path meshes"""
     lod_of = {}
@@ -1229,9 +1253,15 @@ def hex_selection(cs):
     first = np.r_[True, (pc[o_][1:] != pc[o_][:-1]) | (lk[pr[o_]][1:] != lk[pr[o_]][:-1])]
     lead = lv[pr[o_]][np.maximum.accumulate(np.where(first, np.arange(len(o_)), 0))]
     sel[o_[lv[pr[o_]] > lead]] = False
-    # cells no hex draws ground for: the finest ground over them
+    # cells no hex draws ground for: the finest ground over them, except under large structures. Those stand in holes in the terrain, and
+    # the only ground over Finley Dam's is the coarse shell Mountains_Area04A_Terrain_05, which FH1's hexes there never load: filled with
+    # it, its 100 m triangles hung over the dam's face as a tan dome
+    held = np.zeros(HN[0] * HN[1], bool)
+    for p, T in STRUCTS:
+        k = hg_cells(hg_grid(p)[T], HN[0], HN[1], buf); held[buf[:min(k, len(buf))]] = True
     near = np.array([any(((int(g_) >> 3) & 1) for f_ in ms_[a] for g_ in GBITS.get(f_, ())) for a in range(len(rings_))])     # g bit 3: close-range ground
-    o_ = np.flatnonzero(~done[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], ~near[pr[o_]], pc[o_]))]
+    o_ = np.flatnonzero(~done[pc] & ~held[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], ~near[pr[o_]], pc[o_]))]
+    stats['hex_cells_structure'] = int((held & ~done).sum())
     first = np.r_[True, pc[o_][1:] != pc[o_][:-1]]; sel[o_[first]] = True
     stats['hex_cells_fallback'] = int(first.sum()); stats['hex_cells_drawn'] = int(done.sum())
     out = {r_: np.sort(pc[sel & (pr == i)]) for i, r_ in enumerate(rings_)}
@@ -1349,7 +1379,7 @@ for f, cs in byfile.items():
                 stats['sec_notex'] += 1; DROPPED[re.sub(r'\d+', '#', n)[:30]] += len(T)
                 continue
             sk_ = skirt_passes(no, slots, fx, cs_) if fx.startswith('h_road') and '_blend' in fx and vw is not None else []
-            if sk_:     # verges over the ground beside the road, a translucent pass per layer, under road decals (.02 up)
+            if sk_:     # verges over the ground beside the road, a translucent pass per layer, 2, 3 and 4 cm up, a cm apart as FH1 draws them over ground and road that their own triangles only drape, under road decals (5 cm)
                 if near_:
                     raster(Cov if isterr else Road, g[T])
                 for key_, sc_, b_, lift_ in sk_:
@@ -1386,12 +1416,12 @@ for f, cs in byfile.items():
                     raster(Road, g[T])
                 mask = slot_at(no, slots, 2) if 'mask' in fx and r1 is not None else None
                 if vw is None:
-                    add('vis', material(tid, translucent=True), p, nr, uv, T, lift=.02)
+                    add('vis', material(tid, translucent=True), p, nr, uv, T, lift=.05)
                 elif mask:
                     a_ = round(float(vw[np.unique(T), 0].mean()) * 20) / 20         # shared by sections with about the same alpha
-                    add('vis', decal_material(tid, mask, a_), p, nr, uv, T, lift=.02, uv1=(r1 + 1) / 2)
+                    add('vis', decal_material(tid, mask, a_), p, nr, uv, T, lift=.05, uv1=(r1 + 1) / 2)
                 else:
-                    add('vis', decal_material(tid, None, 0), p, nr, uv, T, lift=.02, uv1=ramp_uv(vw[:, [0, 0]]))
+                    add('vis', decal_material(tid, None, 0), p, nr, uv, T, lift=.05, uv1=ramp_uv(vw[:, [0, 0]]))
                 surf['decal'] += len(T)
             elif road:
                 rgb = info['rgb']; brown = rgb[0] - rgb[2] > 14
@@ -1497,27 +1527,11 @@ def far_tiers():
 
 
 def structures():
-    """Large placed structures, such as Finley Dam's 300 m wall, stand in holes in the terrain meshes. They're placed after the far
-    ground, so their footprints go in Rock here, which keeps far ground off them. Free-roam records only, at LOD0. Bridges, turbines,
-    conveyors and light rigs span open ground, so they'd cut holes under themselves"""
-    byno = defaultdict(list); n_ = 0; OPEN = re.compile(r'bridge|turbine|conveyor|^Lights', re.I)
-    for c in F:
-        if c['sd'] >= 20 and lod(c['name']) == 0 and max(c['mx'][0] - c['mn'][0], c['mx'][2] - c['mn'][2]) >= 50 and not (NOUSE.search(c['name']) or OPEN.search(c['name'])):
-            byno[int(c['f'].split('.')[1])].append(c)
-    for (did, p_), r_ in ZREC.items():
-        cs = byno.get(int(DRAW['t'][did]))
-        if not cs or r_['lst'] or r_['name'] or abs(r_['pos'][0]) + abs(r_['pos'][2]) < 1:
-            continue
-        Rg = np.array(r_['rot']).T; sc = float(np.linalg.norm(Rg[:, 1])); Rg = Rg / np.maximum(np.linalg.norm(Rg, axis=0, keepdims=True), 1e-6)
-        F_ = np.diag([1., 1., -1.]); R_ = (F_ @ Rg if np.linalg.det(Rg) < 0 else F_ @ Rg @ F_) * np.clip(sc, .2, 5)      # game_rot, defined further down
-        o_ = np.array([r_['pos'][0], r_['pos'][1], -r_['pos'][2]])
-        for c in cs:
-            m = rmb.parse(open('../x/' + c['f'], 'rb').read())['meshes'][c['mi']]; p, _, _ = rmb.verts(m)
-            g = togrid(p @ R_.T + o_)
-            for s in m['secs']:
-                raster(Rock, g[rmb.tris(s['ib'], m['nv'], s['ints'][1])])
-        n_ += 1
-    print('structure footprints', n_)
+    """Large placed structures stand in holes in the terrain meshes (structure_tris). They're placed after the far ground, so their
+    footprints go in Rock here, which keeps far ground off them"""
+    for p, T in STRUCTS:
+        raster(Rock, togrid(p)[T])
+    print('structure footprints', len(STRUCTS))
 
 
 BQ = 16.0; BSINK = 4.0      # backdrop coverage grid, and how far coarser ground sinks under finer, in metres

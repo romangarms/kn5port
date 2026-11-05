@@ -131,7 +131,7 @@ A `TSStatic`'s `rotationMatrix` lists its axes as rows: stock guardrail chains m
 
 ## Always-on ground
 
-Any world mesh whose zone record has a first LOD distance of 1e5 or more (`SHELL`) is coarse ground, whatever its name. This covers `Mountains_Area04A_Terrain_05`, which sits over the Finley Dam area and shares a `lodkey` with the fine tile `Terrain_LOD00_05`.
+Any world mesh whose zone record has a first LOD distance of 1e5 or more (`SHELL`) is coarse ground, whatever its name. This covers `Mountains_Area04A_Terrain_05`, which sits over the Finley Dam area and shares a `lodkey` with the fine tile `Terrain_LOD00_05`. No hex near the dam loads it, but the hex ground fallback (cells no hex draws ground for) filled the hole the dam stands in with it, so its 100 m triangles hung over the dam's face as a tan dome. Since 2026-11-04 the fallback skips cells under large placed structures (`STRUCTS`, the footprints `structures()` rasters for the far tiers). Clear Springs has none of those cells.
 
 Far ground is hidden over water, and only sinks under near ground, not at road edges.
 
