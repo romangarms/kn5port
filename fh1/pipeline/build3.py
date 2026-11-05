@@ -1911,6 +1911,10 @@ def model_item(no):
     lv0 = (0,) if low else (0, 1)
     shape = [((g[0], lv0),) + tuple(g[1:]) for g in groups] + [((g[0], (1,)),) + tuple(g[1:]) for g in low]
     write_lod(adir / f'{item}.dae', shape, np.zeros(3), (120, 40 if IMPOSTERS else 1), None, ['bb_autobillboard25'] if IMPOSTERS else [])
+    if IMPOSTERS:       # the imposter settings stock trees carry beside the mesh (544 of 607), as the shape editor writes them: with the dae node alone
+        # the sprites drew their transparent background black
+        (adir / f'{item}.dae.asset.json').write_text(json.dumps({'imposters': [{'detailLevel': 1, 'dimension': 128, 'equatorSteps': 16, 'includePoles': False,
+                                                                               'polarAngle': 0, 'polarSteps': 0, 'size': 25}]}, indent=2))
     d = dict(tmpl); d.update({'name': item, 'internalName': item, 'shapeFile': f'{rel}/art/forest/models/{item}.dae', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0, 'windScale': 0})
     d.pop('persistentId', None)
     tri = (sum(len(g[4]) // 3 for g in groups), sum(len(g[4]) // 3 for g in (low or groups)))
