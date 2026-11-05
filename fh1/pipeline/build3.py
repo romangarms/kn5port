@@ -1915,6 +1915,9 @@ def model_item(no):
         # the sprites drew their transparent background black
         (adir / f'{item}.dae.asset.json').write_text(json.dumps({'imposters': [{'detailLevel': 1, 'dimension': 128, 'equatorSteps': 16, 'includePoles': False,
                                                                                'polarAngle': 0, 'polarSteps': 0, 'size': 25}]}, indent=2))
+        for f_ in (f'{item}.dae.imposter.dds', f'{item}.dae.imposter_normals.dds'):      # captured imposters with mips that keep thin trees (impfix.py)
+            if os.path.exists(f'../impcache/{f_}'):
+                shutil.copyfile(f'../impcache/{f_}', adir / f_)
     d = dict(tmpl); d.update({'name': item, 'internalName': item, 'shapeFile': f'{rel}/art/forest/models/{item}.dae', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0, 'windScale': 0})
     d.pop('persistentId', None)
     tri = (sum(len(g[4]) // 3 for g in groups), sum(len(g[4]) // 3 for g in (low or groups)))

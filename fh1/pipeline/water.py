@@ -6,6 +6,7 @@ import json, math, os, re, sys
 from pathlib import Path
 import numpy as np
 from numba import njit
+from matplotlib.path import Path as MplPath
 from scipy import ndimage as ni
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
@@ -100,6 +101,20 @@ def simplify(P, tol):
     return P[keep]
 
 
+def ribbon(N, XY, inset=0.0):
+    """which points XY lie on the strip a River draws through nodes N (x, y, z, width): at each node its width across the line through its
+    neighbours, joined node to node as quads. inset: metres taken off each side"""
+    P = N[:, :2]; t = np.gradient(P, axis=0); t /= np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None]
+    n = np.c_[-t[:, 1], t[:, 0]] * np.maximum(N[:, 3] / 2 - inset, 0)[:, None]; L, R = P + n, P - n
+    out = np.zeros(len(XY), bool)
+    for i in range(len(N) - 1):
+        q = np.array([L[i], L[i + 1], R[i + 1], R[i]]); lo_, hi_ = q.min(0), q.max(0)
+        k = np.flatnonzero((XY >= lo_).all(1) & (XY <= hi_).all(1))
+        if len(k):
+            out[k[MplPath(q).contains_points(XY[k])]] = True
+    return out
+
+
 def unfold(P):
     """Nodes that can't fold over themselves. The centre line steps cell by cell, and a ribbon wider than twice its turn radius folds back:
     30% of nodes did, which showed as missing water and flat pale slabs across Clear Springs' reservoir. So the line is smoothed in proportion
@@ -168,6 +183,7 @@ for k, (sy, sx) in enumerate(ni.find_objects(lab), 1):
         z = ni.median_filter(Hw[gp[:, 0], gp[:, 1]], 5, mode='nearest')
         P = np.c_[lo[0] + gp[:, 1] * GRID, lo[1] + gp[:, 0] * GRID, z, width]
         # a drop of metres between neighbouring cells is a fall, or a pool beside lower water: the ribbon stops there
+        n_before = len(rivers)
         for P_ in np.split(P, np.flatnonzero(np.abs(np.diff(z)) > 4) + 1):
             if len(P_) < 3:
                 continue
@@ -176,9 +192,16 @@ for k, (sy, sx) in enumerate(ni.find_objects(lab), 1):
                 j, i = int(round((y - lo[1]) / GRID)), int(round((x - lo[0]) / GRID)); r_ = max(int(wd / 2 / GRID), 1)
                 nodes.append([round(x, 2), round(y, 2), round(zz, 2), round(wd, 1), round(float(np.median(depth[max(j - r_, 0):j + r_ + 1, max(i - r_, 0):i + r_ + 1])), 1), 0, 0, 1])
             rivers.append(nodes)
-        yy, xx = np.nonzero(part); covered = np.zeros_like(left)
-        for (y, x), wd in zip(path, width):
-            r_ = int(wd / 2 / GRID) + 1; covered[max(y - r_, 0):y + r_ + 1, max(x - r_, 0):x + r_ + 1] = True
+        # covered: what the ribbons as built reach, after unfold narrowed them at bends. Marked from the path's own widths, the cells unfold
+        # took away counted as done, leaving 6.4% of Clear Springs' water with no ribbon, a 29,000 m2 band across the reservoir among it
+        # Judged as round-ended tubes, a node's full width counted all round it, and where the stem narrowed from 291 m to 125 m within 16 m
+        # that left a dry wedge in the reservoir: the River draws a strip, each node's width across the flow
+        yy, xx = np.nonzero(left); covered = np.zeros_like(left)
+        XY = np.c_[lo[0] + (xx + x0) * GRID, lo[1] + (yy + y0) * GRID]
+        covered[path[:, 0], path[:, 1]] = True       # the path itself, so every pass takes something
+        for nodes in rivers[n_before:]:
+            k_ = ribbon(np.array(nodes), XY, MARGIN / 2)
+            covered[yy[k_], xx[k_]] = True
         left &= ~covered
         left = ni.binary_opening(left, iterations=1)      # slivers along the ribbon's edge aren't branches
 print('rivers', len(rivers), 'nodes', sum(len(r) for r in rivers))
