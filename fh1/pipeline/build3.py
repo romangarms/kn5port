@@ -1007,11 +1007,11 @@ Road = np.full((N, N), np.nan, 'f8'); Water = np.full((N, N), np.nan, 'f8'); Cov
 
 # ---- ground chosen by FH1's zone hexes (FH1_HEXGROUND=1)
 # Each 100 m hex loads and unloads what FH1 streams while the player is in it, and each record gives its LOD group's switch distances. A HG
-# cell takes the ground groups drawn from its nearest hex (see drawn_from in hex_selection): what a player sees from the closest viewpoint.
+# cell takes the ground groups loaded by the nearest hex listing them (see hex_selection): what a player sees from the closest viewpoint.
 # That replaces the far tiers' priorities and every footprint and height rule for water and rock. Cells no hex draws ground for take the
-# finest ground over them, close-range ground (g bit 3) first. Clear Springs 2026-11-04: no visible holes (user-checked), 42 holes in the
-# scan against 99 when unlisted hexes counted as not drawn. FH1_HEXGROUND=0 goes back to the far tiers and their clipping
-HEXGROUND = os.environ.get('FH1_HEXGROUND', '1') == '1'; HG = 16.0
+# finest ground over them, close-range ground (g bit 3) first. Clear Springs 2026-11-04: no visible holes (user-checked).
+# FH1_HEXGROUND=0 goes back to the far tiers and their clipping
+HEXGROUND = os.environ.get('FH1_HEXGROUND', '1') == '1'; HG = 16.0; HEX_K = 8
 GROUNDFX = re.compile(r'^(h_blnd|h_vblnd|h_road)'); NOTGROUND = re.compile(r'sign|barrier|armco|fence|rail|wall|pole|bridge|decal|cable|building|^TERR_CUBE', re.I)
 HN = (int(np.ceil((X1 - X0) / HG)), int(np.ceil((Z1 - Z0) / HG)))
 HEXSEL = {}; HEXRING = {}       # ring -> sorted selected cell numbers; file -> ring, for the ground files
@@ -1114,20 +1114,11 @@ def hex_selection(cs):
     pc = np.concatenate(pc); pr = np.concatenate(pr)       # candidate (cell, ring) pairs
     dens = np.array([ntri[r_] / max(len(np.unique(np.concatenate(foot[r_]))), 1) for r_ in rings_])
     HX, HR = hexzones.hexes(); zn = sorted(HX); ZC = np.array([HX[z] for z in zn])
-    # a zone's list loads (bit 31) or unloads its ids. Unload hexes ring the load ones farther out, and hexes between list neither: a mesh
-    # loaded on the way in stays drawn there. So from hex h a group is drawn if h loads it, or lists it neither way and lies nearer its
-    # load hexes than its unload ones. 5,300 ground meshes have both, with 62 unlisted hexes between on average
-    load = [set() for _ in zn]; unload = [set() for _ in zn]
-    for k_, z in enumerate(zn):
-        b_ = open(f'../x/__R00Z{z:05d}.pvsz', 'rb').read(); n_ = struct.unpack_from('>I', b_, 0)[0]
-        for v in struct.unpack_from('>%dI' % n_, b_, 4):
-            d = v & 0x7fffffff
-            if d < len(DRAW):
-                (load if v >> 31 else unload)[k_].add(int(DRAW['t'][d]))
+    load = [{int(DRAW['t'][d]) for d in hexzones.drawn(z) if d < len(DRAW)} for z in zn]       # the ids a zone loads (bit 31)
     cj, ci = np.divmod(np.arange(HN[0] * HN[1]), HN[0]); cx_ = X0 + (ci + .5) * HG; cz_ = Z0 + (cj + .5) * HG
-    dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_]); dK = dK.ravel(); hK = hK.ravel()
+    dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_], k=HEX_K)
     ms_ = [set(mem[r_]) if r_ in mem else {r_[1]} for r_ in rings_]
-    Lh = defaultdict(list); Uh = defaultdict(list); byfile = defaultdict(list)
+    Lh = defaultdict(list); byfile = defaultdict(list)
     for a, m_ in enumerate(ms_):
         for f_ in m_:
             byfile[f_].append(a)
@@ -1135,27 +1126,27 @@ def hex_selection(cs):
         for f_ in load[k_]:
             for a in byfile.get(f_, ()):
                 Lh[a].append(k_)
-        for f_ in unload[k_]:
-            for a in byfile.get(f_, ()):
-                Uh[a].append(k_)
-    Ls = {a: set(v) for a, v in Lh.items()}; Us = {a: set(v) for a, v in Uh.items()}
-    Lt = {a: cKDTree(ZC[sorted(v)]) for a, v in Ls.items()}; Ut = {a: cKDTree(ZC[sorted(v)]) for a, v in Us.items()}
+    Ls = {a: set(v) for a, v in Lh.items()}
     cull = {}
     for a in range(len(rings_)):        # the record's last switch distance is where FH1 stops drawing the group; 131008 means never
         sw_ = next((lod_of[f_] for f_ in ms_[a] if f_ in lod_of), None)
         cull[a] = np.inf if sw_ is None or sw_[0] < 0 or sw_[2] >= 1e5 else sw_[2]
 
-    def drawn_from(a, h, r):
-        """whether FH1 draws ring a from hex h at distance r: loaded there, or listed neither way and nearer its load hexes, and not culled"""
-        if a not in Ls or r >= cull[a]:
-            return False
-        if h in Ls[a]:
-            return True
-        return h not in Us.get(a, ()) and (a not in Ut or Lt[a].query(ZC[h])[0] < Ut[a].query(ZC[h])[0])
-
-    key = np.stack([pr, hK[pc], (dK[pc] // 10).astype(np.int64)], 1)
-    uk, inv = np.unique(key, axis=0, return_inverse=True)
-    sel = np.array([drawn_from(a, h, (b + .5) * 10) for a, h, b in uk])[inv.ravel()]
+    # The lists are changes, not states: a fine tile is loaded from every hex over it and listed nowhere past 1 km, and the Uber shell over
+    # Clear Springs is listed by 6 of the 105 hexes inside its box, loaded from 1.6 km. Counting unlisted hexes as loaded drew that shell 2 m
+    # over the fine tiles. Unloads don't say a group is gone either: Reservoir_Area6_PATCH_10 is unloaded by a hex inside its own box with
+    # loading ones all round, and taking that as final left a 26 m hole. So the nearest of HEX_K hexes that loads a group decides: drawn
+    # there short of the cull distance
+    sel = np.zeros(len(pc), bool); decided = np.zeros(len(pc), bool)
+    for q in range(HEX_K):
+        o_ = np.flatnonzero(~decided)
+        if not len(o_):
+            break
+        key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64)], 1)
+        uk, inv = np.unique(key, axis=0, return_inverse=True); inv = inv.ravel()
+        ld_ = np.array([h in Ls.get(a, ()) for a, h, b in uk])
+        ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b), l in zip(uk, ld_)])
+        decided[o_[ld_[inv]]] = True; sel[o_[ok[inv]]] = True
     done = np.zeros(HN[0] * HN[1], bool); done[pc[sel]] = True
     # copies of one tile in separate rings, such as TERR_CLRD_FEST_AREA_09_LOD00 and _LOD02: the finest in each cell
     lk = np.array([hash(lodkey(name_[r_])) for r_ in rings_]); lv = np.array([lod(name_[r_]) for r_ in rings_])
