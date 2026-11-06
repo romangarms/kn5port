@@ -16,11 +16,7 @@ LOOPS = {'AMB_Quads_Stream': {'Festival_Quad_F': 'festival', 'Main_Town_Quad_F_M
 OGG_QUALITY = 4; TARGET_RMS = .05; PEAK = .9; PLACED_RMS = .1
 
 
-def riff(frames, rate, channels, data):
-    """XMA2WAVEFORMATEX with one stream, which ffmpeg can open."""
-    fmt = struct.pack('<HHIIHHH', 0x166, channels, rate, rate * channels * 2, 4, 16, 34)
-    fmt += struct.pack('<HIIIIIIIBBH', 1, 3 if channels == 2 else 4, frames, 2048, 0, 0, 0, 0, 3, 0, 0)
-    return b'RIFF' + struct.pack('<I', 28 + len(fmt) + len(data) - 8) + b'WAVEfmt ' + struct.pack('<I', len(fmt)) + fmt + b'data' + struct.pack('<I', len(data)) + data
+riff = soundscape.riff
 
 
 def gain(src, target=TARGET_RMS):

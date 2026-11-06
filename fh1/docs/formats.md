@@ -191,6 +191,17 @@ Positions use the same z sign as `colorado.nav`.
 
 FSB4 holding XMA (mode 0x1000000). Read by `ambience.py`, which wraps each sample in an XMA2 RIFF header for ffmpeg. FFmpeg can't open the banks directly. Bank `fev` event data isn't decoded.
 
+The radio banks in `media/audio/radio` (`Radio_Music.fsb`, `Radio_VO_<language>.fsb`) are FSB4 holding MP3 instead (sample mode 0x200, bank mode 0x40, MPEG padded to 4 bytes). Each sample's data starts on a 32-byte boundary, so offsets are rounded up between samples. The raw data plays as an `.mp3` file. Sample names are cut to 29 characters.
+
+## Radio (working)
+
+Read by `radio.py`, which builds the separate `fh1_radio` mod.
+
+- `RadioSystem.xml` defines nine stations. `Radio1` is Horizon Bass Arena (DJ Scott Tyler), `Radio2` Horizon Pulse (Holly Cruz), `Radio3` Horizon Rocks (Phoenix Fox), and `Radio4_Silent` is the off position (`isOffStation`). `Radio5` to `Radio9` are music played from a place: pre-race, autoshow, workshop, paint shop and street race. Each station has a `Playlist` of `MusicTrack`s (name, artist, `fmodname`, a weight for each time of day, all 1), plus `Idents`, `DJRegularDialogue`, `DJBookendDialogueIn` and `Out` (all `DJ_Blank`), and `DJFestivalUpdateLeadIn` and `Out`. Lines in regular-dialogue group 0 are general; groups 1 to 9 and 20 to 22 are tutorial and street-race-hub hints. Station names are in `Livery_Decals.str` and `Tips.str`.
+- `RadioSoundbankInfo_Music.xml` and `_VO_<language>.xml` give each sample's `SoundBankIndex` in its bank and cue points in ms. For a song, `OffsetSongStart` ends the intro the DJ may talk over, and `OffsetIdentStart` is near the end, where the next jingle or line starts. For a jingle, `OffsetStartNextTrack` is where the next song comes in. `OffsetEventStart` seems to be the drop used at race starts and isn't used.
+- `System` sets the levels: music 0.85, dialogue 1, jingles 0.3, ducking to 0.3 under the DJ, and at most one song between DJ breaks.
+- `RadioDJVoxPops.xml` lists filler interviews for festival updates. Only `AnecdoteInterview4` has English audio.
+
 ## `realtimesky.zip` (partly decoded)
 
 Cloud maps are tiled BC5 `.xds`, read by `sky.py`. `Moon0` to `Moon4.xds` are DXT5 (format 0x54) 256 x 256: 0 is a bare disc, 2 the full moon with glow, 1, 3 and 4 crescents. `Sun.xds` and `SkyDither.xds` are A8R8G8B8 (0x86) 128 x 128. `Stars.bin` is the Yale Bright Star Catalogue, brightest first: 9,096 big-endian float quads (x, y, z, w), y towards the celestial pole, RA = atan2(x, z), w the visual magnitude / 7.8, with the four stars brighter than 0 set to 0. Checked on Vega, Rigel, Betelgeuse and Polaris. `CloudDefs.xml` isn't used. In `TimeOfDayA.xml`, `SunPos` stays at least 17 degrees up all day: night is drawn by colours, `StarFade` and `SunObjectMoon`, not by the sun setting.
