@@ -35,6 +35,7 @@ python levelinfo.py fh1_colorado      # freeroam menu text and previews, spawns 
 python races.py fh1_colorado          # FH1's 118 races as BeamNG time trials, started at each event's marker and trailer. Run the same way
 python ambience.py fh1_colorado       # FH1's regional ambient loops, needs ffmpeg. Run the same way
 python radio.py                       # FH1's radio as its own mod, fh1_radio (334 MB): three stations with DJs, ] and [ to tune, shift for volume, an FH1 Radio UI app, plus race-start music. Needs no level, about a minute
+python soundtrack.py                  # FH1's 67 radio songs as tagged MP3s (no re-encode) with station cover art, into ~/Music/Forza Horizon Soundtrack
 python particles.py fh1_colorado      # FH1's water, smoke and sprinkler particles. Run the same way, after levelinfo.py
 python animated.py fh1_colorado       # FH1's windmills, turbines, tractors, combines and crop duster. Run the same way
 python grass.py fh1_colorado          # FH1 grass, reeds, flowers and corn as forest clumps. Run the same way
