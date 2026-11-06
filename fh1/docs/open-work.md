@@ -4,7 +4,7 @@ Written for parallel agents. `build3.py` is one file that most tasks touch, so g
 
 ## State
 
-The whole map is built and installed as `fh1_colorado`, next to `fh1_redrock`. File checks pass. The user has driven it and reports no real frame drops, so there's headroom for more content. Load time and RAM, pre-cooked shapes (`cookship.py`) and the time-of-day sky swap are checked off by the user (2026-11-04).
+The whole map is built and installed as `fh1_colorado`, next to `fh1_redrock`. File checks pass. The user has driven it and reports no real frame drops, so there's headroom for more content. Load time and RAM, pre-cooked shapes (`cookship.py`) and the time-of-day sky swap are checked off by the user (2026-11-04). On 2026-11-06 the user confirmed everything built so far as good in-game (terrain tiling, normal maps, the crop duster, sounds, spawns, prop colliders), and the Finley falls and other water drops are fixed. Open now: animation leftovers (ride sounds, spray, light rigs, glow) and the owner list bytes, to load each race's props during its race.
 
 ## Tasks
 
