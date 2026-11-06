@@ -60,18 +60,10 @@ def at(x, y, z, yaw=0.0):
 # planebanner: FH1 flies ANIM_PlaneBanner_002 once, from the free-roam cutscene that FirstTimeCareerAnimations.xml triggers near (-785, -1753)
 # (gamemodes.zip, Colorado/Cutscenes/cutscenes_default_freeroam.xml: x -702.284, y 44.836, z -1351.944, rotation 0.455 degrees, loop 1).
 # Its 100 s route closes, so it flies here for good.
-# cablecar1 and cablecar2: Beaumont's two gondola lines. No file places them, but the static gondolas FH1 draws beside the lift (Gondola_LOD00_*,
-# meshes 1954-1957 and 1966-1969) are copies of the animation's cabins in its own frame: placed at a pivot with z mirrored, as the zone record has
-# it, line 1's cabins land within 0.9 m of the animated paths (1.4 m at most). Line 2's records give a pivot the animation doesn't share; its
-# origin is fitted to its static cabins and the six pylons under it
-STANDALONE = {'planebanner': 'ANIM_PlaneBanner_002', 'cablecar1': 'ANIM_Cablecars_001', 'cablecar2': 'ANIM_Cablecars_002'}
-# Both lines' cabins move in FH1's mesh z sign: world = origin + the animation, in zone-record coordinates, so MIRRORED negates their z and the
-# record holds the origin with its z negated. Line 2's origin is fitted with yaw held at 0 (fitting it gave 0.58 degrees): its static cabins
-# land 1.2 to 2.8 m from the animated paths and its pylons 1 to 2 m to one side, as line 1's pylons sit 1.8 to 3.4 m, between the up and
-# down cables. Cabins and pylons alone leave it free to slide along the line, so the origin is held near the bottom station, where its
-# cabins turn: 11 m from the station, as line 1's origin is 15 m from its own
-STANDALONE_AT = {'planebanner': [at(-702.284, 44.836, -1351.944, .455)], 'cablecar1': [at(3167.8, 144.7, -3466.8)], 'cablecar2': [at(2744.19, 145.25, -3739.57)]}
-MIRRORED = {'cablecar1', 'cablecar2'}
+# ANIM_Cablecars_001/002 are left out: their cabins fit the unused static gondola meshes (1954-1957) to 0.9 m, but ride 1 to 5 m over the
+# pylon bases, under the ground, with no cables: a dropped feature. The gondolas FH1 shows at Beaumont are elsewhere and don't move
+STANDALONE = {'planebanner': 'ANIM_PlaneBanner_002'}
+STANDALONE_AT = {'planebanner': [at(-702.284, 44.836, -1351.944, .455)]}
 # Kinds that travel: their placement is lifted if the largest part's route passes under the ground samples, to FLIGHT_CLEARANCE metres above them
 FLIGHTS = {'cropduster', 'planebanner'}; FLIGHT_CLEARANCE = 5.0
 SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
@@ -351,8 +343,8 @@ def keys(T, corners):
             break
         best = (ix, order, a)
     if len(best[0]) > 64:
-        # One sharp turn holds the whole loop to its spacing: the cable car cabins turn inside the stations (0.1 m off at every 2nd sample) and kept
-        # all 11,503 samples of their 383 s. Keys placed where they're needed instead, splitting each span at its worst sample, keep the same limit
+        # One sharp turn holds the whole loop to its spacing: FH1's unused cable car cabins turned inside their stations (0.1 m off at every 2nd sample) and
+        # kept all 11,503 samples of their 383 s. Keys placed where they're needed instead, splitting each span at its worst sample, keep the same limit
         order, a = euler(T[:, :3, :3]); keep = {0, 1, n - 1}; stack = [(1, n - 1)]
         while stack:
             i, j = stack.pop()
@@ -569,14 +561,11 @@ for kind, model in {**RIDES, **STANDALONE}.items():
     # Granny x, up, z -> BeamNG x, y, up, as an unturned placement converts. That swap mirrors, so faces are turned back.
     # Every part goes in one shape, a write_lod group per material, and each moving part's groups get its own keys
     S = np.eye(4)[[0, 2, 1, 3]]; groups = []; curves = {}; swept = []; n_moving = 0; n_keys = []; route = np.zeros((0, 3))
-    # Model axes -> BeamNG's for the shape. MIRRORED kinds keep FH1's mesh z sign (see STANDALONE), so z is negated first: then the change of
-    # axes is a rotation, and faces keep their winding
-    G = S @ np.diag([1., 1., -1., 1.]) if kind in MIRRORED else S; Gi = np.linalg.inv(G); turn = np.linalg.det(G[:3, :3]) < 0
     for (s, k), pieces in sorted(parts.items()):
-        T = G @ W[s][k] @ np.linalg.inv(B_[s][k]) @ Gi
+        T = S @ W[s][k] @ np.linalg.inv(B_[s][k]) @ S
         own = []
         for mat, m, t_ in pieces:
-            used, inv = np.unique(t_, return_inverse=True); q = (G[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1] if turn else inv.reshape(-1, 3)
+            used, inv = np.unique(t_, return_inverse=True); q = (S[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1]
             own.append(((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, t_), m['uv'][used], t_.ravel(), np.zeros((len(q), 2))))
         p = np.concatenate([g[1] for g in own])
         moves = np.abs(T[:, :3, 3] - T[:1, :3, 3]).max() > STILL[0] or np.degrees((Rotation.from_matrix(T[:, :3, :3]) * Rotation.from_matrix(T[0, :3, :3]).inv()).magnitude()).max() > STILL[1]
