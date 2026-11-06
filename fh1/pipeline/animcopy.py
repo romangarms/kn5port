@@ -106,6 +106,26 @@ def vertex_sizes(b, ms, o, rest):
     return fits[0]
 
 
+def rigid_sizes(b, ms, o, rest):
+    """rigid vertex sizes where 12 bytes don't fill the tail, as in the main stage's light rig: its lamps' 16-byte vertices are the 12-byte layout and 4
+    zero bytes, its glow planes 12. Meshes of the same vertex and triangle counts share a size; the sizes that fill rest bytes and leave every 16-byte
+    vertex's last 4 bytes zero"""
+    kinds = sorted({(m['V'], m['T']) for m in ms}); fits = []
+    for pick in itertools.product((12, 16), repeat=len(kinds)):
+        size = dict(zip(kinds, pick)); sizes = [size[(m['V'], m['T'])] for m in ms]
+        if sum(m['V'] * z for m, z in zip(ms, sizes)) != rest:
+            continue
+        at = o; good = True
+        for m, z in zip(ms, sizes):
+            raw = np.frombuffer(b, 'u1', m['V'] * z, at).reshape(-1, z); at += m['V'] * z
+            good = good and (z == 12 or not raw[:, 12:].any())
+        if good:
+            fits.append(sizes)
+    if len(fits) != 1:
+        raise ValueError(f'{len(fits)} ways to size the rigid vertices in {rest} bytes')
+    return fits[0]
+
+
 def meshes(b, flags=False):
     """Each mesh: vertex count, triangles, the bone it follows in its model's skeleton (rigid) or None (skinned), its draws, and its vertices:
     positions in Granny axes, UVs, and for skinned meshes each vertex's bone. Header records of 17 words hold, at the vertex count, the bone (-1 when
@@ -117,7 +137,9 @@ def meshes(b, flags=False):
     out = []; at = 1
     for tree in draws(W, flags):
         segs = [n for _, n in tree]; T = max(f + c for _, f, c in segs); first_node = tree[0][0] - 9
-        k = next((k for k in range(at, first_node) if W[k] == 3 * T and W[k + 1] in (len(segs), len(segs) - 1) and 0 < W[k - 1] < 1 << 16), None)
+        # the draw count follows the index count, or in the stage and autoshow light rigs (flags) may come one word later, after a 0
+        n_ = (len(segs), len(segs) - 1)
+        k = next((k for k in range(at, first_node) if W[k] == 3 * T and (W[k + 1] in n_ or flags and W[k + 1] == 0 and W[k + 2] in n_) and 0 < W[k - 1] < 1 << 16), None)
         if k is None:
             raise ValueError(f'no mesh record for a tree of {T} triangles')
         out.append(dict(V=W[k - 1], T=T, bone=signed(W[k - 2]), segs=segs)); at = k + 2
@@ -129,6 +151,8 @@ def meshes(b, flags=False):
     sizes = [size if m['skin'] else 12 for m in out]
     if flags and skinned and (rest != size * skinned or size not in (16, 20, 24)):
         sizes = vertex_sizes(b, out, len(b) - tail + idx_bytes, tail - idx_bytes)
+    elif flags and not skinned and rest:
+        sizes = rigid_sizes(b, out, len(b) - tail + idx_bytes, tail - idx_bytes)
     elif (rest != size * skinned) or (skinned and size not in (16, 20, 24)):
         raise ValueError(f'meshes fill {idx_bytes + 12 * rigid} of {tail} bytes, {skinned} skinned vertices')
     o = len(b) - tail

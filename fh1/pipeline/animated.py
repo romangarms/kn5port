@@ -44,7 +44,16 @@ FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; G
 # STILL: metres and degrees a part may move and still count as still
 RIDES = {'balloon': 'ANIM_FRGND_HotAirBalloonCircle', 'ferris': 'ANIM_FRGND_Ferris', 'zipper': 'ANIM_FRGND_Zipper', 'booster': 'ANIM_ITLY_Ride_Booster',
          'fan': 'ANIM_ITLY_Ride_Fan', 'nofear': 'ANIM_ITLY_Ride_NoFear', 'roundup': 'ANIM_ITLY_Ride_Roundup', 'blimp': 'ANIM_FRGND_InflatableShip',
-         'sprinkler': 'ANIM_WaterSprinkler', 'sprinklersmall': 'ANIM_WaterSprinklerSmall', 'birds': 'ANIM_Birds_Flying_Field_', 'cropduster': 'ANIM_CropDuster_Zone_05_'}
+         'sprinkler': 'ANIM_WaterSprinkler', 'sprinklersmall': 'ANIM_WaterSprinklerSmall', 'birds': 'ANIM_Birds_Flying_Field_', 'cropduster': 'ANIM_CropDuster_Zone_05_',
+         'stagelights': 'ANIM_MainStage_Lights', 'substagelights': 'ANIM_SubStage_Lights', 'autoshowlights': 'ANIM_Autoshow_Lights', 'lasers': 'ANIM_MainStage_Lasers',
+         'activation': 'ANIM_Autoshow_Activation_Zone'}
+# The festival's light rigs: moving lamps on the main and sub stages, the autoshow's lamps, the main stage's lasers and the autoshow activation zones'
+# lamps. Their draw nodes and mesh records are in the people models' form (animcopy.meshes flags), and the main stage's lamps have 16-byte vertices.
+# Their beams, lens discs and glows are sprites: a colour texture with transparent texels draws added by its alpha, a glow on black added as is.
+# They shine at night only, as FH1's stage effects run 18:40 to 7:00: black colour and an emissive map, which the rig's nightEmissive lights as the
+# night overlays in nightlights.py are. SPRITE_NITS by eye from those overlays' 40, not yet seen in-game
+SPRITE_NITS = 150
+RIGS = {'stagelights', 'substagelights', 'autoshowlights', 'lasers', 'activation'}
 # Meshes left out: the crop duster carries a 3473-triangle P51 Mustang propeller on its own propeller's bone, over the biplane's 84-triangle blur disc
 SKIP_MESHES = {'P51_Mustang_Propeller'}
 
@@ -407,15 +416,29 @@ def glow_mask(t):
     return r is not None and float(np.median(r[0][..., :3].max(2))) < 16
 
 
-def ride_material(tl, slot, saved, glow=-1):
+def sprite(t):
+    """how a light rig's colour texture draws: 'AddAlpha' for a beam or lens with transparent texels, 'Add' for a glow on black, else None"""
+    r = tex.load(t)
+    return None if r is None else 'AddAlpha' if r[0][..., 3].min() < 128 else 'Add' if r[0][..., :3].mean() < 12 else None
+
+
+def ride_material(tl, slot, saved, glow=-1, rig=False):
     """the material for a draw's colour slot. glow: its glow slot, lit at night as build3.py's lamp glass is (GLOW): an emissive map under
-    instanceEmissive, which the ride TSStatics' nightEmissive turns on from 18:00 to 6:00"""
+    instanceEmissive, which the ride TSStatics' nightEmissive turns on from 18:00 to 6:00. rig: a light rig's draw, whose sprites draw added (sprite)"""
     if slot < 0:
         mats_['fh1_anim_plain'] = {'name': 'fh1_anim_plain', 'mapTo': 'fh1_anim_plain', 'class': 'Material', 'version': 1.5, 'doubleSided': True,
                                    'Stages': [{'baseColorFactor': list(PLAIN), 'roughnessFactor': .7, 'metallicFactor': 0}]}
         return 'fh1_anim_plain'
     look = lambda k: tl[k] if isinstance(tl[k], str) else IDX[tl[k]][0]       # standalone models list texture names
     t = look(slot); g = look(glow) if glow >= 0 else None; g = g if isinstance(g, int) and glow_mask(g) else None
+    add = sprite(t) if rig and isinstance(t, int) else None
+    if add:
+        mat = 'fh1_' + Path(ride_texture(t, saved)).name.split('.')[0] + '_add'
+        mats_[mat] = {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'translucent': True, 'translucentBlendOp': add, 'translucentZWrite': False,
+                      'doubleSided': True, 'castShadows': False,
+                      'Stages': [{'baseColorMap': ride_texture(t, saved), 'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': 1, 'metallicFactor': 0, 'emissive': True,
+                                  'instanceEmissive': True, 'emissiveMap': ride_texture(t, saved), 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': SPRITE_NITS}, {}, {}, {}]}
+        return mat
     mat = 'fh1_' + Path(ride_texture(t, saved)).name.split('.')[0] + (f'_g{g:X}' if g is not None else '')
     st = {'baseColorMap': ride_texture(t, saved), 'roughnessFactor': .7, 'metallicFactor': 0}
     if g is not None:
@@ -615,7 +638,7 @@ for kind, model in {**RIDES, **STANDALONE}.items():
         b = animcopy.standalone(model); tl = animcopy.texture_names(b)
     else:
         b = animcopy.find(model); tl = animcopy.textures(b)
-    ms = animcopy.meshes(b); animcopy.bind(b, ms)
+    ms = animcopy.meshes(b, flags=kind in RIGS); animcopy.bind(b, ms)
     # triangles of each bone, by material, from the most detailed meshes. A skinned triangle goes with its first vertex's bone
     parts = {}; lit_ = False
     for m in ms:
@@ -623,7 +646,7 @@ for kind, model in {**RIDES, **STANDALONE}.items():
             continue
         tri_bone = m['bones'][m['idx'][:, 0]] if m['skin'] else np.full(m['T'], m['bone'])
         for slots, first, count in m['segs']:
-            mat = ride_material(tl, slots[0], saved, slots[2]); lit_ = lit_ or '_g' in mat
+            mat = ride_material(tl, slots[0], saved, slots[2], kind in RIGS); lit_ = lit_ or '_g' in mat or mat.endswith('_add')
             for k in np.unique(tri_bone[first:first + count]):
                 t_ = m['idx'][first:first + count][tri_bone[first:first + count] == k]
                 parts.setdefault((m['model'], int(k)), []).append((mat, m, t_))
