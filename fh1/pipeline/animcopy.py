@@ -1,7 +1,7 @@
 """The track's own copies of ANIM models (__R00G000xx.pgeo, named Anim_<model><n> at 0x60): their meshes, the textures each draw uses, the bone each
 vertex follows, and those bones' animation, from the Granny file inside (granny2.py). Used for the festival rides, balloons and inflatables, which exist
 only here. Layout is in docs/formats.md (track copies)."""
-import functools, glob, re, struct
+import functools, glob, itertools, re, struct
 import numpy as np
 from scipy.interpolate import BSpline
 import granny2
@@ -70,29 +70,52 @@ def textures(b):
     return [struct.unpack_from('>H', b, first + 8 * j)[0] for j in range(n)]
 
 
-def draws(W):
+def draws(W, flags=False):
     """Draw nodes: (texture slots, first triangle, triangle count) of 11 words each, the slots numbering the texture list (-1 for none): colour, unused,
-    glow, specular. Consecutive nodes form one mesh's tree. A tree restarts at triangle 0"""
-    k_ = [k for k in range(9, len(W) - 1) if W[k - 3:k] == (0, 0, 0) and NODE_FAR[0] <= as_float(W[k]) <= NODE_FAR[1] and
-          NODE_FRACTION[0] <= as_float(W[k + 1]) <= NODE_FRACTION[1] and 0 < W[k - 4] < 1 << 20]
+    glow, specular. Consecutive nodes form one mesh's tree. A tree restarts at triangle 0. The three words before the switch distance are 0, except in the
+    people models (Fest_*, Street_*), where they hold small flags such as (0, 0, 2) and (1, 0, 0), and a fraction may be 0: flags=True allows those. It's off for the rides, as
+    on some stage and light copies it finds extra nodes"""
+    k_ = [k for k in range(9, len(W) - 1) if (max(W[k - 3:k]) < 16 if flags else W[k - 3:k] == (0, 0, 0)) and NODE_FAR[0] <= as_float(W[k]) <= NODE_FAR[1] and
+          (0 if flags else NODE_FRACTION[0]) <= as_float(W[k + 1]) <= NODE_FRACTION[1] and 0 < W[k - 4] < 1 << 20]
     trees = []
     for k in k_:
         n = [signed(x) for x in W[k - 9:k - 3]]
+        if as_float(W[k + 1]) < NODE_FRACTION[0] and not (trees and k - trees[-1][-1][0] == 11 and n[4] == sum(trees[-1][-1][1][1:]) and n[4]):
+            continue                # a fraction of 0 only on a node that carries on the one before it
         if not trees or n[4] == 0 or k - trees[-1][-1][0] != 11:
             trees.append([])
         trees[-1].append((k, (n[:4], n[4], n[5])))
     return trees
 
 
-def meshes(b):
+def vertex_sizes(b, ms, o, rest):
+    """each mesh's vertex size where a model mixes them, as the people's do (a 24-byte body, a 20-byte hair mesh, 16-byte rigid props): the sizes
+    that fill rest bytes, skinned 16, 20 or 24 and rigid 12 or 16, and of those the ones whose skinned vertices read as bones or weights summing to 255"""
+    fits = []
+    for sizes in itertools.product(*[(16, 20, 24) if m['skin'] else (12, 16) for m in ms]):
+        if sum(m['V'] * s for m, s in zip(ms, sizes)) != rest:
+            continue
+        at = o; good = True
+        for m, s in zip(ms, sizes):
+            raw = np.frombuffer(b, 'u1', m['V'] * s, at).reshape(-1, s); at += m['V'] * s
+            good = good and (not m['skin'] or s == 16 and (raw[:, 8:12] == raw[:, 8:9]).all() or s > 16 and (raw[:, 8:12].astype(int).sum(1) == 255).all())
+        if good:
+            fits.append(sizes)
+    if len(fits) != 1:
+        raise ValueError(f'{len(fits)} ways to size the skinned vertices in {rest} bytes')
+    return fits[0]
+
+
+def meshes(b, flags=False):
     """Each mesh: vertex count, triangles, the bone it follows in its model's skeleton (rigid) or None (skinned), its draws, and its vertices:
     positions in Granny axes, UVs, and for skinned meshes each vertex's bone. Header records of 17 words hold, at the vertex count, the bone (-1 when
     skinned) before it and the index count and draw count after. The geometry after the Granny file is every mesh's u16 indices, each padded to 4
     bytes, then every mesh's vertices: 12 bytes when rigid (3 half-floats, U half, V s16, normal) and 16 or 20 when skinned, with V 4 bytes from
-    the end. 16-byte vertices have bone numbers at 8-11, all four equal, counting in the model's own skeleton; 20-byte ones weights and then bones"""
+    the end. 16-byte vertices have bone numbers at 8-11, all four equal, counting in the model's own skeleton; 20-byte ones weights and then bones.
+    24-byte ones (the people's high-detail models) are 20-byte ones and 4 zero bytes, V at 16"""
     g = granny2.File(b); W = struct.unpack(f'>{g.at // 4}I', b[:g.at // 4 * 4]); tail = struct.unpack_from('>I', b, 0x50)[0]
     out = []; at = 1
-    for tree in draws(W):
+    for tree in draws(W, flags):
         segs = [n for _, n in tree]; T = max(f + c for _, f, c in segs); first_node = tree[0][0] - 9
         k = next((k for k in range(at, first_node) if W[k] == 3 * T and W[k + 1] in (len(segs), len(segs) - 1) and 0 < W[k - 1] < 1 << 16), None)
         if k is None:
@@ -103,20 +126,24 @@ def meshes(b):
     idx_bytes = sum((6 * m['T'] + 3) // 4 * 4 for m in out); rigid = sum(m['V'] for m in out if not m['skin']); skinned = sum(m['V'] for m in out if m['skin'])
     rest = tail - idx_bytes - 12 * rigid
     size = rest // skinned if skinned else 0
-    if (rest != size * skinned) or (skinned and size not in (16, 20)):
+    sizes = [size if m['skin'] else 12 for m in out]
+    if flags and skinned and (rest != size * skinned or size not in (16, 20, 24)):
+        sizes = vertex_sizes(b, out, len(b) - tail + idx_bytes, tail - idx_bytes)
+    elif (rest != size * skinned) or (skinned and size not in (16, 20, 24)):
         raise ValueError(f'meshes fill {idx_bytes + 12 * rigid} of {tail} bytes, {skinned} skinned vertices')
     o = len(b) - tail
     for m in out:
         m['idx'] = np.frombuffer(b, '>u2', 3 * m['T'], o).astype('i8').reshape(-1, 3); o += (6 * m['T'] + 3) // 4 * 4
-    for m in out:
-        sz = size if m['skin'] else 12; raw = np.frombuffer(b, 'u1', m['V'] * sz, o).reshape(-1, sz); o += m['V'] * sz
+    for m, sz in zip(out, sizes):
+        raw = np.frombuffer(b, 'u1', m['V'] * sz, o).reshape(-1, sz); o += m['V'] * sz
         m['pos'] = raw[:, :6].copy().view('>f2').astype('f8')
-        v_at = sz - 4 if m['skin'] else 8
+        v_at = (16 if sz == 24 else sz - 4) if m['skin'] else 8
         m['uv'] = np.c_[raw[:, 6:8].copy().view('>f2')[:, 0].astype('f8'), V0 + raw[:, v_at:v_at + 2].copy().view('>i2')[:, 0].astype('f8') * VSTEP]
         if m['skin'] and sz == 16:
-            m['bones'] = raw[:, 8].astype('i8')
+            m['bones'] = raw[:, 8].astype('i8'); m['b4'] = raw[:, 8:12].astype('i8'); m['w4'] = np.tile([1., 0, 0, 0], (m['V'], 1))
         elif m['skin']:             # weights at 8-11, bones at 12-15: the inflatables blend, and each vertex follows its heaviest bone
             m['bones'] = raw[:, 12:16][np.arange(m['V']), raw[:, 8:12].argmax(1)].astype('i8')
+            m['b4'] = raw[:, 12:16].astype('i8'); m['w4'] = raw[:, 8:12] / 255.     # all four, for posing a frame (people.py)
         if m['idx'].max() >= m['V']:
             raise ValueError('indices run past their vertices')
     return out

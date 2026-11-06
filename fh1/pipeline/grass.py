@@ -1,6 +1,7 @@
 """FH1's ground clutter from its Grass_Ungrouped sets: grass, reeds, flowers and corn, as clumps of FH1's sprites placed as forest items.
 FH1 scatters sprites over each set's patch of ground at runtime, density x triangle area x vertex weight (pgrass.py, docs/formats.md). One item per sprite
-would be 10M items, so each group of layers becomes a few clump shapes of about 8 m2, placed at that density. Crowd sprite sets are left out.
+would be 10M items, so each group of layers becomes a few clump shapes of about 8 m2, placed at that density. Crowd sprite sets become one camera-facing
+card per person (crowd).
 Run after build3.py, which wipes the level: python grass.py [fh1_colorado|fh1_redrock]. Safe to run twice. Needs no rebuild."""
 import hashlib, json, os, pickle, re, shutil, subprocess, sys
 from pathlib import Path
@@ -24,6 +25,10 @@ NEAR, FAR, CORN_NEAR, CORN_FAR = 25.0, 45.0, 120.0, 240.0
 PX = 1250.0                          # as build3.py: detail size = PX x radius / (distance + radius)
 TILT = 25.0; SLOPE = (30.0, 70.0)    # clumps lean with the ground up to TILT degrees. Density falls from 1 at SLOPE[0] to 0 at SLOPE[1]
 SINK = .03; TEXMAX = 1024; CACHE = Path('../ddscache'); SEED = 1
+# Festival crowds: FH1's crowd sets are sprites of people, a pair 1 m wide or one 0.5 m, 1.5 to 1.8 m tall, at FH1's own density (0.2 to 0.8 per m2, about
+# 100k on the festival ground). Each is one upright card facing the camera about z (a BBZ_ node, Torque's z-axis billboard), as FH1 turns its sprites,
+# one forest item per sprite. Heights aren't scaled by HEIGHT. Drawn to CROWD_FAR metres. Their own seed, so the grass doesn't move
+CROWD_FAR = 300.0; CROWD_H = 1.65; CROWD_SEED = 2
 
 level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL; rel = f'/levels/{LVL}'
 if not (level / 'art' / 'forest' / 'managedItemData.json').exists():
@@ -120,6 +125,50 @@ def put(item, p, n, ns):
     STATS['items'] += 1; STATS['sprites'] += ns; STATS['tris'] += 4 * ns
 
 
+CROWD_RNG = np.random.default_rng(CROWD_SEED); PEOPLE = {}
+
+
+def person(sp):
+    """the card shape of one crowd sprite, made once: a quad in the x-z plane, centred on x, standing on z = 0, in a node named BBZ_ so it turns
+    about z to face the camera. Returns the item name"""
+    w0, w1, h0, h1, u0, u1, vb, vt, tid = sp; key = (round(max(w0, w1), 3), round(u0, 4), round(u1, 4), round(vb, 4), round(vt, 4), tid)
+    if key in PEOPLE:
+        return PEOPLE[key]
+    item = f'fh1_grass_crowd{len(PEOPLE)}'; w_ = max(w0, w1)
+    p_ = np.array([[-w_ / 2, 0, 0], [w_ / 2, 0, 0], [w_ / 2, 0, CROWD_H], [-w_ / 2, 0, CROWD_H]])
+    uv = np.array([[u0, vb], [u1, vb], [u1, vt], [u0, vt]])
+    R_ = float(np.hypot(w_ / 2, CROWD_H) / 2); s0 = max(int(R_ / (CROWD_FAR + R_) * PX), 1); f_ = gdir / f'{item}.dae'
+    write_lod(f_, [((material(tid), (0,)), p_, np.tile([0., 0, 1], (4, 1)), uv, np.array([0, 1, 2, 0, 2, 3]))], np.zeros(3), (s0,), None)
+    f_.write_text(f_.read_text().replace(f'id="o0_a{s0}" name="o0_a{s0}"', f'id="BBZ_o0_a{s0}" name="BBZ_o0_a{s0}"'))
+    managed[item] = {'name': item, 'internalName': item, 'class': 'TSForestItemData', 'annotation': 'NATURE', 'branchAmp': 0, 'detailAmp': 0, 'detailFreq': 0,
+                     'mass': 1, 'rigidity': 1, 'shapeFile': f'{rel}/art/forest/grass/{item}.dae', 'windScale': 0}
+    STATS['shapes'] += 1; PEOPLE[key] = item
+    return item
+
+
+def crowd(g, tb, tids, Pb):
+    """a crowd set's people: for each layer its vertex group picks, density x triangle area x vertex weight of them, each a random sprite of the
+    layer, standing upright at a random point of the triangle"""
+    T = g['T']; A = np.linalg.norm(np.cross(Pb[T[:, 1]] - Pb[T[:, 0]], Pb[T[:, 2]] - Pb[T[:, 0]]), axis=1) / 2
+    w_ = A * g['wt'][T].mean(1); gid = g['gid'][T[:, 0]]
+    for gi, lids in enumerate(tb['groups']):
+        m = np.where(gid == gi)[0]
+        for l in lids:
+            dens, sprites = tb['layers'][l][0], tb['layers'][l][8]
+            ti = np.repeat(m, CROWD_RNG.poisson(w_[m] * dens))
+            r1, r2 = CROWD_RNG.random(len(ti)), CROWD_RNG.random(len(ti)); s_ = np.sqrt(r1)
+            q = Pb[T[ti, 0]] * (1 - s_)[:, None] + Pb[T[ti, 1]] * (s_ * (1 - r2))[:, None] + Pb[T[ti, 2]] * (s_ * r2)[:, None]
+            pick = CROWD_RNG.integers(0, len(sprites), len(ti)); hs = CROWD_RNG.uniform(1.5, 1.8, len(ti))
+            for i in range(len(ti)):
+                if np.abs(q[i, :2]).max() >= HALF - 1:
+                    continue
+                s = tb['sprites'][sprites[pick[i]]]; item = person(tuple(s[:8]) + (tids[s[10]],))
+                h_ = float(np.clip(hs[i], min(s[2], s[3]), max(s[2], s[3])))
+                ROWS.setdefault(item, []).append({'ctxid': 0, 'pos': [round(float(q[i, 0]), 3), round(float(q[i, 1]), 3), round(float(q[i, 2] - SINK), 3)],
+                                                  'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'scale': round(h_ / CROWD_H, 3), 'type': item})
+                STATS['people'] += 1; STATS['items'] += 1; STATS['tris'] += 2
+
+
 def locate(q, P3, T, tree):
     """the triangle under each 2D point (-1 if none) and the height there"""
     k_ = min(8, len(T)); _, cand = tree.query(q, k_); cand = cand.reshape(len(q), -1)
@@ -134,7 +183,7 @@ def locate(q, P3, T, tree):
     return hit, z
 
 
-MATS = {}; KINDS = {}; ROWS = {}; STATS = {k: 0 for k in ('sets', 'crowd sets', 'shapes', 'shape tris', 'items', 'edge items', 'sprites', 'tris')}
+MATS = {}; KINDS = {}; ROWS = {}; STATS = {k: 0 for k in ('sets', 'crowd sets', 'people', 'shapes', 'shape tris', 'items', 'edge items', 'sprites', 'tris')}
 names = [n for n, _ in json.load(open('../list.json')) if n.endswith('.pgeo') and not n.endswith('.lc')]
 for n in names:
     b0 = open('../x/' + n, 'rb').read(0x90)
@@ -148,7 +197,7 @@ for n in names:
         continue
     tb = pgrass.tables(g); tids = [IDX[i][0] for i in g['tex']]
     if CROWD in tids:
-        STATS['crowd sets'] += 1; continue
+        STATS['crowd sets'] += 1; crowd(g, tb, tids, Pb); continue
     STATS['sets'] += 1; T = g['T']
     N_ = np.cross(Pb[T[:, 1]] - Pb[T[:, 0]], Pb[T[:, 2]] - Pb[T[:, 0]]); A = np.linalg.norm(N_, axis=1) / 2
     N_ = N_ / np.maximum(2 * A[:, None], 1e-12); N_[N_[:, 2] < 0] *= -1

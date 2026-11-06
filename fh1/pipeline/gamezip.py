@@ -19,3 +19,12 @@ def read(name, wanted):
             raise IOError(wanted)
         return out.raw[:us]
     raise KeyError(wanted)
+
+
+def names(name):
+    """every entry's name in one of the zips"""
+    b = open(MEDIA + name, 'rb').read()
+    i = b.rfind(b'PK'); n = struct.unpack('<H', b[i + 10:i + 12])[0]; o = struct.unpack('<I', b[i + 16:i + 20])[0]; out = []
+    for _ in range(n):
+        nl, xl, cl = struct.unpack('<HHH', b[o + 28:o + 34]); out.append(b[o + 46:o + 46 + nl].decode('latin1')); o += 46 + nl + xl + cl
+    return out

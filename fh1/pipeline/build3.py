@@ -2450,10 +2450,10 @@ keep_pickle(INFO_P, TX.known); keep_pickle(PAIR_P, PAIR)
 lap('scene files')
 print('done', f'{time.time() - start_:.0f}s ->', level)
 # The scripts after the build, each with the ones it must wait for. animated reads fh1_nav and grass's forest files, levelinfo and navmap both
-# edit info.json, and grade grades grass's and animated's textures. The items files they share (the top-level one, and fh1's, which water and animated edit and
+# edit info.json, and grade grades grass's, animated's and people's textures. The items files they share (the top-level one, and fh1's, which water and animated edit and
 # nightlights reads) go through mission.py, which locks them and replaces them whole
-AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass', 'animated'), 'levelinfo': ('navmap',), 'races': (),
-         'animated': ('navmap', 'grass')}
+AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass', 'animated', 'people'), 'levelinfo': ('navmap',), 'races': (),
+         'animated': ('navmap', 'grass'), 'people': ()}
 SAY = threading.Lock()      # one whole line at a time from the scripts running side by side
 
 
