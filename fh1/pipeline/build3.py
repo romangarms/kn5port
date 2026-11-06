@@ -2156,7 +2156,7 @@ PLANT_RE = re.compile(r'(?<!s)tree(?!stump|cutting)|bush|shrub|pinion|(?<![a-z])
 names_ = {}
 for c in F:
     names_.setdefault(int(c['f'].split('.')[1]), c['name'])
-skip = collections.Counter(); kept = collections.Counter(); uniq = {}
+skip = collections.Counter(); kept = collections.Counter(); uniq = {}; FLYERS = set()      # FH1's 100 discount signs, smashed by driving through them
 ALWAYS = re.compile('FlowerHolder', re.I); ROADSIDE = re.compile('Barrier(?!Brand)', re.I)
 STARTER = re.compile('TeamTrailer', re.I)     # each event owns one trailer at its start, where races.py puts its BeamNG mission
 
@@ -2167,6 +2167,8 @@ ANIMATED_INSTEAD = re.compile(r'^Gondola_LOD', re.I)
 
 def event_kept(r_, nm_, x, y, z):
     """Event scenery the map needs in free roam"""
+    if 0 in r_['lst']:      # listed for route 0, Colorado Free Roam (Tracks id 317), so FH1 shows it in free roam: each event's start pen
+        return True         # (barriers, flags, trailer or outhouses), discount-sign flyers, marker arrows and glows. 21-31 alone are online free roam
     if r_['name']:          # an owner is an event id: Events.HorizonEventID in gamedb.slt, or Tracks.DevName
         return bool(STARTER.search(nm_))
     return bool(ALWAYS.search(nm_) or ROADSIDE.search(nm_))
@@ -2203,6 +2205,8 @@ for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     k_ = (base, round(x, 1), round(z, 1))
     if k_ not in uniq or lod(nm_) < lod(uniq[k_][1]):
         uniq[k_] = (t, nm_, x, y, z, r_['rot'].tolist(), did)
+        if r_['name'].startswith('flyer_'):
+            FLYERS.add(k_)
 print('free-roam objects', len(uniq), dict(skip))
 for (base, kx, kz), (t, nm_, x, y, z, Rr, did) in uniq.items():
     l_ = lod(nm_); t0 = t
@@ -2219,7 +2223,7 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr, did) in uniq.items():
     if np.linalg.det(Rm) < 0:
         skip['mirrored'] += 1
     rows[it['item']].append(dict(ctxid=0, pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=[round(float(q), 5) for q in Rm.ravel()], scale=round(float(np.clip(sc, .2, 5)), 3), type=it['item']))
-    if SMASH.query([x, z])[0] < .05:
+    if SMASH.query([x, z])[0] < .05 or (base, kx, kz) in FLYERS:
         rows[it['item']][-1]['smash'] = True; kept['smashable'] += 1
     # The placement's own lightmap, for models whose material takes one from the draw. Only when this record's mesh is the one drawn:
     # a LOD1 record's lightmap is laid out for LOD1's UV1
@@ -2341,7 +2345,7 @@ def detail_sizes(R_, cat):
 COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
 BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
                    r'(?<![a-z])bin[a-z]?(?![a-z])|bench|table|container|skip|haybale|crate|rack|hoarding|bollard', re.I)
-NOCOL = re.compile(r'rope', re.I)       # festival bunting, 35 m across, above the cars
+NOCOL = re.compile(r'rope|BannerSingleLane|Glow_|Arrow_Pointer', re.I)       # festival bunting, 35 m across, above the cars; banners over a lane, whose hull would close it; event marker cards
 # Placed props go in the forest rather than one TSStatic each: 61k scene objects, each with its own shape instance, against a small record
 # per forest item. Glowing props stay TSStatics for their instance colour, as do the shapes animated.py swaps out (OBJECTS there).
 # FH1_PROPFOREST=0 keeps TSStatics, for comparison

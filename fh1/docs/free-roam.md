@@ -4,16 +4,24 @@ FH1 ships event scenery (grandstands, cones, food trucks) in the same zones as t
 
 ## Static objects: the rule
 
-Implemented in `build3.py`, using `zonerec.pkl` from `zones.py`. Keep a record unless it has a list or an owner name.
+Implemented in `build3.py` (`event_kept`), using `zonerec.pkl` from `zones.py`. Keep a record if its list includes route 0 (Colorado Free Roam), or if it has no list and no owner name. The user's rule (2026-11-06): if FH1 shows something in free roam, show it.
 
 | Record | Examples | Kept |
 |---|---|---|
 | No owner block | Buildings, telegraph poles, outpost tent | Yes |
 | Block, empty list, no owner | Signs, fences, bins, snow poles | Yes |
-| Block with list | Food trucks, RVs, cones, tyre stacks, grandstands | No, except `event_kept`: flower holders, and barriers that are off the road |
-| Block with owner name | `FR22_03`, `flyer_066`, `BF_..._OPEN`, speed camera markers | No, except `TeamTrailer`: each event owns one starter trailer at its marker |
+| List includes byte 0 | Each event's start pen (owner `FR22_01` and so on: about 30 `OBJ_FEST_BarrierMetal`, 4 flags, the `TeamTrailer` or 2 outhouses), the 100 `flyer_` discount signs, `Temp_Arrow_Pointer` and `Glow_01` at event and gas-station markers, banners, cones, signs | Yes: 1,887 placements more on the whole map than before |
+| List of race routes only | Food trucks, RVs, cones, tyre stacks, grandstands | No, except flower holders and barriers (`ALWAYS`, `ROADSIDE`). They go in their route's race prefab (below) |
+| List of 21-31 only | 20 records | No: online free roam only |
+| Owner name, no byte 0 | `BF_..._OPEN`, speed camera markers, reset points | No, except `TeamTrailer` |
 
 Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), and `S_`, `C_` or `Debri` prefixes (smashable pieces), plus records near the origin.
+
+**Which free roam:** `Tracks` id 317 `ColoradoFreeRoam` has RouteId 0, `DevOnly` 0 and `VisibleInMP` 0, and the `FREE_ROAM` event uses route 0. Tracks 1101 to 1111, also `ColoradoFreeRoam`, have RouteIds 21 to 31, `VisibleInMP` 1, `RibbonConfiguration` 5, and a location logo each (Festival, Clear Springs, Gladstone, Eagle Ridge, Beaumont, Carson, Media Center, Red Rock, Finley Dam): online free roam, one per starting location. Of the 152 records listing 21 to 31, 132 also list 0 (the 100 flyers and 32 others), and 20 list only the online routes. Single-player free roam is route 0.
+
+**Collision:** start-pen barriers and flags collide like other props. Discount signs are smashables (no collision), as in FH1. `BannerSingleLane` (lane-wide overhead banners), `Glow_` and `Arrow_Pointer` marker cards have none (`NOCOL`), because a convex hull of an overhead banner would close the road.
+
+**Near the driving line:** 44 of the new placements are within 3 m of a `colorado.nav` centre line. They are 14 overhead lane banners on festival roads, 11 `Glow_01` and 7 `Temp_Arrow_Pointer` at gameplay markers (`CO_Z<n>_FR<n>`, `GASSTATION_00<n>_DISCOVERY`, event `_NODE`s), 5 flyers, and 7 props at two spots: 3 tables and a bin at (2580, 1160) and 2 `O_Undamaged` at (-3580, 931), in BeamNG coordinates. All are kept.
 
 **Status:** tested in-game around Red Rock only, and the user reported everything looking good there. Not tested on the rest of the map.
 
