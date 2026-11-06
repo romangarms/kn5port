@@ -2456,11 +2456,11 @@ pickle.dump({k: v for k, v in surf.items()}, open('../surf.pkl', 'wb'))
 keep_pickle(INFO_P, TX.known); keep_pickle(PAIR_P, PAIR)
 lap('scene files')
 print('done', f'{time.time() - start_:.0f}s ->', level)
-# The scripts after the build, each with the ones it must wait for. animated reads fh1_nav and grass's forest files, levelinfo and navmap both
-# edit info.json, and grade grades grass's and animated's textures (people.py, the cutscene characters, is left out: they belong to cutscenes FH1 plays, and some stand under the ground). The items files they share (the top-level one, and fh1's, which water and animated edit and
+# The scripts after the build, each with the ones it must wait for. animated reads fh1_nav and grass's forest files, spectators fh1_nav, levelinfo and navmap both
+# edit info.json, and grade grades grass's, animated's and spectators' textures (people.py, the cutscene characters, is left out: they belong to cutscenes FH1 plays, and some stand under the ground). The items files they share (the top-level one, and fh1's, which water and animated edit and
 # nightlights reads) go through mission.py, which locks them and replaces them whole
-AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass', 'animated'), 'levelinfo': ('navmap',), 'races': (),
-         'animated': ('navmap', 'grass')}
+AFTER = {'sky': (), 'navmap': (), 'grass': (), 'ambience': (), 'particles': (), 'water': (), 'nightlights': (), 'grade': ('grass', 'animated', 'spectators'), 'levelinfo': ('navmap',), 'races': (),
+         'animated': ('navmap', 'grass'), 'spectators': ('navmap',)}
 SAY = threading.Lock()      # one whole line at a time from the scripts running side by side
 
 
