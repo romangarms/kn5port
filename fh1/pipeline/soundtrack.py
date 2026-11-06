@@ -1,6 +1,6 @@
 """FH1's 67 radio songs as tagged MP3s, for a music player: python soundtrack.py [output folder]. Defaults to ~/Music/Forza Horizon Soundtrack.
 
-The radio bank already holds MP3 at 160 kb/s (see radio.py), so the songs are copied without re-encoding. Each song gets FH1's title and
+The radio bank already holds MP3 at 160 kb/s (see radio.py), so the songs are copied without re-encoding, starting after FH1's DJ bed. Each song gets FH1's title and
 artist, its station as the album (one folder per station, numbered in FH1's playlist order), a genre, and the station's HUD logo as
 cover art. The pre-race, autoshow and other location music is mono copies of these songs, so it isn't exported."""
 import os, re, shutil, struct, subprocess, sys, tempfile
@@ -19,6 +19,9 @@ XDS_FORMATS = {0x72: 0x52, 0x73: 0x53, 0x75: 0x54}
 system = re.sub(r'<!--.*?-->', '', open(RADIO + 'RadioSystem.xml', encoding='utf-8').read(), flags=re.S)
 info = open(RADIO + 'RadioSoundbankInfo_Music.xml', encoding='utf-8').read()
 index = {n: int(i) for n, i in re.findall(r'<Bank Name="([^"]+)">\s*<SoundBankInfo SoundBankIndex="(\d+)"', info)}
+# FH1 put a DJ bed before each song for its DJs to talk over, shared between songs. OffsetSongStart is where the song itself comes in,
+# checked on two Horizon Rocks songs with the same bed: identical to 15.0 s, both songs' OffsetSongStart, then a crossfade of about 0.25 s
+intro = {n: int(s) / 1000 for n, s in re.findall(r'<Bank Name="([^"]+)">\s*<SoundBankInfo [^>]*OffsetSongStart="(\d+)"', info)}
 bank = open(RADIO + 'Radio_Music.fsb', 'rb').read()
 samples, at = [], None
 for name, frames, start, size, rate, channels in soundscape.samples(bank):     # sample data starts on 32-byte boundaries
@@ -54,7 +57,7 @@ with tempfile.TemporaryDirectory() as tmp:
             dst = folder / f'{n:02d} {safe(artist)} - {safe(title)}.mp3'
             tags = {'title': title, 'artist': artist, 'album': album, 'album_artist': 'Forza Horizon', 'track': f'{n}/{len(tracks)}',
                     'genre': genre, 'date': '2012', 'comment': 'Forza Horizon (2012) radio, ' + album}
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(raw), '-i', str(art), '-map', '0:a', '-map', '1:v', '-c', 'copy',
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', f'{intro[fmod]:.3f}', '-i', str(raw), '-i', str(art), '-map', '0:a', '-map', '1:v', '-c', 'copy',
                    '-id3v2_version', '3', '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)', '-disposition:v', 'attached_pic']
             for k, v in tags.items():
                 cmd += ['-metadata', f'{k}={v}']
