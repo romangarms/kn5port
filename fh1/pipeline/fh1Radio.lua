@@ -1,5 +1,6 @@
 -- FH1's radio on the fh1_* levels: Horizon Bass Arena, Pulse and Rocks with their DJs, jingles and festival interviews, then off.
--- ] and [ cycle the stations; an overlay shows the station and song when you tune or a song starts, as FH1's did.
+-- ] and [ cycle the stations, shift+] and shift+[ set its volume; an overlay shows the station logo and song when you tune or a song starts,
+-- as FH1's did. The FH1 Radio UI app has the same controls with a volume slider. Volume covers the race-start music too.
 -- All three stations play at once and the two not tuned are silent, so a station has moved on when you come back, as on a real radio.
 -- Also plays FH1's pre-race and street race music near those races' starts, found in the level's time trials (races.py).
 -- radio.py writes art/sound/fh1radio/radio.json and installs this file in the fh1_radio mod.
@@ -19,13 +20,19 @@ local OVERLAY_SECONDS = 5
 local PLACE_NEAR, PLACE_FAR = 25, 120  -- metres: full volume within NEAR of a race start, silent beyond FAR
 local PLACE_GAIN = 1.5         -- FH1's place volumes were for its 3D mixer; this scales them for a 2D stream
 local PLACE_MERGE = 60         -- race starts closer than this share one source
-local COLORS = { '#19c3ff', '#ff3d9a', '#ff8a1c' }
+local COLORS = { '#3fc8ff', '#7ad13a', '#ff8a1c' } -- from the logos: Bass Arena's blue, Pulse's green, Rocks' orange
+local OFF_COLOR = '#9a9aa6'
+local LOGOS = '/ui/modules/apps/FH1Radio/'
+local SETTINGS = '/settings/fh1radio.json' -- volume and station, kept between sessions in the user folder
+local MAX_VOLUME = 1.5
+local VOLUME_STEP = 0.1
 
 local data, running = nil, false
 local stations = {}
 local tuned = 1                -- 1 to #stations, or 0 for off
 local clock = 0
 local volume = 1
+local settingsDirty, sinceChange = false, 0
 local places = {}              -- kind -> { {x, y, z} }
 local placePlay = {}           -- kind -> { id, ends, recent }
 
@@ -82,46 +89,76 @@ local function musicChannel()
   return (ok and type(v) == 'number') and v or 1
 end
 
--- the overlay: an element added to BeamNG's UI page, shown for OVERLAY_SECONDS
+-- the overlay: an element added to BeamNG's UI page, shown for OVERLAY_SECONDS. The logos are FH1's HUD ones, which radio.py decodes into the app folder
 local OVERLAY_JS = [[
-(function(a){var d=document.getElementById('fh1radio');
-if(!d){d=document.createElement('div');d.id='fh1radio';
+(function(a){var d=document.getElementById('fh1radio-card');
+if(!d){d=document.createElement('div');d.id='fh1radio-card';
 d.style.cssText='position:fixed;left:2.5vw;top:20vh;z-index:9999;pointer-events:none;font-family:"Segoe UI",Arial,sans-serif;color:#fff;'+
-'background:linear-gradient(90deg,rgba(10,10,20,.82),rgba(10,10,20,.55) 80%,rgba(10,10,20,0));padding:10px 48px 12px 14px;border-left:5px solid #fff;'+
-'opacity:0;transform:translateX(-24px);transition:opacity .35s ease,transform .35s ease;text-shadow:0 1px 2px rgba(0,0,0,.6);min-width:220px';
-['s','t','r'].forEach(function(k){var e=document.createElement('div');e.className='fh1radio-'+k;d.appendChild(e);});
-d.children[0].style.cssText='font-size:13px;font-weight:700;letter-spacing:.18em;text-transform:uppercase';
-d.children[1].style.cssText='font-size:22px;font-weight:600;margin-top:2px';
-d.children[2].style.cssText='font-size:16px;opacity:.85';
+'background:linear-gradient(90deg,rgba(10,10,20,.82),rgba(10,10,20,.55) 80%,rgba(10,10,20,0));padding:10px 56px 12px 14px;border-left:5px solid #fff;'+
+'opacity:0;transform:translateX(-24px);transition:opacity .35s ease,transform .35s ease;text-shadow:0 1px 2px rgba(0,0,0,.6);min-width:240px';
+d.innerHTML='<img style="display:block;height:76px;margin:-6px 0 0 -8px">'+
+'<div style="font-size:13px;font-weight:700;letter-spacing:.18em;text-transform:uppercase"></div>'+
+'<div style="font-size:22px;font-weight:600;margin-top:2px"></div><div style="font-size:16px;opacity:.85"></div>'+
+'<div style="margin-top:8px;height:6px;width:220px;background:rgba(255,255,255,.2)"><div style="height:100%"></div></div>';
 document.body.appendChild(d);}
-d.style.borderLeftColor=a.color;d.children[0].style.color=a.color;
-d.children[0].textContent=a.station;d.children[1].textContent=a.title||'';d.children[2].textContent=a.artist||'';
-d.children[1].style.display=a.title?'':'none';d.children[2].style.display=a.artist?'':'none';
+var c=d.children;d.style.borderLeftColor=a.color;
+c[0].style.display=a.logo?'':'none';if(a.logo&&c[0].getAttribute('src')!==a.logo)c[0].src=a.logo;
+c[1].textContent=a.label||'';c[1].style.color=a.color;c[1].style.display=a.label?'':'none';
+c[2].textContent=a.title||'';c[2].style.display=a.title?'':'none';
+c[3].textContent=a.artist||'';c[3].style.display=a.artist?'':'none';
+c[4].style.display=(a.volume!=null)?'':'none';
+if(a.volume!=null){c[4].firstChild.style.width=Math.round(Math.min(1,a.volume/a.maxVolume)*100)+'%';c[4].firstChild.style.background=a.color;}
 d.style.opacity='1';d.style.transform='none';clearTimeout(window.fh1radioTimer);
 window.fh1radioTimer=setTimeout(function(){d.style.opacity='0';d.style.transform='translateX(-24px)';},a.ms);})(__ARGS__);
 ]]
 
-local function overlay(station, title, artist, color)
-  local args = jsonEncode({ station = station, title = title, artist = artist, color = color or '#ffffff', ms = OVERLAY_SECONDS * 1000 })
-  local ok, err = pcall(function() be:executeJS((OVERLAY_JS:gsub('__ARGS__', function() return args end))) end)
+local function overlay(args)
+  args.ms = OVERLAY_SECONDS * 1000
+  args.maxVolume = MAX_VOLUME
+  args.color = args.color or '#ffffff'
+  local js = jsonEncode(args)
+  local ok, err = pcall(function() be:executeJS((OVERLAY_JS:gsub('__ARGS__', function() return js end))) end)
   if not ok then
     log('W', logTag, 'overlay: ' .. tostring(err))
-    ui_message(station .. (title and ('\n' .. (artist or '') .. ' - ' .. title) or ''), OVERLAY_SECONDS, logTag, 'radio')
+    ui_message((args.label or '') .. (args.title and ('\n' .. (args.artist or '') .. ' - ' .. args.title) or ''), OVERLAY_SECONDS, logTag, 'radio')
   end
 end
 
 local function hideOverlay()
-  pcall(function() be:executeJS("(function(){var d=document.getElementById('fh1radio');if(d){d.style.opacity='0';}})();") end)
+  pcall(function() be:executeJS("(function(){var d=document.getElementById('fh1radio-card');if(d){d.style.opacity='0';}})();") end)
+end
+
+local function stationCard(i)
+  local st = stations[i]
+  if not st then return { label = 'Radio off', color = OFF_COLOR } end
+  local song = st.song
+  return { logo = LOGOS .. 'station' .. i .. '.png', title = song and song.title, artist = song and song.artist, color = COLORS[i] }
+end
+
+-- the FH1 Radio UI app's state: stations, what is on, volume
+local function pushState()
+  local names = {}
+  for i, st in ipairs(stations) do names[i] = { name = st.def.name, logo = LOGOS .. 'station' .. i .. '.png', color = COLORS[i] } end
+  local card = stationCard(tuned)
+  guihooks.trigger('Fh1RadioState', { running = running, tuned = tuned, stations = names, title = card.title, artist = card.artist,
+                                      volume = volume, maxVolume = MAX_VOLUME, offLogo = LOGOS .. 'off.png' })
 end
 
 local function announce(i)
-  local st = stations[i]
-  if not st then
-    overlay('Radio off', nil, nil, '#9a9aa6')
-  else
-    local song = st.song
-    overlay(st.def.name, song and song.title, song and song.artist, COLORS[i])
-  end
+  overlay(stationCard(i))
+  pushState()
+end
+
+local function saveSettings()
+  settingsDirty = false
+  pcall(jsonWriteFile, SETTINGS, { volume = volume, tuned = tuned }, true)
+end
+
+local function loadSettings()
+  local s = FS:fileExists(SETTINGS) and jsonReadFile(SETTINGS)
+  if type(s) ~= 'table' then return end
+  if type(s.volume) == 'number' then volume = math.max(0, math.min(MAX_VOLUME, s.volume)) end
+  if type(s.tuned) == 'number' then tuned = math.floor(s.tuned) end
 end
 
 -- what a station plays next after its song reaches its jingle point: a queue ending with the next song
@@ -272,10 +309,13 @@ local function stopAll()
   placePlay = {}
   running = false
   hideOverlay()
+  pcall(pushState)
 end
 
 local function start()
   stopAll()
+  if settingsDirty then saveSettings() end
+  loadSettings()
   local mission = getMissionFilename()
   local levelName = mission and mission:match('levels/([^/]+)/')
   if not levelName or not levelName:find('^fh1_') then return end
@@ -285,6 +325,7 @@ local function start()
   end
   data = jsonReadFile(ROOT .. 'radio.json')
   clock = 0
+  if tuned < 0 or tuned > #data.stations then tuned = 1 end
   for i, def in ipairs(data.stations) do
     stations[i] = { def = def, sounds = {}, queue = {}, nextAt = 0, gain = i == tuned and 1 or 0, duck = 1, sinceDJ = 0,
                     nextUpdate = UPDATE_EVERY * math.random(), recentSongs = {}, recentDJ = {}, recentIdents = {}, recentUpdates = {},
@@ -296,9 +337,14 @@ local function start()
   local ok, err = pcall(findPlaces, levelName)
   if not ok then log('W', logTag, 'race starts: ' .. tostring(err)) end
   running = true
+  pushState()
 end
 
 local function onUpdate(dtReal)
+  if settingsDirty then
+    sinceChange = sinceChange + dtReal
+    if sinceChange > 1 then saveSettings() end -- a dragged slider saves once it stops
+  end
   if not running then return end
   clock = clock + dtReal
   local master = volume * musicChannel()
@@ -312,20 +358,47 @@ local function onUpdate(dtReal)
   end
 end
 
--- ] and [ through fh1radio.json's actions: stations 1 to 3, then off
-local function onFh1RadioTune(step)
+local function changed()
+  settingsDirty, sinceChange = true, 0
+end
+
+local function tuneTo(i)
   if not running then return end
-  tuned = (tuned + (step or 1)) % (#stations + 1)
+  tuned = math.max(0, math.min(#stations, i))
+  changed()
   announce(tuned)
 end
+
+local function setLevel(v, show)
+  volume = math.max(0, math.min(MAX_VOLUME, tonumber(v) or 1))
+  changed()
+  if show and running then
+    local card = stationCard(tuned)
+    card.title, card.artist = nil, nil
+    card.label = 'Volume ' .. math.floor(volume * 100 + 0.5) .. '%'
+    card.volume = volume
+    overlay(card)
+  end
+  pushState()
+end
+
+-- fh1radio.json's actions: ] and [ step through stations 1 to 3 then off, shift with them steps the volume
+M.onFh1RadioTune = function(step) tuneTo((tuned + (step or 1)) % (#stations + 1)) end
+M.onFh1RadioVolume = function(step) setLevel(volume + (step or 1) * VOLUME_STEP, true) end
+-- the FH1 Radio UI app
+M.onFh1RadioTuneTo = function(i) tuneTo(tonumber(i) or 0) end
+M.onFh1RadioSetVolume = function(v) setLevel(v, false) end
+M.onFh1RadioRequestState = function() pushState() end
 
 M.onExtensionLoaded = start
 M.onClientPostStartMission = start
 M.onClientEndMission = stopAll
-M.onExtensionUnloaded = stopAll
+M.onExtensionUnloaded = function()
+  if settingsDirty then saveSettings() end
+  stopAll()
+end
 M.onUpdate = onUpdate
-M.onFh1RadioTune = onFh1RadioTune
-M.setVolume = function(v) volume = math.max(0, v or 1) end
-M.tune = function(i) tuned = math.max(0, math.min(#stations, i or 0)) announce(tuned) end
+M.setVolume = function(v) setLevel(v, true) end
+M.tune = tuneTo
 
 return M

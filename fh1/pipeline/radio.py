@@ -5,12 +5,14 @@ rebuild; fh1Radio.lua finds the race starts in each level's time trials at load.
 media/audio/radio holds RadioSystem.xml (stations, playlists, DJ lines), RadioSoundbankInfo_*.xml (each sample's bank index, length and cue
 points in ms) and FSB4 banks of MP3 (not XMA, unlike the ambience banks): Radio_Music.fsb and Radio_VO_<language>.fsb. Bank sample names are cut to 29 characters, so samples are
 found by the bank index RadioSoundbankInfo gives. Already converted files are kept unless --force."""
-import json, os, re, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, struct, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import gamezip, soundscape
+import numpy as np
+from PIL import Image
+import gamezip, soundscape, tex
 
 RADIO = gamezip.MEDIA + 'audio/radio/'
 VO = 'EN'
@@ -19,6 +21,10 @@ STATIONS = [('Radio1', 'Horizon Bass Arena', 'ScottTyler'), ('Radio2', 'Horizon 
 # Music FH1 plays from a place rather than the car radio. Autoshow, workshop and paint shop are menu music for places the levels don't have yet
 PLACES = {'prerace': 'Radio5_3d_PreRace', 'street': 'Radio9_3d_Streetrace'}
 SILENT = {'DJ_Blank', 'Ident_Blank'}
+# FH1's HUD radio logos in ui/textures/Horizon.zip, Hud/Radio/: Horizon Rocks is RS_2Eleven, an earlier name. RS_Off is a mute icon.
+# Radio1 to 3.xds there are something else
+LOGOS = {'station1': 'RS_BassArena', 'station2': 'RS_Pulse', 'station3': 'RS_2Eleven', 'off': 'RS_Off'}
+XDS_FORMATS = {0x72: 0x52, 0x73: 0x53, 0x75: 0x54}   # format byte at 0x23 to tex.decode's DXT1, 3, 5
 QUALITY = {'music': 4, 'place': 3, 'dj': 3}     # libvorbis -q: about 128 kb/s stereo, 64 kb/s mono
 WORKERS = 6
 FORCE = '--force' in sys.argv
@@ -154,16 +160,35 @@ for p in stale:
 keep = ('musicLevel', 'dialogueLevel', 'identLevel', 'duckValue', 'duckFadeUpTime', 'duckFadeDownTime', 'stationChangeFadeTimeUser', 'maxTracksBetweenDJ')
 (sound / 'radio.json').write_text(json.dumps({'system': {k: sysattr[k] for k in keep}, 'stations': out_stations, 'updates': updates, 'places': places}, indent=1))
 
+
+def logo(name):
+    """a Hud/Radio .xds as RGBA: tiled DXT, size in the Xenos fetch constant"""
+    b = gamezip.read('ui/textures/Horizon.zip', f'Hud/Radio/{name}.xds')
+    size = struct.unpack('>I', b[0x24:0x28])[0]
+    return Image.fromarray(tex.decode(b[52:], (size & 0x1fff) + 1, ((size >> 13) & 0x1fff) + 1, XDS_FORMATS[b[0x23]]), 'RGBA')
+
+
+app = mod / 'ui' / 'modules' / 'apps' / 'FH1Radio'
+app.mkdir(parents=True, exist_ok=True)
+for f in ('app.js', 'app.json'):
+    shutil.copy(Path('fh1radio_app') / f, app / f)
+for stem, name in LOGOS.items():
+    logo(name).save(app / f'{stem}.png')
+icon = Image.new('RGBA', (250, 160)); a = logo(LOGOS['station1']); icon.alpha_composite(a, ((250 - a.width) // 2, (160 - a.height) // 2)); icon.save(app / 'app.png')
+
 lua = mod / 'lua' / 'ge' / 'extensions'
 (lua / 'core' / 'input' / 'actions').mkdir(parents=True, exist_ok=True)
 shutil.copy('fh1Radio.lua', lua / 'fh1Radio.lua')
 desc = 'Forza Horizon radio on the FH1 levels: Horizon Bass Arena, Horizon Pulse, Horizon Rocks, off'
 (lua / 'core' / 'input' / 'actions' / 'fh1radio.json').write_text(json.dumps({
     'fh1RadioNext': {'cat': 'gameplay', 'order': 90, 'ctx': 'tlua', 'onDown': "extensions.hook('onFh1RadioTune', 1)", 'title': 'FH1 radio: next station', 'desc': desc},
-    'fh1RadioPrev': {'cat': 'gameplay', 'order': 91, 'ctx': 'tlua', 'onDown': "extensions.hook('onFh1RadioTune', -1)", 'title': 'FH1 radio: previous station', 'desc': desc}}, indent=1))
+    'fh1RadioPrev': {'cat': 'gameplay', 'order': 91, 'ctx': 'tlua', 'onDown': "extensions.hook('onFh1RadioTune', -1)", 'title': 'FH1 radio: previous station', 'desc': desc},
+    'fh1RadioLouder': {'cat': 'gameplay', 'order': 92, 'ctx': 'tlua', 'onDown': "extensions.hook('onFh1RadioVolume', 1)", 'title': 'FH1 radio: volume up', 'desc': desc},
+    'fh1RadioQuieter': {'cat': 'gameplay', 'order': 93, 'ctx': 'tlua', 'onDown': "extensions.hook('onFh1RadioVolume', -1)", 'title': 'FH1 radio: volume down', 'desc': desc}}, indent=1))
 (mod / 'settings' / 'inputmaps').mkdir(parents=True, exist_ok=True)
 (mod / 'settings' / 'inputmaps' / 'keyboard_fh1radio.json').write_text(json.dumps({'devicetype': 'keyboard', 'version': 1, 'bindings': [
-    {'action': 'fh1RadioNext', 'control': 'rbracket'}, {'action': 'fh1RadioPrev', 'control': 'lbracket'}]}, indent=1))
+    {'action': 'fh1RadioNext', 'control': 'rbracket'}, {'action': 'fh1RadioPrev', 'control': 'lbracket'},
+    {'action': 'fh1RadioLouder', 'control': 'shift rbracket'}, {'action': 'fh1RadioQuieter', 'control': 'shift lbracket'}]}, indent=1))
 (mod / 'scripts' / 'fh1_radio').mkdir(parents=True, exist_ok=True)
 (mod / 'scripts' / 'fh1_radio' / 'modScript.lua').write_text('load("fh1Radio")\nsetExtensionUnloadMode("fh1Radio", "manual")\n')
 
