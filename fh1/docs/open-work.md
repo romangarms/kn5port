@@ -12,7 +12,7 @@ Only the user can test in BeamNG, and only one of BeamNG or Xenia can run at a t
 
 | Task | Where to start | Notes |
 |---|---|---|
-| Decode owner list bytes | `free-roam.md` | Would allow choosing event layouts |
+| Race layouts | `free-roam.md`, `RACE` in `build3.py`, `races.py` | List bytes decoded (2026-11-06): they are route ids. Each race mission loads its route's FH1 props as `mainPrefab.prefab.json` while it runs. Not yet seen in-game. Open: whether free roam should show the events' start pens (owner-named, listed for route 0) |
 | Replace `.pgeo` name filter with data | `EVENT` | Weak spot of the free-roam logic |
 | Barnfind default state | `free-roam.md` | Barns are dropped by the owner rule |
 | Normal maps | `section_normals`, `TX.normal`, `dds.save_bc5` | In and checked in-game. All 41 FH1 normal maps are BC5 (0x71) and go out as `n<id>.normal.dds`, 173 materials, 3.3 MB. FH1 keeps none as DXT1: `h_blnd*_norm2` and `h_vblnd_norm*` name a normal map but have no slot for one, so most terrain gets none. The green channel matches stock BeamNG's convention on most textures, so it's copied unchanged; a few FH1 maps measure the other way. If a texture looks lit from below, flip green in `tex.normal` |

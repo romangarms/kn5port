@@ -19,7 +19,18 @@ Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), an
 
 **Likely exceptions:** floodlights, speakers, some flags and marquees pass the rule while looking event-like. They might be permanent. Barnfind barns have owner names (`_OPEN`, `_CLOSED`) and are dropped, so a default barn state may need adding.
 
-**Evidence for the list meaning events:** values like `8f`, `90`, `9193ced3`, `d8ed` repeat across race scenery. They look like event ids, but this is not decoded. Solving it would allow choosing any event's layout.
+## List bytes: race routes (decoded 2026-11-06)
+
+Each list byte is a `Tracks.RouteId` in `gamedb.slt`, the `<n>` of `TrackRoute<n>.xml`. A record shows in every route its list names, so `86d2` is routes 134 and 210 and `9193ced3` is 145, 147, 206 and 211, layouts that share a stretch of road. Byte 0 is route 0, the track `Colorado Free Roam` (event `FREE_ROAM`).
+
+Evidence:
+- 83 distinct byte values. All 47 route ids used by festival, showcase, plane and headline events appear as bytes, plus route 12 (`STREET_PLNS_005`, 5 props). Street and Nemesis routes (60 to 66, 171 to 201) have none, as those races run on open roads.
+- Scoring each byte's props against all 242 routes by median distance to the route's points and waypoints: in 46 of 81, the byte's own route is the nearest. Nearly all the others come second or third, behind a route on the same roads (204 or 210 beside 136, 134, 205 and 209). Examples: 0x6e (110, Main Stage Run) 71% of props within 30 m of route 110, the next route 25%; 0x8f (143, Red Rock Dirt Sprint) 82% against 34%; 0x03 (Eagle Ridge Mini Circuit) 96%.
+- The bytes that aren't event routes are named in `Tracks`: 21 to 31 are `ColoradoFreeRoam` variants (track ids 1101 to 1111, 152 props, all listed together as `00151617181a1c1d1e1f`), 170 is `E3Route`, and 212 to 224 are named areas (`MediaCentre`, `KettleHills`, `RedRock`, `Beaumont` and so on). 15 and 203 have no route file. 0x6e was the tyre-wall puzzle below: those 67 walls belong to route 110's layout.
+
+Owner names are separate from this. 3,436 owner-named records match an event id by prefix (89 events) and make each event's start pen: about 39 records, 30 `OBJ_FEST_BarrierMetal`, 4 flags and the `TeamTrailer`, a median 7 to 11 m from the event's `GameObjs.xml` node. 3,520 of them list only route 0, so FH1 shows them in free roam. Today only the trailer is kept (`STARTER`). Showing the whole pen in free roam would be a decision for the user.
+
+**Use:** `build3.py` collects records whose list names an event route (`RACE_ROUTES`, read from `gamedb.slt`) and skips owner-named and free-roam-kept ones. The same name filters as free roam apply, and placements are deduplicated by model and position, keeping the lowest LOD. Each route's props go to `art/fh1_races/route_<n>.prefab.json` as TSStatics. Models no free-roam placement uses get their `m<no>.dae` shape (`prop_shape`). Cones, flags, chevron boards, barrels, signs, banners and countdown boards don't collide; everything else uses its shape's simple collision. `races.py` copies the prefab into each mission folder as `mainPrefab.prefab.json`. The stock `timeTrial` flowgraph (`ttFg.flow.json`, `scene/spawnPrefab` with path `mainPrefab`) spawns it when the race starts, and the flowgraph prefab module deletes it when the race ends. Colorado has 17.6k race-layout placements over 47 routes, the largest 694 (route 109). Nothing is resident in free roam. The shapes aren't cooked by `cookship.py` until a race has loaded them once, so the first start of a race may hitch.
 
 ## Plants and model sets
 
@@ -46,4 +57,4 @@ Road fences and barriers are permanent scenery in `Models_Ungrouped` files: `Met
 
 Zone record owners are real event ids. `FR05` is `Events.HorizonEventID` in `media/db/gamedb.slt`, and `FESTIVAL_FIRST_001` is `Tracks.DevName`. A record with an owner is never kept. `models_proc_clrd_*_barriers_*` sets stay out, and `model_item` refuses `BarrierConcrete`: the user reports it never appears in the game and blocks real roads.
 
-Hoardings and `TWALL` tyre walls stay out. They once came back when `0x6e` was in their list, a value seen on them at the festival, but 0x6e also marks 67 tyre walls on race routes 370 m to 2.6 km away, most of them within 11 m of a road's centre line. What the list bytes mean is still not decoded.
+Hoardings and `TWALL` tyre walls stay out. They once came back when `0x6e` was in their list, a value seen on them at the festival, but 0x6e also marks 67 tyre walls on race routes 370 m to 2.6 km away, most of them within 11 m of a road's centre line. The list bytes turned out to be route ids (above): 0x6e is route 110, Main Stage Run, so those walls now come with that race's prefab.

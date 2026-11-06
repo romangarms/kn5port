@@ -2172,6 +2172,13 @@ def event_kept(r_, nm_, x, y, z):
     return bool(ALWAYS.search(nm_) or ROADSIDE.search(nm_))
 
 
+# Race layouts: a record's list bytes are the Tracks.RouteId values (TrackRoute<n>.xml) of the races that show it, and 0 is the route of
+# "Colorado Free Roam" (see free-roam.md). Each event route's props go in their own prefab, which the race mission loads while it runs
+# (races.py copies it in as mainPrefab.prefab.json). Owner-named records are the events' start pens, listed for route 0, and stay out
+import sqlite3, gamezip
+RACE_ROUTES = {int(r_) for (r_,) in sqlite3.connect(gamezip.MEDIA + 'db/gamedb.slt').execute(
+    'select t.RouteId from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId where t.MediaName = "Colorado"')} - {0}
+RACE = defaultdict(dict)            # route -> {(base, x, z): (t, name, x, y, z, rotation)}
 for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
     if ANIMATED_INSTEAD.search(nm_):
@@ -2179,6 +2186,13 @@ for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
         continue
     if (r_['lst'] or r_['name']) and not event_kept(r_, nm_, x, y, z):
         skip['event only'] += 1
+        rs_ = set(r_['lst']) & RACE_ROUTES
+        if rs_ and not r_['name'] and nm_ and X0 < x < X1 and Z0 < z < Z1 and t not in NOMESH and not NOUSE.search(nm_) and not PLANT_RE.search(nm_) \
+                and not re.match(r'S_|C_(?!CLRD)|.*Debri', nm_):
+            k_ = (re.sub(r'_LOD\d+.*$', '', nm_), round(x, 1), round(z, 1))
+            for rt_ in rs_:
+                if k_ not in RACE[rt_] or lod(nm_) < lod(RACE[rt_][k_][1]):
+                    RACE[rt_][k_] = (t, nm_, x, y, z, r_['rot'].tolist())
         continue
     if not (X0 < x < X1 and Z0 < z < Z1):
         continue
@@ -2216,6 +2230,23 @@ for (base, kx, kz), (t, nm_, x, y, z, Rr, did) in uniq.items():
     kept[re.sub(r'\d+', '#', nm_)[:30]] += 1
 print('live objects', sum(kept.values()), 'skipped', dict(skip)); print(kept.most_common(70))
 lap('smashables and free-roam objects')
+RACEOBJ = defaultdict(list)         # route -> [(model number, BeamNG placement)]
+for rt_, recs in RACE.items():
+    for (base, kx, kz), (t, nm_, x, y, z, Rr) in recs.items():
+        t0 = t
+        for d_ in range(1, lod(nm_) + 1):
+            if re.sub(r'_LOD\d+.*$', '', names_.get(t - d_, '')) == base and lod(names_[t - d_]) == 0:
+                t0 = t - d_
+                break
+        if model_item(t0) is None:
+            skip['race prop without mesh'] += 1
+            continue
+        Rg = np.array(Rr).T; sc = float(np.linalg.norm(Rg[:, 1])); Rg = Rg / np.maximum(np.linalg.norm(Rg, axis=0, keepdims=True), 1e-6)
+        Rm = B @ game_rot(Rg) @ B.T
+        if np.linalg.det(Rm) < 0:
+            continue
+        RACEOBJ[rt_].append((t0, dict(pos=[round(float(q), 3) for q in g2b(np.array([[x, y, z]]))[0]], rotationMatrix=Rm.ravel().tolist(), scale=round(float(np.clip(sc, .2, 5)), 3))))
+print('race layouts', len(RACEOBJ), 'routes,', sum(len(v) for v in RACEOBJ.values()), 'props from', len({no for v in RACEOBJ.values() for no, _ in v}), 'models')
 PLANT = PLANT_RE
 solid = 0; SOLIDS = collections.Counter(); INST = defaultdict(list)
 for no, it in list(defs.items()):
@@ -2319,7 +2350,8 @@ KEEPSTATIC = {6625, 6627, 6429}
 KEEPMESH = re.compile(r'bridge|ramp|jump|stage|platform|deck|road|tunnel|pavement|kerb|curb|car_?park|parking|dam(?![a-z])', re.I)
 
 
-for no, objs in INST.items():
+def prop_shape(no, objs):
+    """write art/shapes/fh1/m<no>.dae, one shared shape for every placement of model `no` -> the TSStatics' collision type"""
     it = defs[no]; far_ = FARCUT if max(it['h'], it['w']) < 15 else 2
     shape = [((g[0], (0,) if it['low'] else (0, 1, far_)),) + tuple(g[1:]) for g in it['groups']] + [((g[0], (1, far_)),) + tuple(g[1:]) for g in it['low']]
     allp = np.concatenate([g[1] for g in shape]); R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
@@ -2331,7 +2363,12 @@ for no, objs in INST.items():
             n_ = sum(not o['smash'] for o in objs)
             stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (had - len(cm[1]) // 3)
     col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), collide, colmesh=cm)
-    ct = 'Collision Mesh' if col else 'None'
+    return 'Collision Mesh' if col else 'None'
+
+
+SHAPE_CT = {}
+for no, objs in INST.items():
+    ct = SHAPE_CT[no] = prop_shape(no, objs)
     glow = no in GLOWING or lod_sibling(no) in GLOWING
     if PROPFOREST and not glow and no not in KEEPSTATIC:
         it_ = f'fh1_m{no}'
@@ -2349,6 +2386,20 @@ if PROPDATA:
     mf_ = level / 'art' / 'forest' / 'managedItemData.json'; mf_.write_text(json.dumps({**json.loads(mf_.read_text()), **PROPDATA}, indent=2))
 print('instanced', sum(len(v) for v in INST.values()), 'objects from', len(INST), 'shapes,', len(PROPDATA), 'shapes as forest items')
 print('simple collision', {k[4:-7]: v for k, v in stats.items() if k.startswith('col_') and k.endswith('_shapes')}, 'shapes,', stats['col_tris_saved'], 'collision triangles saved')
+# One prefab per race route, in the stock mission prefab format (a SimGroup_ line, then its objects), loaded only while that race runs.
+# Light props a car would knock over in FH1 (cones, flags, chevron boards, barrels, signs) don't collide: a TSStatic can't fall over
+SOFT = re.compile(r'cone|flag|chevron|barrel|equipsign|banner|arrow|countdown', re.I)
+rdir = level / 'art' / 'fh1_races'; rdir.mkdir(parents=True, exist_ok=True)
+for rt_, objs in sorted(RACEOBJ.items()):
+    lines = [{'name': 'SimGroup_', 'class': 'SimGroup', 'groupPosition': '0 0 0'}]
+    for i_, (no, o) in enumerate(objs):
+        if no not in SHAPE_CT:
+            SHAPE_CT[no] = prop_shape(no, [dict(smash=False)])
+        ct = 'None' if SOFT.search(defs[no]['item']) else SHAPE_CT[no]
+        lines.append({'class': 'TSStatic', '__parent': 'SimGroup_', 'shapeName': f'{rel}/art/shapes/fh1/m{no}.dae', 'position': o['pos'],
+                      'rotationMatrix': np.array(o['rotationMatrix']).reshape(3, 3).T.ravel().tolist(), 'scale': [o['scale']] * 3, 'collisionType': ct, 'decalType': ct})
+    (rdir / f'route_{rt_}.prefab.json').write_text(''.join(json.dumps(l_) + '\n' for l_ in lines))
+print('race prefabs', len(RACEOBJ), 'in', rdir)
 # barrier collision for the whole level at once, so walls run on across cell lines; each is carried by the cell its first piece is in
 RAILMESH, (RAIL_SEGS, RAIL_CHAINS) = colfit.rails({u: np.concatenate(t) for u, t in RAILS.items()}, POOL) if COLBOX else ({}, (0, 0))
 for (u, cat), mm in cells.items():

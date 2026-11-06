@@ -79,7 +79,7 @@ Placement record:
 | 52 | 1 | flag. 0 ends the record at 53 bytes |
 | 53 | 4 | owner block: u32 ref |
 | 57 | 1 | u8 n |
-| 58 | n | list bytes |
+| 58 | n | list bytes: `Tracks.RouteId` of each race layout that shows the record, 0 for free roam (see `free-roam.md`) |
 | 58 + n | 32 | owner name, total 90 + n bytes |
 
 Evidence: all 1,434 zones parsed with no failures. 2,972 of 2,979 checks agreed with the live capture, using no live data. Rotation rows matched live on 97% of 2,831 compared records. Zones are deltas and together cover every object: 59,597 draw placements at 27,293 positions.
@@ -264,7 +264,7 @@ Every `_lm` shader's pixel shader declares `Light_MapSampler`. None declares the
 
 ## Not decoded
 
-Normal maps and lightmaps, water, and the owner-block list bytes (see `free-roam.md`).
+The owner block's u32 reference, which is set mostly on smashable roadside scenery (snow poles, signs, fences) with no list or owner.
 
 ## CAFF textures
 

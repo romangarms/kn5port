@@ -1,6 +1,8 @@
 """FH1's races as BeamNG time trials: one mission per event, with FH1's name, route and laps, started where FH1's event marker stands
 beside its starter trailer (build3.py keeps the trailers). Run after build3.py: python races.py [fh1_colorado|fh1_redrock]. Needs no rebuild.
 
+Each mission gets FH1's props for its route as mainPrefab.prefab.json, which BeamNG loads only while the race runs.
+
 Street, Nemesis and plane races have checkpoints with widths. Festival races only have GPS waypoints and a finish line, because FH1 lined
 the course with barriers, so their waypoints become checkpoints. FH1 has no medal times, as its races were against AI, so they come from
 FH1's own length for each route and an average speed for its surface."""
@@ -139,7 +141,7 @@ if not (mod / 'levels' / LVL / 'info.json').exists():
     sys.exit(f'{mod} has no level: run build3.py first')
 root = mod / 'gameplay' / 'missions' / LVL
 shutil.rmtree(root, ignore_errors=True)
-nodes = events.nodes(); made = []; skipped = []
+nodes = events.nodes(); made = []; skipped = []; props = 0
 for e in events.races():
     c = course(events.route(e['route']))
     if c is None:
@@ -153,9 +155,15 @@ for e in events.races():
     race = race_file(e['name'], pole, facing, gates, closed, laps)
     length = e['length'] * laps
     (folder / 'race.race.json').write_text(json.dumps(race, indent=1))
+    # FH1's scenery for this route (build3.py, from the zone records' list bytes): the stock time trial spawns mainPrefab when the race
+    # starts and deletes it when the race ends
+    pf = mod / 'levels' / LVL / 'art' / 'fh1_races' / f"route_{e['route']}.prefab.json"
+    if pf.exists():
+        shutil.copyfile(pf, folder / 'mainPrefab.prefab.json'); props += pf.read_text().count('TSStatic')
     (folder / 'info.json').write_text(json.dumps(info(e, rel, b(marker[0]), marker[1], laps, closed, medals(e, length)), indent=1))
     preview(pole, gates, folder)
     made.append((e['id'], e['name'], 'circuit' if closed else 'sprint', laps, len(gates), round(length)))
 for m in made:
     print(*m)
+print('race props', props, 'in mission prefabs')
 print('done', len(made), 'time trials,', len(skipped), 'skipped:', ' '.join(skipped), '->', root)
