@@ -2160,6 +2160,10 @@ ALWAYS = re.compile('FlowerHolder', re.I); ROADSIDE = re.compile('Barrier(?!Bran
 STARTER = re.compile('TeamTrailer', re.I)     # each event owns one trailer at its start, where races.py puts its BeamNG mission
 
 
+# Beaumont's parked gondola cabins: animated.py runs both lifts' cabins (ANIM_Cablecars_001 and _002), which ride over the parked ones' spots
+ANIMATED_INSTEAD = re.compile(r'^Gondola_LOD', re.I)
+
+
 def event_kept(r_, nm_, x, y, z):
     """Event scenery the map needs in free roam"""
     if r_['name']:          # an owner is an event id: Events.HorizonEventID in gamedb.slt, or Tracks.DevName
@@ -2169,6 +2173,9 @@ def event_kept(r_, nm_, x, y, z):
 
 for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
+    if ANIMATED_INSTEAD.search(nm_):
+        skip['animated instead'] += 1
+        continue
     if (r_['lst'] or r_['name']) and not event_kept(r_, nm_, x, y, z):
         skip['event only'] += 1
         continue
