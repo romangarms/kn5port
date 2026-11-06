@@ -1,33 +1,57 @@
-"""FH1's spectators, standing still: Spectators.zip's people at the soundscape tiles' Crowd points. 615 cover the festival ground, about 11 m apart, with no
-route; the rest line race routes (routeID), where FH1 shows them on race day. Here all of them stand all the time. A point is a bare position on the
-ground (97% within half a metre of it): no turn, no crowd class, no count. So each is one standing person, model picked by a fixed seed, turned to face
-the nearest road point (fh1_nav), as spectators watch the road.
+"""FH1's 3D crowds, standing still: Spectators.zip's people where the track's crowd sets put them, facing where FH1 turns them, sitting where its crowd
+class sits. FH1 animates them (cheers, idles); here each holds the pose its model is stored in.
+Crowd sets are the track's `crowd*` .pgeo files (version 42, 1,741 of them, about 146k people; see docs/formats.md). Which stand here, by set name:
+the festival site (stages, stalls, grandstands, campsites), the Horizon outposts, the PR and street-race hubs and the activation zones, always; event
+venues (showcases, multiplayer, street races) and race-day spectators lining the festival race routes only off the road, as FH1 shows those only
+while their event runs, when the road is closed. Road is build3.py's raster of FH1's road-shader triangles (logs/<level>-road.npz, 4 m cells on the
+whole map), so a spectator within a cell of a road edge counts as on it. Sets share spots (`_shared` sets, one crowd per event), so a person within
+SAME metres of one already kept is dropped. One forest item per person, of 38 shapes: 19 models standing and seated, FH1's 4 LODs.
 Models (.skinbin, big-endian): u32 pairs (1, value) for a header, then vertices of 36 bytes: u32 1, position and normal as 3 floats each (y up, front
-+z), U and V as u16 / 65535, two bone bytes and two weight bytes summing to 255. Then (1, index count) and a triangle list of u16. The header's (first,
-count) pairs cut that list into 4 LODs. The vertices already hold the pose (_Stand standing, _Sit seated), so no skeleton or animation is read: the
-.anim.bin cheers and idles aren't decoded. Textures (spectators.xml ties model to texture) are tiled DXT1 .xds, format byte 0x52.
-Run after build3.py, which wipes the level: python spectators.py [fh1_colorado]. Safe to run twice."""
++z, feet at 0), U and V as u16 / 65535, two bone bytes and two weight bytes summing to 255. Then (1, index count) and a triangle list of u16. The
+header's (first, count) pairs cut that list into 4 LODs. The vertices already hold the pose, standing or seated. Textures (spectators.xml ties model
+to texture) are tiled DXT1 .xds, format byte 0x52.
+Run after build3.py and grass.py (both write the forest item list): python spectators.py [fh1_colorado]. Safe to run twice."""
 import glob, json, os, re, struct, subprocess, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 import numpy as np
-import dds, frame, gamezip, mission, soundscape, tex
+from scipy.spatial import cKDTree
+import dds, frame, gamezip, tex
 from daewrite import write_lod
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
-SEED = 5
+SEED = 5; SAME = 0.3
+HIPS = {'Stand': 0.8, 'Sit': 0.6}     # FH1 places a person by the hips: standing records sit a median 0.80 m over the ground; seated hips are 0.6 m up the model
 PX = 1250.0; FARS = (20.0, 50.0, 120.0, 250.0)   # metres each LOD is drawn to, as build3.py sizes details: PX x radius / (distance + radius)
 CUTOUT = 250            # a texture with more texels than 1 in CUTOUT under half alpha is cut out
 S = np.eye(3)[[0, 2, 1]]   # FH1 x, up, z -> BeamNG x, y, up, as the world. It mirrors, so faces are turned back
+NAME = re.compile(rb'\x00(crowd[A-Za-z0-9_\-\[\]]*)\x00')
+ALWAYS = re.compile(r'festivalcrowd|festival_main_crowd|fest_area3_barriers|horizonoutpost|prhub|pr_crowd|activationzone|main_town_sr_hub')
+OFFROAD = re.compile(r'showcase|multiplayer|street|festival|track_|p2p|racecrowd|e3_route|crowd_moun|reservoircrowd')
+SIT = {0, 4}            # crowd class index (class id - 1): 001 Sit and 005 LoopingSit use the Sitting skeleton
 
 
-def points():
-    """each Crowd point once, in BeamNG: (x, y, height, routeID)"""
-    out = set()
-    for f in glob.glob(soundscape.TILES):
-        for m in re.finditer(r'<Crowd routeID="([^"]*)" position.x="([^"]*)" position.y="([^"]*)" position.z="([^"]*)"', open(f, 'rb').read().decode('utf8', 'ignore')):
-            out.add((float(m.group(2)) - CX, float(m.group(4)) + CZ, float(m.group(3)) + LIFT, m.group(1)))
-    return sorted(out)
+def crowd_sets():
+    """each crowd set: (name, [(x, y, height) BeamNG], yaw in radians, class index). The set: name after 0x5c, then its box again (some files keep
+    8 bytes first), a count, 28 bytes, and 12-byte records: x, height, z as u16 / 65535 of the box (.pgeo z sign), a u16 whose high byte is the
+    facing in 1/256 turns, clockwise from north, and whose low byte is the crowd class index, then a u16 flag and 2 zero bytes"""
+    out = []; bad = 0
+    for f in sorted(glob.glob('../x/*.pgeo')):
+        b = open(f, 'rb').read()
+        m = NAME.search(b, 0x5c, 0x180) if b[:4] == b'OEGP' else None
+        if not m:
+            continue
+        B = np.array(struct.unpack_from('>8f', b, 0x10)); o = (m.end(1) + 1 + 3) & ~3
+        while o < min(len(b) - 36, 0x240) and not (np.abs(np.array(struct.unpack_from('>8f', b, o)) - B).max() < 10 and b[o + 12:o + 16] == bytes(4)):
+            o += 4
+        n = struct.unpack_from('>I', b, o + 32)[0] if o < len(b) - 36 else -1
+        if len(b) - (o + 64) != 12 * n:
+            bad += 1
+            continue
+        r = np.frombuffer(b, '>u2', 6 * n, o + 64).reshape(n, 6).astype('i8')
+        p = B[:3] + r[:, :3] / 65535 * (B[4:7] - B[:3])
+        out.append((m.group(1).decode(), np.c_[p[:, 0] - CX, p[:, 2] + CZ, p[:, 1] + LIFT], (r[:, 3] >> 8) * 2 * np.pi / 256, r[:, 3] & 255))   # positions are the hips (HIPS)
+    return out, bad
 
 
 def models():
@@ -60,64 +84,80 @@ def xds(name):
     return tex.decode(b[52:52 + ((w + 3) // 4) * ((h + 3) // 4) * f[1]], w, h, f[0])
 
 
-def roads(mg):
-    p = [o['position'] for o in map(json.loads, filter(str.strip, (mg / 'fh1_nav' / 'items.level.json').read_text().splitlines())) if 'position' in o]
-    return np.array(p, 'f8')[:, :2]
-
-
-def nearest(R, q):
-    """index of the nearest of points R to each of q"""
-    from scipy.spatial import cKDTree
-    return cKDTree(R).query(q)[1]
+def on_road(xy):
+    """True where build3.py's road raster has road, None for all when the build left no raster"""
+    f = Path('../logs') / f'{LVL}-road.npz'
+    if not f.exists():
+        return None
+    z = np.load(f); road = z['road']; sq = float(z['SQ']); half = float(z['HALF'])
+    ij = np.floor((xy + half) / sq).astype(int); ok = ((ij >= 0) & (ij < road.shape[0])).all(1); out = np.ones(len(xy), bool)
+    out[ok] = road[ij[ok, 1], ij[ok, 0]]
+    return out
 
 
 def main():
     from kn5port import beamng
     level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL
-    mg = level / 'main' / 'MissionGroup'; items = mg / 'items.level.json'
-    if not items.exists():
-        sys.exit(f'{items} is missing: run build3.py first')
-    out = level / 'art' / 'shapes' / 'fh1_spectators'; out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob('*'):
+    if not (level / 'art' / 'forest' / 'managedItemData.json').exists():
+        sys.exit(f'{level} has no forest items: run build3.py first')
+    sdir = level / 'art' / 'forest' / 'spectators'; sdir.mkdir(parents=True, exist_ok=True); fdir = level / 'forest'; tdir = level / 'art' / 'textures'
+    rel = f'/levels/{LVL}/art/forest/spectators'
+    for old in list(sdir.glob('*')) + list(fdir.glob('fh1_spectator_*.forest4.json')) + list(tdir.glob('spectator_*.dds')):
         old.unlink()
-    tdir = level / 'art' / 'textures'; rel = f'/levels/{LVL}/art/shapes/fh1_spectators'
-    for old in tdir.glob('spectator_*.dds'):
-        old.unlink()
-    pts = [p for p in points() if abs(p[0]) < HALF and abs(p[1]) < HALF]
-    mats = {}; names = []
+    sets, bad = crowd_sets(); stats = {'sets': len(sets), 'unreadable sets': bad}
+    P = []; A = []; C = []; K = []
+    for nm, p, a, c in sets:
+        kind = 'always' if ALWAYS.search(nm) else 'offroad' if OFFROAD.search(nm) else None
+        stats[f'{kind} sets'] = stats.get(f'{kind} sets', 0) + 1
+        if kind:
+            P.append(p); A.append(a); C.append(c); K += [kind] * len(p)
+    P = np.concatenate(P); A = np.concatenate(A); C = np.concatenate(C); K = np.array(K)
+    keep = (np.abs(P[:, :2]) < HALF - 1).all(1)
+    road = on_road(P[:, :2]); off = K == 'offroad'
+    if road is None:
+        print('no road raster (logs/' + LVL + '-road.npz): event and race crowds left out'); keep &= ~off
+    else:
+        stats['on the road, dropped'] = int((keep & off & road).sum()); keep &= ~(off & road)
+    order = np.r_[np.where(keep & ~off)[0], np.where(keep & off)[0]]     # the always-shown crowds win a shared spot
+    pairs = cKDTree(P[order]).query_pairs(SAME, output_type='ndarray'); dup = np.zeros(len(order), bool); dup[pairs.max(1)] = True
+    stats['repeats dropped'] = int(dup.sum()); idx = order[~dup]
+    managed = {k: v for k, v in json.loads((level / 'art' / 'forest' / 'managedItemData.json').read_text()).items() if not k.startswith('fh1_spectator_')}
+    items = {}; mats = {}
     for model, tx in sorted(models().items()):
-        P, N, uv, lods = skin(f'{model}_Stand')
-        a = xds(tx); base = f'spectator_{tx}'; cut = (a[..., 3] < 128).mean() > 1 / CUTOUT
+        a = xds(tx); base = f'spectator_{tx}'; cut = (a[..., 3] < 128).mean() > 1 / CUTOUT; mat = f'fh1_{base}'
         if not (tdir / f'{base}.color.dds').exists():
             dds.save(tdir / f'{base}.color.dds', a)
             if cut:
                 dds.save(tdir / f'{base}_o.data.dds', a[..., 3])
-        mat = f'fh1_{base}'
+        for pose in ('Stand', 'Sit'):
+            Pm, Nm, uv, lods = skin(f'{model}_{pose}'); R_ = float(np.linalg.norm(Pm - (Pm.min(0) + Pm.max(0)) / 2, axis=1).max())
+            groups = []
+            for k, t in enumerate(lods):
+                used, inv = np.unique(t, return_inverse=True)
+                groups.append(((mat, (k,)), Pm[used], Nm[used], uv[used], inv.ravel()))
+            item = f'fh1_spectator_{model}_{pose}'
+            write_lod(sdir / f'{item}.dae', groups, np.zeros(3), tuple(max(int(R_ / (d + R_) * PX), 1) for d in FARS), None)
+            managed[item] = {'name': item, 'internalName': item, 'class': 'TSForestItemData', 'annotation': 'NATURE', 'branchAmp': 0, 'detailAmp': 0,
+                             'detailFreq': 0, 'mass': 1, 'rigidity': 1, 'shapeFile': f'{rel}/{item}.dae', 'windScale': 0}
+            items[(model, pose)] = item
         st = {'baseColorMap': f'/levels/{LVL}/art/textures/{base}.color.dds', 'roughnessFactor': .8, 'metallicFactor': 0}
         if cut:
             st['opacityMap'] = f'/levels/{LVL}/art/textures/{base}_o.data.dds'
         mats[mat] = {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], **({'alphaTest': True, 'alphaRef': 100} if cut else {})}
-        R_ = float(np.linalg.norm(P - (P.min(0) + P.max(0)) / 2, axis=1).max())
-        groups = []
-        for k, t in enumerate(lods):
-            used, inv = np.unique(t, return_inverse=True)
-            groups.append(((mat, (k,)), P[used], N[used], uv[used], inv.ravel()))
-        write_lod(out / f'{model}.dae', groups, np.zeros(3), tuple(max(int(R_ / (d + R_) * PX), 1) for d in FARS), None)
-        names.append(model)
-    rng = np.random.default_rng(SEED); pick = rng.integers(len(names), size=len(pts))
-    xy = np.array([p[:2] for p in pts]); R = roads(mg); d = R[nearest(R, xy)] - xy
-    turn = np.where(np.hypot(*d.T) > 0.1, np.arctan2(-d[:, 0], d[:, 1]), rng.uniform(-np.pi, np.pi, len(pts)))   # front (+y) to the road
-    rows = []
-    for i, ((x, y, z, route), m, a) in enumerate(zip(pts, pick, turn)):
-        c, s_ = np.cos(a), np.sin(a); Rm = np.array([[c, -s_, 0], [s_, c, 0], [0, 0, 1]])
-        rows.append({'class': 'TSStatic', 'name': f'fh1_spectator_{i}', '__parent': 'fh1_spectators', 'shapeName': f'{rel}/{names[m]}.dae',
-                     'position': [round(x, 3), round(y, 3), round(z, 3)], 'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()],
-                     'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True, **({'internalName': 'route ' + route} if route else {})})
-    (out / 'main.materials.json').write_text(json.dumps(mats, indent=1))
-    (mg / 'fh1_spectators').mkdir(exist_ok=True)
-    (mg / 'fh1_spectators' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
-    mission.add_groups(items, 'fh1_spectators')
-    print(len(names), 'models,', len(rows), 'spectators,', sum(1 for p in pts if not p[3]), 'with no route (the festival and a few gatherings),', len(mats), 'materials')
+    (sdir / 'main.materials.json').write_text(json.dumps(mats, indent=1))
+    names = sorted(models()); pick = np.random.default_rng(SEED).integers(len(names), size=len(P)); rows = {}
+    for i in idx:
+        pose = 'Sit' if C[i] in SIT else 'Stand'; item = items[(names[pick[i]], pose)]
+        c, s_ = np.cos(-A[i]), np.sin(-A[i]); M = np.array([[c, -s_, 0], [s_, c, 0], [0, 0, 1]])      # front (+y) turned clockwise from north
+        rows.setdefault(item, []).append({'ctxid': 0, 'pos': [round(float(v), 3) for v in P[i] - [0, 0, HIPS[pose]]], 'rotationMatrix': [round(float(v), 5) for v in M.T.ravel()],
+                                          'scale': 1, 'type': item})
+        stats['seated' if pose == 'Sit' else 'standing'] = stats.get('seated' if pose == 'Sit' else 'standing', 0) + 1
+    for item, r_ in rows.items():
+        (fdir / f'{item}.forest4.json').write_text(''.join(json.dumps(o) + '\n' for o in r_))
+    (level / 'art' / 'forest' / 'managedItemData.json').write_text(json.dumps(managed, indent=2))
+    stats['placed'] = len(idx); stats['always shown'] = int((K[idx] == 'always').sum())
+    stats['on the festival ground'] = int(((P[idx, 0] > -1614) & (P[idx, 0] < -18) & (P[idx, 1] > -432) & (P[idx, 1] < 651)).sum())
+    print(stats)
     if (level / 'art' / 'textures_ungraded').exists():       # grade.py already ran: grade the new textures too. It grades from ungraded copies, so rerunning is safe
         subprocess.run([sys.executable, 'grade.py', LVL], check=True)
     print('done ->', level)
