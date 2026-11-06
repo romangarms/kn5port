@@ -838,6 +838,25 @@ def water():
     return 'fh1_water'
 
 
+def additive(tid, cs):
+    """FH1's add_diff_opac_rgba (the waterfalls, TERR_Fuji_Waterfall_*): lit diffuse blended additively, so black is clear. Its pixel shader adds
+    frac(TimeGain / c360_0.xy) to the diffuse UV, about 0.01 u and 0.67 v a second down the fall. BeamNG's Stage scroll adds scrollDir *
+    scrollSpeed * time the same way, and V reaches it unflipped (daewrite stores 1 - v, the importer flips it back). FH1's opacity mask stays put
+    while the diffuse moves; BeamNG would scroll both, so it's left out: additive black already fades the sheet"""
+    t = TX.get(tid)
+    if t is None:
+        return None
+    c_ = cs[0, :2] if len(cs) else np.zeros(2); d_ = [round(1 / float(v), 4) if abs(v) > 1e-3 else 0 for v in c_]
+    key = f"fh1_{t['name']}_add" + ('_s%g_%g' % tuple(d_) if any(d_) else '')
+    if key not in MATS:
+        st = {'baseColorMap': f"{rel}/art/textures/{t['name']}.color.dds", 'roughnessFactor': 1, 'metallicFactor': 0}
+        if any(d_):
+            st.update({'animFlags': 1, 'scrollDir': d_, 'scrollSpeed': 1})
+        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [st, {}, {}, {}], 'materialTag0': 'beamng',
+                     'translucent': True, 'translucentBlendOp': 'Add', 'translucentZWrite': False, 'doubleSided': True, 'castShadows': False}
+    return key
+
+
 def flat():
     """for wire whose texture isn't in the dump"""
     if 'fh1_flat' not in MATS:
@@ -1411,7 +1430,7 @@ for f, cs in byfile.items():
             decal = 'decal' in fx or fx.startswith('h_road') and 'decal' in n.lower(); opac = bool(re.search(r'opac|mask|tree|bunting', fx)) and not decal
             road = fx.startswith('h_road') and not re.search(r'sign|barrier|wall|armco', n, re.I)
             ts = slot_tex(no, [x for x in slots if x < 96])
-            if not ts and 'barbwire' in n.lower():
+            if not ts and re.search(r'barbwire|cable|tether', n, re.I):      # power lines and tethers name 0x108E, which no archive in the dump holds
                 add('vis', flat(), p, nr, box_uv(r0, s['fl']), T); surf['wire'] += len(T)
                 continue
             if not ts:
@@ -1478,7 +1497,9 @@ for f, cs in byfile.items():
                 ao, lm, win = object_maps(no, slots, fx, WORLDLM.get(no)) if u1 is not None else (None, None, None)
                 lm = None if lm == 'draw' else lm
                 emis = bake_emissive(lm, info['rgb'], win, uv, u1, T) if lm and win else None; sp_ = spec_map(no, slots, fx)
-                if re.search(r'cable|tether', n, re.I):
+                if fx.startswith('add_'):
+                    add('vis', additive(tid, cs_), p, nr, uv, T); surf['additive'] += len(T)
+                elif re.search(r'cable|tether', n, re.I):
                     add('vis', material(tid, alpha=opac, ao=ao, spec=sp_), p, nr, uv, T, uv1=u1); surf['cable'] += len(T)
                 elif re.search(r'armco|barrier|fence|rail', n, re.I):
                     lv_ = LV; LV = tuple(FARCUT if x == 2 else x for x in LV)      # barriers stop at 800 m, and their copies add up
