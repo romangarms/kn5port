@@ -11,3 +11,7 @@ pipeline/*
 !pipeline/*.py
 !pipeline/*.lua
 !pipeline/lzx.c
+!pipeline/fh1radio_app/
+pipeline/fh1radio_app/*
+!pipeline/fh1radio_app/app.js
+!pipeline/fh1radio_app/app.json
