@@ -44,7 +44,7 @@ FLY_KEY_SECONDS = .5; CLEARANCE = 25.0; GROUND_RADIUS = 80.0; MAX_BANK = 55.0; G
 # STILL: metres and degrees a part may move and still count as still
 RIDES = {'balloon': 'ANIM_FRGND_HotAirBalloonCircle', 'ferris': 'ANIM_FRGND_Ferris', 'zipper': 'ANIM_FRGND_Zipper', 'booster': 'ANIM_ITLY_Ride_Booster',
          'fan': 'ANIM_ITLY_Ride_Fan', 'nofear': 'ANIM_ITLY_Ride_NoFear', 'roundup': 'ANIM_ITLY_Ride_Roundup', 'blimp': 'ANIM_FRGND_InflatableShip',
-         'sprinkler': 'ANIM_WaterSprinkler', 'sprinklersmall': 'ANIM_WaterSprinklerSmall', 'birds': 'ANIM_Birds_Flying_Field_', 'cropduster': 'ANIM_CropDuster_Zone_05_'}
+         'spraygun': 'ANIM_FRGND_InflatableSprayGun', 'sprinkler': 'ANIM_WaterSprinkler', 'sprinklersmall': 'ANIM_WaterSprinklerSmall', 'birds': 'ANIM_Birds_Flying_Field_', 'cropduster': 'ANIM_CropDuster_Zone_05_'}
 # Meshes left out: the crop duster carries a 3473-triangle P51 Mustang propeller on its own propeller's bone, over the biplane's 84-triangle blur disc
 SKIP_MESHES = {'P51_Mustang_Propeller'}
 
@@ -60,14 +60,25 @@ def at(x, y, z, yaw=0.0):
 # planebanner: FH1 flies ANIM_PlaneBanner_002 once, from the free-roam cutscene that FirstTimeCareerAnimations.xml triggers near (-785, -1753)
 # (gamemodes.zip, Colorado/Cutscenes/cutscenes_default_freeroam.xml: x -702.284, y 44.836, z -1351.944, rotation 0.455 degrees, loop 1).
 # Its 100 s route closes, so it flies here for good.
-# ANIM_Cablecars_001/002 are left out: their cabins fit the unused static gondola meshes (1954-1957) to 0.9 m, but ride 1 to 5 m over the
-# pylon bases, under the ground, with no cables: a dropped feature. The gondolas FH1 shows at Beaumont are elsewhere and don't move
-STANDALONE = {'planebanner': 'ANIM_PlaneBanner_002'}
-STANDALONE_AT = {'planebanner': [at(-702.284, 44.836, -1351.944, .455)]}
+# cablecar1 and cablecar2: Beaumont's two gondola lifts, which FH1 draws standing still (stations, pylons, cables and parked cabins, Gondola_LOD00_*).
+# No file places the animation, but the parked cabins are copies of its cabins in its own frame. Zone records hold z in the .pgeo sign, as
+# anim_proc records do: line 1's parked cabins (meshes 1954-1957) sit at 3167.8, 144.7, 3466.8 turned by diag(1, 1, -1), which puts the moving
+# cabins on them to within 0.9 m with no further turn. Line 2's parked cabins (1966-1969) have a pivot the animation doesn't share, so its
+# origin is fitted with yaw held at 0: its parked cabins land 1.2 to 2.8 m from its paths and its six pylons 1 to 2 m to one side, between the
+# up and down cables, as line 1's are. A straight line can slide along itself, so the origin is held by its bottom station, where the cabins
+# turn: 11 m from the station, as line 1's is 15 m. Cabins ride 4 to 24 m over the built ground; line 1's top end turns about 20 m inside the
+# hill, where FH1 has no top station. Not yet seen in-game
+STANDALONE = {'planebanner': 'ANIM_PlaneBanner_002', 'cablecar1': 'ANIM_Cablecars_001', 'cablecar2': 'ANIM_Cablecars_002'}
+STANDALONE_AT = {'planebanner': [at(-702.284, 44.836, -1351.944, .455)], 'cablecar1': [at(3167.8, 144.7, 3466.8)], 'cablecar2': [at(2744.19, 145.25, 3739.57)]}
 # Kinds that travel: their placement is lifted if the largest part's route passes under the ground samples, to FLIGHT_CLEARANCE metres above them
 FLIGHTS = {'cropduster', 'planebanner'}; FLIGHT_CLEARANCE = 5.0
+# Kinds whose records stand under the ground: each placement is set on the built ground under it (ground_under), or failing that the median of
+# the nearest GROUND_K ground samples
+GROUNDED = {'spraygun'}; GROUND_K = 8
 SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
-# ANIM_FRGND_InflatableSprayGun is left out: FH1's only three are 5 km out, 200 m under the background mountains, where nothing shows them
+# ANIM_FRGND_InflatableSprayGun: FH1's only three (sets clrd_festival_plns_animated_objects_004_1 to _3) stand at height 21 to 23, 5 km out,
+# 3.7 km west of the plains festival site whose tube men the same sets place, and well under the ground there under either z sign: an authoring
+# slip, which hid them in FH1 too. As a test they stand on the ground at their own x and z (GROUNDED)
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
 EULER = ('ZYX', 'XYZ', 'YXZ', 'YZX', 'ZXY', 'XZY')
 PLAIN = (.55, .55, .55, 1)            # draws whose colour slot is empty
@@ -253,6 +264,30 @@ def ground_samples():
     return np.array(pts, 'f8')
 
 
+def ground_under(xy):
+    """the highest built ground under each point (x, y), from the level's collision cells, or NaN off them. Out past the roads and trees
+    ground_samples() has nothing within a kilometre and more"""
+    out = np.full(len(xy), np.nan)
+    for o in world:
+        if not re.search(r'_colf?\.dae$', o.get('shapeName', '')) or np.hypot(*(np.array(o['position'][:2]) - xy).T).min() > 400:
+            continue
+        text = (level / 'art' / 'shapes' / 'fh1' / Path(o['shapeName']).name).read_text()
+        R = np.array(o.get('rotationMatrix', np.eye(3).ravel())).reshape(3, 3); q = np.array(o['position'])
+        for geo in text.split('<geometry ')[1:]:
+            V = np.array(re.search(r'-p-a"[^>]*>([^<]*)<', geo).group(1).split(), 'f8').reshape(-1, 3) @ R + q
+            for inputs, p in re.findall(r'<triangles[^>]*>(.*?)<p>([^<]*)</p>', geo, re.S):
+                T = V[np.array(p.split(), 'i8')[::max(map(int, re.findall(r'offset="(\d+)"', inputs))) + 1].reshape(-1, 3)]
+                a, b, c = T[:, 0], T[:, 1], T[:, 2]; d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+                for i, (x, y) in enumerate(xy):
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        w0 = ((b[:, 1] - c[:, 1]) * (x - c[:, 0]) + (c[:, 0] - b[:, 0]) * (y - c[:, 1])) / d
+                        w1 = ((c[:, 1] - a[:, 1]) * (x - c[:, 0]) + (a[:, 0] - c[:, 0]) * (y - c[:, 1])) / d
+                    k = (w0 >= 0) & (w1 >= 0) & (w0 + w1 <= 1) & (np.abs(d) > 1e-9)
+                    if k.any():
+                        z = (w0[k] * a[k, 2] + w1[k] * b[k, 2] + (1 - w0[k] - w1[k]) * c[k, 2]).max(); out[i] = np.nanmax([out[i], z])
+    return out
+
+
 def mesh_groups(nos):
     """Geometry straight from the source meshes, for objects the build merged into map cells. Naming follows Textures and box_uv in build3.py."""
     MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX = pickle.load(open('../texshader.pkl', 'rb'))[0]
@@ -343,7 +378,7 @@ def keys(T, corners):
             break
         best = (ix, order, a)
     if len(best[0]) > 64:
-        # One sharp turn holds the whole loop to its spacing: FH1's unused cable car cabins turned inside their stations (0.1 m off at every 2nd sample) and
+        # One sharp turn holds the whole loop to its spacing: the cable car cabins turn inside their stations (0.1 m off at every 2nd sample) and
         # kept all 11,503 samples of their 383 s. Keys placed where they're needed instead, splitting each span at its worst sample, keep the same limit
         order, a = euler(T[:, :3, :3]); keep = {0, 1, n - 1}; stack = [(1, n - 1)]
         while stack:
@@ -586,6 +621,11 @@ for kind, model in {**RIDES, **STANDALONE}.items():
     for i, r in enumerate(recs):
         # The placement's turn in BeamNG axes: its records convert as S R^T, which is this turn after S
         Rm = S[:3, :3] @ np.array([r[0:3], r[4:7], r[8:11]]).T @ S[:3, :3]; pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
+        if kind in GROUNDED:
+            z_ = float(ground_under(pos[None, :2])[0]); src_ = 'collision cells'
+            if not np.isfinite(z_):
+                d_, k_ = cKDTree(g[:, :2]).query(pos[:2], GROUND_K); z_ = float(np.median(g[k_, 2])); src_ = f'samples {round(float(d_.min()))} m away'
+            print(kind, i, 'moved', round(z_ - pos[2], 1), 'm to the ground, from', src_); pos[2] = z_
         if kind in FLIGHTS:
             w_ = pos + route @ Rm.T; near = cKDTree(g[:, :2]).query_ball_point(w_[:, :2], GROUND_RADIUS)
             low = min(w_[k, 2] - g[i_, 2].max() for k, i_ in enumerate(near) if i_)
