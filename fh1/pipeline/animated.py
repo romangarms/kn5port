@@ -47,13 +47,39 @@ RIDES = {'balloon': 'ANIM_FRGND_HotAirBalloonCircle', 'ferris': 'ANIM_FRGND_Ferr
          'sprinkler': 'ANIM_WaterSprinkler', 'sprinklersmall': 'ANIM_WaterSprinklerSmall', 'birds': 'ANIM_Birds_Flying_Field_', 'cropduster': 'ANIM_CropDuster_Zone_05_'}
 # Meshes left out: the crop duster carries a 3473-triangle P51 Mustang propeller on its own propeller's bone, over the biplane's 84-triangle blur disc
 SKIP_MESHES = {'P51_Mustang_Propeller'}
+
+
+def at(x, y, z, yaw=0.0):
+    """a placement record as anim_proc sets hold them: rotation rows at 0, 4 and 8, position at 12, in the .pgeo z sign (BeamNG y = z + CZ).
+    yaw: degrees about up"""
+    c, s_ = np.cos(np.radians(yaw)), np.sin(np.radians(yaw))
+    return np.array([c, 0, -s_, 0, 0, 1, 0, 0, s_, 0, c, 0, x, y, z, 1], 'f8')
+
+
+# ANIM models no anim_proc set places and the track has no copy of, read from animatedobjects.zip (animcopy.standalone), with where they go:
+# planebanner: FH1 flies ANIM_PlaneBanner_002 once, from the free-roam cutscene that FirstTimeCareerAnimations.xml triggers near (-785, -1753)
+# (gamemodes.zip, Colorado/Cutscenes/cutscenes_default_freeroam.xml: x -702.284, y 44.836, z -1351.944, rotation 0.455 degrees, loop 1).
+# Its 100 s route closes, so it flies here for good.
+# cablecar1 and cablecar2: Beaumont's two gondola lines. No file places them, but the static gondolas FH1 draws beside the lift (Gondola_LOD00_*,
+# meshes 1954-1957 and 1966-1969) are copies of the animation's cabins in its own frame: placed at a pivot with z mirrored, as the zone record has
+# it, line 1's cabins land within 0.9 m of the animated paths (1.4 m at most). Line 2's records give a pivot the animation doesn't share; its
+# origin is fitted to its static cabins and the six pylons under it
+STANDALONE = {'planebanner': 'ANIM_PlaneBanner_002', 'cablecar1': 'ANIM_Cablecars_001', 'cablecar2': 'ANIM_Cablecars_002'}
+# Both lines' cabins move in FH1's mesh z sign: world = origin + the animation, in zone-record coordinates, so MIRRORED negates their z and the
+# record holds the origin with its z negated. Line 2's origin is fitted with yaw held at 0 (fitting it gave 0.58 degrees): its static cabins
+# land 1.2 to 2.8 m from the animated paths and its pylons 1 to 2 m to one side, as line 1's pylons sit 1.8 to 3.4 m, between the up and
+# down cables. Cabins and pylons alone leave it free to slide along the line, so the origin is held near the bottom station, where its
+# cabins turn: 11 m from the station, as line 1's origin is 15 m from its own
+STANDALONE_AT = {'planebanner': [at(-702.284, 44.836, -1351.944, .455)], 'cablecar1': [at(3167.8, 144.7, -3466.8)], 'cablecar2': [at(2744.19, 145.25, -3739.57)]}
+MIRRORED = {'cablecar1', 'cablecar2'}
 # Kinds that travel: their placement is lifted if the largest part's route passes under the ground samples, to FLIGHT_CLEARANCE metres above them
-FLIGHTS = {'cropduster'}; FLIGHT_CLEARANCE = 5.0
+FLIGHTS = {'cropduster', 'planebanner'}; FLIGHT_CLEARANCE = 5.0
 SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
 # ANIM_FRGND_InflatableSprayGun is left out: FH1's only three are 5 km out, 200 m under the background mountains, where nothing shows them
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
 EULER = ('ZYX', 'XYZ', 'YXZ', 'YZX', 'ZXY', 'XZY')
 PLAIN = (.55, .55, .55, 1)            # draws whose colour slot is empty
+GLOW_NITS = 3000                      # ride bulbs at night, as build3.py's lamp glass
 
 
 def channel(node, target, param, times, values):
@@ -324,6 +350,22 @@ def keys(T, corners):
         if np.linalg.norm(np.einsum('nij,kj->nki', R, corners) + t[:, None] - true, axis=2).max() > limit and best:
             break
         best = (ix, order, a)
+    if len(best[0]) > 64:
+        # One sharp turn holds the whole loop to its spacing: the cable car cabins turn inside the stations (0.1 m off at every 2nd sample) and kept
+        # all 11,503 samples of their 383 s. Keys placed where they're needed instead, splitting each span at its worst sample, keep the same limit
+        order, a = euler(T[:, :3, :3]); keep = {0, 1, n - 1}; stack = [(1, n - 1)]
+        while stack:
+            i, j = stack.pop()
+            if j - i < 2:
+                continue
+            f = np.arange(i + 1, j); w = ((f - i) / (j - i))[:, None]
+            R = Rotation.from_euler(order, a[i] + w * (a[j] - a[i]), degrees=True).as_matrix(); t = T[i, :3, 3] + w * (T[j, :3, 3] - T[i, :3, 3])
+            e = np.linalg.norm(np.einsum('nij,kj->nki', R, corners) + t[:, None] - true[i + 1:j], axis=2).max(1)
+            if e.max() > limit:
+                k = int(i + 1 + np.argmax(e)); keep.add(k); stack += [(i, k), (k, j)]
+        ix = np.array(sorted(keep))
+        if len(ix) < len(best[0]):
+            best = (ix, order, a[ix])
     return best
 
 
@@ -333,17 +375,40 @@ def ride_sizes(r):
     return s0, s1, 1
 
 
-def ride_material(tl, slot, saved):
-    """the material for a draw's colour slot, saving its texture into art/textures the first time, so grade.py grades it with the rest"""
+def ride_texture(t, saved):
+    """art/textures/anim<id>.color.dds, saved the first time, so grade.py grades it with the rest. t: a texture-list id, or the name of a
+    standalone model's texture in animatedobjects.zip"""
+    tname = f'anim{t:X}' if isinstance(t, int) else 'anim_' + re.sub(r'[^A-Za-z0-9_]', '_', t)
+    if t not in saved:
+        if isinstance(t, int):
+            a_, t_ = tex.load(t); dds.save(level / 'art' / 'textures' / f'{tname}.color.dds', a_, tex.blocks(t) if t_['fmt'] == 0x52 else None)
+        else:
+            dds.save(level / 'art' / 'textures' / f'{tname}.color.dds', animcopy.xds(t))
+        saved.add(t)
+    return f'/levels/{LVL}/art/textures/{tname}.color.dds'
+
+
+def glow_mask(t):
+    """whether a draw's glow slot (the third) holds a bulb or sign mask: mostly black. Two rides put a specular map there (Roundup's grey
+    'Zero Gravity' panel, median 21), and the balloons their lit envelope (median 36); the eight bulb masks have medians of 0 to 8"""
+    r = tex.load(t)
+    return r is not None and float(np.median(r[0][..., :3].max(2))) < 16
+
+
+def ride_material(tl, slot, saved, glow=-1):
+    """the material for a draw's colour slot. glow: its glow slot, lit at night as build3.py's lamp glass is (GLOW): an emissive map under
+    instanceEmissive, which the ride TSStatics' nightEmissive turns on from 18:00 to 6:00"""
     if slot < 0:
         mats_['fh1_anim_plain'] = {'name': 'fh1_anim_plain', 'mapTo': 'fh1_anim_plain', 'class': 'Material', 'version': 1.5, 'doubleSided': True,
                                    'Stages': [{'baseColorFactor': list(PLAIN), 'roughnessFactor': .7, 'metallicFactor': 0}]}
         return 'fh1_anim_plain'
-    t = IDX[tl[slot]][0]; tname = f'anim{t:X}'; mat = f'fh1_{tname}'
-    if t not in saved:
-        a_, t_ = tex.load(t); dds.save(level / 'art' / 'textures' / f'{tname}.color.dds', a_, tex.blocks(t) if t_['fmt'] == 0x52 else None); saved.add(t)
-    mats_[mat] = {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'doubleSided': True,
-                  'Stages': [{'baseColorMap': f'/levels/{LVL}/art/textures/{tname}.color.dds', 'roughnessFactor': .7, 'metallicFactor': 0}]}
+    look = lambda k: tl[k] if isinstance(tl[k], str) else IDX[tl[k]][0]       # standalone models list texture names
+    t = look(slot); g = look(glow) if glow >= 0 else None; g = g if isinstance(g, int) and glow_mask(g) else None
+    mat = 'fh1_' + Path(ride_texture(t, saved)).name.split('.')[0] + (f'_g{g:X}' if g is not None else '')
+    st = {'baseColorMap': ride_texture(t, saved), 'roughnessFactor': .7, 'metallicFactor': 0}
+    if g is not None:
+        st.update({'emissiveMap': ride_texture(g, saved), 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': GLOW_NITS, 'instanceEmissive': True})
+    mats_[mat] = {'name': mat, 'mapTo': mat, 'class': 'Material', 'version': 1.5, 'doubleSided': True, 'Stages': [st]}
     return mat
 
 
@@ -479,20 +544,24 @@ for kind, w in FLYERS.items():
     print(kind, len(q), 'verts', len(tri), 'tris, lift', round(float(lift), 1), 'x', np.round([world_p[:, 0].min(), world_p[:, 0].max()]).tolist(), 'y', np.round([world_p[:, 1].min(), world_p[:, 1].max()]).tolist(),
           'z', np.round([world_p[:, 2].min(), world_p[:, 2].max()]).tolist(), 'max bank', round(float(np.abs(bank).max())), 'max pitch', round(float(np.abs(pitch).max())))
 IDX = pickle.load(open('../texshader.pkl', 'rb'))[0]; saved = set()
-for kind, model in RIDES.items():
-    recs = [r for r in placed(model) if inside(r)]
+for kind, model in {**RIDES, **STANDALONE}.items():
+    recs = [r for r in (STANDALONE_AT[kind] if kind in STANDALONE else placed(model)) if inside(r)]
     if not recs:
         print(kind, 'not in this level')
         continue
-    b = animcopy.find(model); ms = animcopy.meshes(b); animcopy.bind(b, ms); tl = animcopy.textures(b)
+    if kind in STANDALONE:
+        b = animcopy.standalone(model); tl = animcopy.texture_names(b)
+    else:
+        b = animcopy.find(model); tl = animcopy.textures(b)
+    ms = animcopy.meshes(b); animcopy.bind(b, ms)
     # triangles of each bone, by material, from the most detailed meshes. A skinned triangle goes with its first vertex's bone
-    parts = {}
+    parts = {}; lit_ = False
     for m in ms:
         if animcopy.lod(m, ms) or m['name'] in SKIP_MESHES:
             continue
         tri_bone = m['bones'][m['idx'][:, 0]] if m['skin'] else np.full(m['T'], m['bone'])
         for slots, first, count in m['segs']:
-            mat = ride_material(tl, slots[0], saved)
+            mat = ride_material(tl, slots[0], saved, slots[2]); lit_ = lit_ or '_g' in mat
             for k in np.unique(tri_bone[first:first + count]):
                 t_ = m['idx'][first:first + count][tri_bone[first:first + count] == k]
                 parts.setdefault((m['model'], int(k)), []).append((mat, m, t_))
@@ -500,11 +569,14 @@ for kind, model in RIDES.items():
     # Granny x, up, z -> BeamNG x, y, up, as an unturned placement converts. That swap mirrors, so faces are turned back.
     # Every part goes in one shape, a write_lod group per material, and each moving part's groups get its own keys
     S = np.eye(4)[[0, 2, 1, 3]]; groups = []; curves = {}; swept = []; n_moving = 0; n_keys = []; route = np.zeros((0, 3))
+    # Model axes -> BeamNG's for the shape. MIRRORED kinds keep FH1's mesh z sign (see STANDALONE), so z is negated first: then the change of
+    # axes is a rotation, and faces keep their winding
+    G = S @ np.diag([1., 1., -1., 1.]) if kind in MIRRORED else S; Gi = np.linalg.inv(G); turn = np.linalg.det(G[:3, :3]) < 0
     for (s, k), pieces in sorted(parts.items()):
-        T = S @ W[s][k] @ np.linalg.inv(B_[s][k]) @ S
+        T = G @ W[s][k] @ np.linalg.inv(B_[s][k]) @ Gi
         own = []
         for mat, m, t_ in pieces:
-            used, inv = np.unique(t_, return_inverse=True); q = (S[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1]
+            used, inv = np.unique(t_, return_inverse=True); q = (G[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1] if turn else inv.reshape(-1, 3)
             own.append(((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, t_), m['uv'][used], t_.ravel(), np.zeros((len(q), 2))))
         p = np.concatenate([g[1] for g in own])
         moves = np.abs(T[:, :3, 3] - T[:1, :3, 3]).max() > STILL[0] or np.degrees((Rotation.from_matrix(T[:, :3, :3]) * Rotation.from_matrix(T[0, :3, :3]).inv()).magnitude()).max() > STILL[1]
@@ -531,7 +603,8 @@ for kind, model in RIDES.items():
             pos[2] += max(FLIGHT_CLEARANCE - low, 0)
             print(kind, i, 'lowest', round(float(low), 1), 'm over the ground within', GROUND_RADIUS, 'm, lifted', round(float(max(FLIGHT_CLEARANCE - low, 0)), 1))
         rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
-                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True,
+                     **({'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if lit_ else {})})
     print(kind, len(recs), 'placed', [[round(float(v)) for v in (r[12] - CX, r[14] + CZ)] for r in recs][:4], len(parts), 'parts,', n_moving, 'moving,',
           sum(len(t_) for ps in parts.values() for _, _, t_ in ps), 'triangles,', sum(n_keys), 'keys over', round(dur, 1), 's')
 (out / 'main.materials.json').write_text(json.dumps(mats_))

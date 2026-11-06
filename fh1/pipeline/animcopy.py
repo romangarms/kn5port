@@ -23,6 +23,37 @@ def find(model):
     raise FileNotFoundError(model)
 
 
+def standalone(model):
+    """the bytes of an ANIM model that the track has no copy of, from media/animatedobjects.zip, e.g. ANIM_PlaneBanner_002"""
+    import gamezip
+    return gamezip.read('animatedobjects.zip', model + '.pgeo')
+
+
+def texture_names(b):
+    """a standalone model's textures, in the order draw nodes number them. Its header has no texture-list indices (the word at 0x40 is 0) but
+    a run of u32 name lengths, each counting the name's null, then the names back to back. The bytes before may hold a leftover name tail
+    ('ZN_Diff.' in ANIM_PlaneBanner_002), so a run is taken only where every length matches its name"""
+    for s in range(0xa0, 0x400, 4):
+        names = []; o = s
+        while True:
+            m = re.match(rb'[\x20-\x7e]{4,}\0', b[o:o + 128])
+            if not m:
+                break
+            names.append(m.group()[:-1].decode()); o += len(m.group())
+        if names and all(struct.unpack_from('>I', b, s - 4 * (len(names) - i))[0] == len(n) + 1 for i, n in enumerate(names)):
+            return names
+    raise ValueError('no texture names')
+
+
+def xds(name):
+    """a texture from animatedobjects.zip/Textures, as RGBA. These hold their top mip linear, not tiled as effects.zip's are: format byte 0x73
+    is DXT1 and 0x75 DXT5 (size in the fetch constant at 0x24, data from 52)"""
+    import gamezip, tex
+    b = gamezip.read('animatedobjects.zip', f'Textures/{name}.xds'); size = struct.unpack_from('>I', b, 0x24)[0]
+    w = (size & 0x1fff) + 1; h = ((size >> 13) & 0x1fff) + 1; f = {0x73: (0x52, 8), 0x75: (0x54, 16)}[b[0x23]]
+    return tex.decode(b[52:52 + ((w + 3) // 4) * ((h + 3) // 4) * f[1]], w, h, f[0])
+
+
 def signed(w):
     return w - (1 << 32) if w >= 1 << 31 else w
 

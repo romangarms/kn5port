@@ -120,10 +120,10 @@ def timing(rate, speed, speed_var):
 
 
 def hours(e):
-    """FH1's time-of-day window in hours, or None for all day."""
+    """FH1's time-of-day window in hours, or None for all day. The waterfalls' 0:00 to 0:00 is all day too: fh1Extras.lua would read it as never"""
     t = e.find('TimeOfDayData')
     s, f = (float(t.get(k + 'H')) + float(t.get(k + 'M')) / 60 for k in ('start', 'end')) if t is not None else (0, 24)
-    return None if (s, f) == (0, 24) else [round(s, 2), round(f, 2)]
+    return None if (s, f) == (0, 24) or s == f else [round(s, 2), round(f, 2)]
 
 
 def ambient(name):
@@ -300,7 +300,8 @@ nodes = []; lua = []
 for i, (name, x, y, z) in enumerate(p for p in placed if f'fh1e_{p[0]}' in blocks):
     nodes.append({'name': f'fh1_fx_{i}_{label(name)}', 'class': 'ParticleEmitterNode', '__parent': 'fh1_fx', 'position': [round(x, 2), round(y, 2), round(z, 2)], 'dataBlock': 'lightExampleEmitterNodeData1',
                   'emitter': f'fh1e_{name}', 'active': False})
-    lua.append([f'fh1_fx_{i}_{label(name)}', round(x, 1), round(y, 1), far.get(name, WATER_FAR if WATER.match(name) else SMOKE_FAR), live(f'fh1e_{name}')])
+    # with the effect's own time window, as the ambient ones have: chimneys smoke 19:00 to 5:00
+    lua.append([f'fh1_fx_{i}_{label(name)}', round(x, 1), round(y, 1), far.get(name, WATER_FAR if WATER.match(name) else SMOKE_FAR), live(f'fh1e_{name}')] + (hours(effect(name)) or []))
 for name, w, axis, dist, when in (s for s in scene if s[0] in amb):
     drift, own, speed = amb[name]; i = len(nodes)
     # FH1's wind pushes particles sideways. BeamNG's only blows level-wide, so the jet leans by the drift instead
