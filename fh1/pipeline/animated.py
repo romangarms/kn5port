@@ -9,7 +9,7 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from daewrite import FARCUT, write_lod
-import animcopy, dds, frame, gamezip, granny, mission, rmb, tex
+import animcopy, dds, frame, gamezip, granny, granny2, mission, rmb, soundscape, tex
 from animsets import placed, records
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -76,6 +76,19 @@ SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
 # Left out: ANIM_FRGND_InflatableSprayGun. FH1's only three (sets clrd_festival_plns_animated_objects_004_1 to _3) stand under the ground 5 km
 # out, 3.7 km west of the plains festival site, hidden in FH1 too. Stood on the ground they are an untextured balloon on a pole, not a ride
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
+# Movers: kinds whose travel fh1Extras.lua plays instead of the shape, so their sprays and sounds can follow them. A shape's own animation runs on a
+# clock Lua can't read. The vehicles (VEHICLES) all move this way, and of RIDES and STANDALONE these. A mover's shape keeps only its parts' motion
+# relative to its largest moving part (the body), such as the propeller, whose phase doesn't show. MOVER_KEY: seconds between Lua's keys
+MOVERS = {'cropduster', 'planebanner'}; MOVER_KEY = .1
+# Vehicle effect bones (Granny bone name ends) -> the end of the effect the model's tags name for them: the tractor's two rear sprays, the combine's
+# rear sprays, mist and thick dust. Their sprays run while the vehicle moves
+VEHICLE_FX = {'Spray_Right': 'Spray_Rear', 'Spray_Left': 'Spray_Rear', 'Back_Mist': 'Spray_Mist', 'Back_Thick': 'Spray_Thick'}
+# How far away a mover's sprays wake, and its FH1 sound event: FH1 tags ANIM_PlaneBanner_001 with BiPlane_Distant, and the duster is the same biplane
+MOVER_FX_DIST = 600; MOVER_SOUNDS = {'cropduster': 'BiPlane_Distant', 'planebanner': 'BiPlane_Distant'}
+# Ride sounds come from their models' tags (soundscape.TRIGGERS). Loops play while near, as other placed loops do. Of the one-shots, these play now and
+# then, with the shortest and longest wait between in seconds. The rest (the Fan's scoosh up and down, NoFear's whine) are timed to the ride's motion,
+# whose clock Lua can't see, so they are left out
+RIDE_SHOTS = {'TRG_Screams_Oneshot': (6, 16), 'VFX_HotAirBalloon': (5, 15)}
 EULER = ('ZYX', 'XYZ', 'YXZ', 'YZX', 'ZXY', 'XZY')
 PLAIN = (.55, .55, .55, 1)            # draws whose colour slot is empty
 GLOW_NITS = 3000                      # ride bulbs at night, as build3.py's lamp glass
@@ -419,7 +432,7 @@ out = level / 'art' / 'shapes' / 'fh1_anim'; out.mkdir(parents=True, exist_ok=Tr
 for old in out.glob('*'):
     old.unlink()
 rel = f'/levels/{LVL}/art/shapes/fh1_anim'
-rows = []; world = mission.rows(mg / 'fh1' / 'items.level.json'); was = {o.get('name'): o.get('shapeName') for o in world}
+rows = []; movers = []; ride_sounds = {}; world = mission.rows(mg / 'fh1' / 'items.level.json'); was = {o.get('name'): o.get('shapeName') for o in world}
 for kind, w in OBJECTS.items():
     src = level / 'art' / 'shapes' / 'fh1' / f"{w['shape']}.dae"
     if not src.exists():          # a chunk such as Red Rock has none of this kind
@@ -457,6 +470,55 @@ for kind, w in OBJECTS.items():
         rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_fan_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}_fan_{int(rng.integers(len(w['turns'])))}.dae', 'position': [round(float(v), 3) for v in at],
                      'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
     print(kind, len(places), 'placed', [[round(float(v)) for v in (p[0] if p[0] is not None else p[2])] for p in places][:8])
+def lua_quat(R):
+    """rotations (n, 3, 3) as BeamNG's LuaQuat x, y, z, w, kept on one side so Lua can blend neighbours. LuaQuat * v turns v by the conjugate of the
+    usual quaternion (mathlib.lua), so this is the conjugate of the rotation's own"""
+    q = Rotation.from_matrix(R).as_quat() * [-1, -1, -1, 1]
+    for k in range(1, len(q)):
+        if q[k] @ q[k - 1] < 0:
+            q[k] = -q[k]
+    return q
+
+
+def mover_keys(p, R):
+    """Lua's keys for a mover: x, y, z and its LuaQuat per key"""
+    return np.round(np.c_[p, lua_quat(R)], 4).tolist()
+
+
+def windows(t, on):
+    """[from, to] spans of t where on holds"""
+    e = np.flatnonzero(np.diff(np.r_[0, on.astype(int), 0]))
+    return [[round(float(t[a]), 2), round(float(t[min(z, len(t) - 1)]), 2)] for a, z in zip(e[::2], e[1::2])]
+
+
+def vehicle_fx(b, p0):
+    """A vehicle's effect bones in its shape's frame: [(effect, offset, direction)]. granny.vertices gives the ANIM mesh with Granny x and +-z as x and y
+    and height as z; the sign is the one that puts the wheel bones among the mesh's vertices. The catalog mesh the shape is made of is that mesh, turned
+    half round about up or not (the combine is), and moved: both are fitted. Checked against the combine's reel, which lands 0.1 m from its hub"""
+    tagged = sorted({x.decode() for x in re.findall(rb'Particles emitterType=(AMB_[A-Za-z0-9_]+)', b)})
+    bones = [(bn['Name'], np.linalg.inv(np.array(bn['InverseWorldTransform'], 'f8').reshape(4, 4))) for s in granny2.File(b).tree()['Skeletons'] for bn in s['Bones']]
+    a_ = granny.vertices(b)[2]; a_ = a_[np.isfinite(a_).all(1)]; wheels = [W[3, :3] for n, W in bones if 'Wheel' in n]
+    L = max((np.array([[1, 0, 0], [0, 0, s_], [0, 1, 0.]]) for s_ in (1, -1)), key=lambda L_: sum(int((np.linalg.norm(a_ - L_ @ w_, axis=1) < 1).sum()) for w_ in wheels))
+    fits = []
+    for R in (np.eye(3), np.diag([-1., -1, 1])):
+        r = a_ @ R.T; t = (p0.min(0) + p0.max(0)) / 2 - (r.min(0) + r.max(0)) / 2
+        fits.append((float(np.median(cKDTree(p0).query(r + t)[0])), R, t))
+    err, R, t = min(fits, key=lambda f: f[0]); M = R @ L; out = []
+    for n, W in bones:
+        end = next((k for k in VEHICLE_FX if n.endswith(k)), None)
+        eff = next((e for e in tagged if end and e.endswith(VEHICLE_FX[end])), None)
+        if eff:
+            y = W[1, :3] / np.linalg.norm(W[1, :3])           # rows are the bone's axes; effects eject along y
+            out.append((eff, M @ W[3, :3] + t, M @ y))
+    print('  effects', [(e, np.round(o, 2).tolist()) for e, o, _ in out], 'mesh fit', round(err, 3), 'm')
+    return out
+
+
+def tag_events(b):
+    """the sound events an ANIM model's tags name: [(event, oneshot)]"""
+    return sorted({(e.decode(), o == b'True') for e, o in re.findall(rb'eventfile=([A-Za-z0-9_]+) oneshot=(True|False)', b)})
+
+
 def inside(r):
     """whether a placement record stands in this level's square"""
     return abs(r[12] - CX) < HALF and abs(r[14] + CZ) < HALF
@@ -488,7 +550,15 @@ for kind, w in VEHICLES.items():
     for name, part in w.get('parts', {}).items():
         hub = np.array(part['hub']); turns = round(t[-1] / part['seconds'])
         parts.append((name, hub, mesh_groups((part['mesh'],)), 360 * turns * times / t[-1]))
-    # FH1's route is flat, so each placement gets its own shape, tilted to the ground under it
+    fx = vehicle_fx(b, p0)
+    # One shape of the body for every placement, and one of each spinning part, which spins about its own x in place. fh1Extras.lua moves them along
+    # FH1's route, tilted to the ground under each placement, from the keys in fh1_movers.json, and the sprays with them
+    write_lod(out / f'{kind}.dae', groups, np.zeros(3), w['lod'], None)
+    for name, hub, pg, spin_ in parts:
+        write_lod(out / f'{kind}_{name}.dae', [(g[0], g[1] - hub) + tuple(g[2:]) for g in pg], np.zeros(3), w['lod'], None)
+        animate(out / f'{kind}_{name}.dae', [('rotationX.ANGLE', 'ANGLE', times, spin_)])
+    key = w.get('key', KEY_SECONDS); grid = np.linspace(0, t[-1], int(round(t[-1] / key)) + 1)
+    rng = np.random.default_rng(len(movers))
     for i, r in enumerate(records(w['group'])):
         pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
         xy = pos[:2] + u[:, :1] * [r[0], r[2]] + u[:, 1:] * [r[8], r[10]]
@@ -500,23 +570,16 @@ for kind, w in VEHICLES.items():
         yaw = np.degrees(np.unwrap(np.radians(yaw)))
         T = ground_triangles(xy.min(0) - 8, xy.max(0) + 8); z, pitch, roll = on_ground(T, xy, yaw)
         x, y = xy.T - pos[:2, None]; z = z - pos[2]
-        path = out / f'{kind}_{i}.dae'
-        write_lod(path, groups, np.zeros(3), w['lod'], None)
-        lo = np.array([x.min() - 6, y.min() - 6, z.min() - 1]); hi = np.array([x.max() + 6, y.max() + 6, z.max() + 6])
-        animate(path, [('location.X', 'X', times, x), ('location.Y', 'Y', times, y), ('location.Z', 'Z', times, z), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
-                       ('rotationY.ANGLE', 'ANGLE', times, roll), ('rotationX.ANGLE', 'ANGLE', times, pitch)], bounds(lo, hi))
-        shapes = [f'{kind}_{i}']
-        # A spinning part turns about its own axis, the vehicle's x, so its pitch and spin add. Its node follows the hub as the vehicle moves and tilts
-        for name, hub, pg, spin_ in parts:
-            ppath = out / f'{kind}_{name}_{i}.dae'
-            write_lod(ppath, [(g[0], g[1] - hub) + tuple(g[2:]) for g in pg], np.zeros(3), w['lod'], None)
-            at = np.array([turn(a, b_, c_) @ hub for a, b_, c_ in zip(yaw, roll, pitch)])
-            animate(ppath, [('location.X', 'X', times, x + at[:, 0]), ('location.Y', 'Y', times, y + at[:, 1]), ('location.Z', 'Z', times, z + at[:, 2]), ('rotationZ.ANGLE', 'ANGLE', times, yaw),
-                            ('rotationY.ANGLE', 'ANGLE', times, roll), ('rotationX.ANGLE', 'ANGLE', times, pitch + spin_)], bounds(lo, hi))
-            shapes.append(f'{kind}_{name}_{i}')
-        for s_ in shapes:
-            rows.append({'class': 'TSStatic', 'name': f'fh1_{s_}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{s_}.dae', 'position': [round(float(v), 3) for v in pos],
-                         'rotationMatrix': [1, 0, 0, 0, 1, 0, 0, 0, 1], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True})
+        # the route on Lua's even keys. The yaw is unwrapped, so it blends through the short way
+        kp = np.c_[[np.interp(grid, times, v) for v in (x, y, z)]].T + pos; R = np.array([turn(*a) for a in zip(*(np.interp(grid, times, v) for v in (yaw, roll, pitch)))])
+        go = np.interp(grid, times, moving.astype(float)) > .5
+        # A spinning part turns about the vehicle's x, so it takes the vehicle's turn and sits at the hub
+        objects = [[f'fh1_{kind}_{i}', 0, 0, 0]] + [[f'fh1_{kind}_{name}_{i}'] + [round(float(v), 3) for v in hub] for name, hub, _, _ in parts]
+        for (o, *off), shape in zip(objects, [kind] + [f'{kind}_{name}' for name, *_ in parts]):
+            rows.append({'class': 'TSStatic', 'name': o, '__parent': 'fh1_anim', 'shapeName': f'{rel}/{shape}.dae', 'position': [round(float(v), 3) for v in kp[0] + R[0] @ off],
+                         'rotationMatrix': [round(float(v), 5) for v in R[0].T.ravel()], 'collisionType': 'None', 'decalType': 'None'})
+        movers.append({'name': f'{kind}_{i}', 'period': round(float(t[-1]), 3), 'phase': round(float(rng.uniform(0, t[-1])), 2), 'keys': mover_keys(kp, R), 'objects': objects,
+                       'fx': [[e, *np.round(o, 3).tolist(), *np.round(d, 4).tolist(), windows(grid, go)] for e, o, d in fx], 'fxDist': MOVER_FX_DIST})
         print(kind, i, [round(float(v)) for v in pos], 'ground follows', round(float(np.ptp(z)), 1), 'm, max pitch', round(float(np.abs(pitch).max()), 1), 'max roll', round(float(np.abs(roll).max()), 1))
 g = ground_samples(); mats_ = {}
 for kind, w in FLYERS.items():
@@ -568,28 +631,47 @@ for kind, model in {**RIDES, **STANDALONE}.items():
     # Granny x, up, z -> BeamNG x, y, up, as an unturned placement converts. That swap mirrors, so faces are turned back.
     # Every part goes in one shape, a write_lod group per material, and each moving part's groups get its own keys
     S = np.eye(4)[[0, 2, 1, 3]]; groups = []; curves = {}; swept = []; n_moving = 0; n_keys = []; route = np.zeros((0, 3))
+    Ts = {sk: S @ W[sk[0]][sk[1]] @ np.linalg.inv(B_[sk[0]][sk[1]]) @ S for sk in parts}
+    moving_ = lambda T: np.abs(T[:, :3, 3] - T[:1, :3, 3]).max() > STILL[0] or np.degrees((Rotation.from_matrix(T[:, :3, :3]) * Rotation.from_matrix(T[0, :3, :3]).inv()).magnitude()).max() > STILL[1]
+    size_ = lambda sk: sum(len(np.unique(t_)) for _, _, t_ in parts[sk])
+    # A mover's body is its largest moving part. Its shape holds the other parts' motion relative to the body, and Lua carries the body
+    root = max((sk for sk in parts if moving_(Ts[sk])), key=size_, default=None) if kind in MOVERS else None
     for (s, k), pieces in sorted(parts.items()):
-        T = S @ W[s][k] @ np.linalg.inv(B_[s][k]) @ S
+        T0 = Ts[(s, k)]; T = np.linalg.inv(Ts[root]) @ T0 if root else T0
         own = []
         for mat, m, t_ in pieces:
             used, inv = np.unique(t_, return_inverse=True); q = (S[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1]
             own.append(((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, t_), m['uv'][used], t_.ravel(), np.zeros((len(q), 2))))
         p = np.concatenate([g[1] for g in own])
-        moves = np.abs(T[:, :3, 3] - T[:1, :3, 3]).max() > STILL[0] or np.degrees((Rotation.from_matrix(T[:, :3, :3]) * Rotation.from_matrix(T[0, :3, :3]).inv()).magnitude()).max() > STILL[1]
+        if len(p) > len(route) and moving_(T0):
+            route = p.mean(0) @ T0[:, :3, :3].transpose(0, 2, 1) + T0[:, :3, 3]
+        moves = moving_(T)
         if not moves or (np.ptp(p, 0).max() < TINY and kind not in SMALL_PARTS):
             groups += [(g[0], (T[0, :3, :3] @ g[1].T).T + T[0, :3, 3], (T[0, :3, :3] @ g[2].T).T) + g[3:] for g in own]
             swept.append((T[0, :3, :3] @ p.T).T + T[0, :3, 3])
             continue
         box = np.array(list(itertools.product(*zip(p.min(0), p.max(0))))); swept.append((np.einsum('nij,kj->nki', T[:, :3, :3], box) + T[:, None, :3, 3]).reshape(-1, 3))
         ix, order, a = keys(T, box); n_keys.append(len(ix)); n_moving += 1
-        if len(p) > len(route):
-            route = p.mean(0) @ T[:, :3, :3].transpose(0, 2, 1) + T[:, :3, 3]
         c = ([(f'location.{c_}', c_, times[ix], T[ix, n, 3]) for n, c_ in enumerate('XYZ')] + [(f'rotation{c_}.ANGLE', 'ANGLE', times[ix], a[:, n]) for n, c_ in enumerate(order)], order)
         curves.update({len(groups) + n: c for n in range(len(own))}); groups += own
     swept = np.concatenate(swept); path = out / f'{kind}.dae'; c = (swept.min(0) + swept.max(0)) / 2
     write_lod(path, groups, np.zeros(3), ride_sizes(np.linalg.norm(np.concatenate([g[1] for g in groups]) - c, axis=1).max()), None)
     if curves:
         animate(path, curves, bounds(swept.min(0) - 2, swept.max(0) + 2))
+    if root:
+        # the body on Lua's even keys, and the effect bones on it ('L_AMB_CropDuster_Spray'). Effects eject along their bone's y axis, which in BeamNG axes is the bone matrix's z column
+        grid = np.linspace(0, dur, int(round(dur / MOVER_KEY)) + 1); W2, B2, _ = animcopy.poses(b, grid)
+        body = S @ W2[root[0]][root[1]] @ np.linalg.inv(B2[root[0]][root[1]]) @ S; fx = []
+        for s, sk in enumerate(granny2.File(b).tree()['Skeletons']):
+            for k, bn in enumerate(sk['Bones']):
+                if 'AMB_' not in bn['Name']:
+                    continue
+                rb_ = np.linalg.inv(body) @ (S @ W2[s][k] @ S); sc = np.abs(np.linalg.det(W2[s][k][:, :3, :3])) ** (1 / 3)
+                # The duster's bones rest at scale 0.18 and swell for about a second three times a lap: the bursts. The plain spray runs throughout
+                on = sc > (sc.min() + sc.max()) / 2 if sc.max() > sc.min() * 1.2 and 'Burst' in bn['Name'] else np.ones(len(grid), bool)
+                d = np.median(rb_[on, :3, 2], 0)
+                fx.append([bn['Name'][bn['Name'].index('AMB_'):], *np.round(np.median(rb_[on, :3, 3], 0), 3).tolist(), *np.round(d / np.linalg.norm(d), 4).tolist(), windows(grid, on)])
+        print('  ', kind, 'moved by Lua,', len(grid), 'keys, effects', [(f[0], f[1:4], len(f[7])) for f in fx])
     for i, r in enumerate(recs):
         # The placement's turn in BeamNG axes: its records convert as S R^T, which is this turn after S
         Rm = S[:3, :3] @ np.array([r[0:3], r[4:7], r[8:11]]).T @ S[:3, :3]; pos = np.array([r[12] - CX, r[14] + CZ, r[13] + LIFT])
@@ -598,12 +680,36 @@ for kind, model in {**RIDES, **STANDALONE}.items():
             low = min(w_[k, 2] - g[i_, 2].max() for k, i_ in enumerate(near) if i_)
             pos[2] += max(FLIGHT_CLEARANCE - low, 0)
             print(kind, i, 'lowest', round(float(low), 1), 'm over the ground within', GROUND_RADIUS, 'm, lifted', round(float(max(FLIGHT_CLEARANCE - low, 0)), 1))
-        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in pos],
-                     'rotationMatrix': [round(float(v), 5) for v in Rm.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True,
+        at_, R_ = pos, Rm
+        if root:
+            kp = pos + body[:, :3, 3] @ Rm.T; kR = Rm @ body[:, :3, :3]; at_, R_ = kp[0], kR[0]
+            sound = soundscape.trigger(MOVER_SOUNDS[kind]) if kind in MOVER_SOUNDS else None
+            movers.append({'name': f'{kind}_{i}', 'period': round(float(dur), 3), 'phase': round(float(np.random.default_rng(i).uniform(0, dur)), 2), 'keys': mover_keys(kp, kR),
+                           'objects': [[f'fh1_{kind}_{i}', 0, 0, 0]], 'fx': fx, 'fxDist': MOVER_FX_DIST,
+                           **({'sound': {'file': sound['files'][0]['file'], 'near': sound['near'], 'far': sound['far'], 'volume': sound['volume']}} if sound else {})})
+        else:
+            for ev in tag_events(b):
+                ride_sounds.setdefault(ev, []).append([round(float(pos[0]), 1), round(float(pos[1]), 1)])
+        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in at_],
+                     'rotationMatrix': [round(float(v), 5) for v in R_.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': not root,
                      **({'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if lit_ else {})})
     print(kind, len(recs), 'placed', [[round(float(v)) for v in (r[12] - CX, r[14] + CZ)] for r in recs][:4], len(parts), 'parts,', n_moving, 'moving,',
           sum(len(t_) for ps in parts.values() for _, _, t_ in ps), 'triangles,', sum(n_keys), 'keys over', round(dur, 1), 's')
 (out / 'main.materials.json').write_text(json.dumps(mats_))
+# Sounds the rides' tags name, as fh1Extras.lua's placed loops and one-shots, and the movers, which fh1Extras.lua carries along their keys.
+# particles.py adds the movers' emitter nodes
+loops = []; shots = []
+for (ev, oneshot), pts in sorted(ride_sounds.items()):
+    if ev not in soundscape.TRIGGERS:          # timed to the ride's motion, or not in the bank
+        continue
+    t_ = soundscape.trigger(ev); pts = [list(p_) for p_ in sorted({tuple(p_) for p_ in pts})]
+    if not oneshot:
+        loops.append({'file': t_['files'][0]['file'], 'near': t_['near'], 'far': t_['far'], 'volume': t_['volume'], 'points': pts})
+    elif ev in RIDE_SHOTS:
+        shots.append({'files': t_['files'], 'near': t_['near'], 'far': t_['far'], 'volume': t_['volume'], 'wait': list(RIDE_SHOTS[ev]), 'points': pts})
+print('ride sounds:', [(Path(l_['file']).stem, len(l_['points'])) for l_ in loops], 'one-shots', [(Path(s_['files'][0]['file']).stem, len(s_['points'])) for s_ in shots],
+      'movers', len(movers), 'with', sum(len(m_['fx']) for m_ in movers), 'effects')
+(level / 'fh1_movers.json').write_text(json.dumps({'loops': loops, 'shots': shots, 'movers': movers}))
 moved = {o['name']: o['shapeName'] for o in world if o.get('shapeName') != was.get(o.get('name'))}
 with mission.edit(mg / 'fh1' / 'items.level.json') as r_:       # water.py edits this file too, while this runs: only the shapes this swapped change
     for o in r_:

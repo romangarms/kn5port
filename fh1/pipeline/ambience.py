@@ -52,4 +52,9 @@ with tempfile.TemporaryDirectory() as tmp:
         for group in soundscape.clips(table).values():
             for stem, sample, bank in group:
                 export(sample, soundscape.bank(bank), stem, tmp, PLACED_RMS); done += 1
+    # The rides', sprinklers', geyser's, fireworks' and aircraft's sounds, which animated.py and particles.py place
+    clips, b = soundscape.trigger_clips()
+    for group in clips.values():
+        for stem, sample in group:
+            export(sample, b, stem, tmp, PLACED_RMS); done += 1
 print('done', done, 'loops ->', out)

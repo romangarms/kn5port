@@ -32,6 +32,52 @@ ONESHOTS = {'dogs': (('Default_Dogs', 'MainTown_Dogs'), 'AMB_Main_Town', r'AMB_D
             'chainsaw': (('RedStone_Chainsaw', 'Foothills_Chainsaw'), 'AMB_Redstone', r'Chainsaw', 50, 420, .35, 18, 45),
             'wind_chimes': (('RedStone_Wind_Chimes',), 'AMB_Redstone', r'AMB_Town_Wind_Chimes', 8, 60, .35, 10, 25)}
 REVERB_TEMPLATES = {'12', '17', '18', '19'}          # tunnel, underpass, multi-storey car park, warehouse in colorado_reverb.xml
+# FH1's triggerable events: sounds that ANIM models name in their bones' tags ("Audio: path=Triggerable_Events/... eventfile=TRG_Fan_Generator
+# oneshot=False"), the rides, sprinklers, geyser, fireworks and aircraft. Triggerable_Events.fev names each event's sound definition and its source
+# .wav, which matches the bank's sample names (cut to 29 characters): event -> sample name pattern
+TRIGGER_BANK = 'Triggerable_Events'
+TRIGGERS = {'TRG_Fan_Generator': r'TRG_Festival_Ride_Fan_Generat', 'TRG_Fan_Whine': r'TRG_Festival_Ride_Fan_Whine_L', 'TRG_NoFear_Generator': r'TRG_Festival_Ride_No_Fear_04',
+            'TRG_Booster_Generator': r'TRG_Festival_Ride_Booster_Gen', 'TRG_Booster_Whine': r'TRG_Festival_Ride_Booster_Whi',
+            'TRG_Screams_Female_Loop': r'Festival_Screams_Female_Loop_', 'TRG_Screams_Loop': r'Crowd_Loop_Long_01', 'TRG_Screams_Oneshot': r'Cheers_Oneshot_0',
+            'VFX_Sprinkler': r'VFX_Sprinkler_01', 'VFX_Geyser': r'VFX_Geyser_01', 'VFX_HotAirBalloon': r'VFX_HotAirBaloon_Fire_01', 'Fireworks_loop': r'Fireworks_loop',
+            'BiPlane_Distant': r'BiPlane_Loop$', 'Helicopter': r'Heli_Loop_Main'}
+# Loudness for the trigger sounds, chosen by ear like PLACED_RMS in ambience.py: one ride shouldn't drown the festival's own loops
+TRIGGER_VOLUME = .7
+
+
+def trigger_distances():
+    """{event: (min, max distance in metres, volume)} from Triggerable_Events.fev. Each event's name is followed 0x30 bytes on by its 3D min and max
+    distance as floats, and 0x8c on by its volume: rides 150 m, sprinklers 65, the geyser 300, fireworks 500, aircraft 250 to 600"""
+    import gamezip
+    b = open(gamezip.MEDIA + f'audio/tracks/colorado/{TRIGGER_BANK}.fev', 'rb').read(); out = {}
+    for m in re.finditer(rb'([A-Za-z_0-9]+)\x00', b):
+        name = m.group(1).decode(); e = m.end()
+        if name in TRIGGERS and name not in out and len(b) > e + 0x90 and struct.unpack('<I', b[m.start() - 4:m.start()])[0] == len(name) + 1:
+            lo, hi = struct.unpack('<2f', b[e + 0x30:e + 0x38]); vol = struct.unpack('<f', b[e + 0x8c:e + 0x90])[0]
+            out[name] = (lo, hi, vol)
+    missing = set(TRIGGERS) - set(out)
+    if missing:
+        raise KeyError(f'events not found in {TRIGGER_BANK}.fev: {sorted(missing)}')
+    return out
+
+
+def trigger_clips():
+    """{event: [(file stem, sample tuple)]} from the triggerable bank, numbered in bank order"""
+    import gamezip
+    b = open(gamezip.MEDIA + f'audio/tracks/colorado/{TRIGGER_BANK}.fsb', 'rb').read(); s = samples(b); out = {}
+    for event, pattern in TRIGGERS.items():
+        found = [x for x in s if re.match(pattern, x[0])]
+        if not found:
+            raise KeyError(f'{event}: nothing in {TRIGGER_BANK} matches {pattern}')
+        out[event] = [(f't_{event.lower()}_{i}', x) for i, x in enumerate(found)]
+    return out, b
+
+
+def trigger(event, level=1.0):
+    """an event in the form fh1Extras.lua plays: files with their lengths, full-volume and silent radii, and volume"""
+    lo, hi, vol = trigger_distances()[event]; clips, _ = trigger_clips()
+    return {'files': [{'file': f'art/sound/fh1/{stem}.ogg', 'seconds': round(s[1] / s[4], 2)} for stem, s in clips[event]],
+            'near': round(max(lo, hi * .1), 1), 'far': round(hi, 1), 'volume': round(min(vol * TRIGGER_VOLUME * level, 1), 2)}
 
 
 def samples(b):

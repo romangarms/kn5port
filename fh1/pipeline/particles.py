@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import animcopy, frame, gamezip, granny2, mission, tex
+import animcopy, frame, gamezip, granny2, mission, soundscape, tex
+from scipy.spatial.transform import Rotation
 from animsets import placed as anim_placed
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
@@ -269,14 +270,42 @@ for model, (dist, when) in SEQUENCES.items():
             k = np.unique(np.concatenate([np.searchsorted(t, np.r_[np.arange(a, z, SEQUENCE_KEY), z]) for a, z in on]).clip(0, len(t) - 1))
             path = [[round(float(t[j]), 2)] + [round(float(v), 2) for v in w[j]] for j in k] if np.ptp(w[k], 0).max() > .5 else None
             nodes_.append([i, [[round(a, 2), round(z, 2)] for a, z in on], path])
-        sequences.append({'x': round(float(pos[0]), 1), 'y': round(float(pos[1]), 1), 'dist': dist, 'period': round(dur, 2), 'phase': round(float(rng.uniform(0, dur)), 2),
+        sequences.append({'model': model, 'x': round(float(pos[0]), 1), 'y': round(float(pos[1]), 1), 'dist': dist, 'period': round(dur, 2), 'phase': round(float(rng.uniform(0, dur)), 2),
                           'hours': when, 'nodes': nodes_})
     print(model, len(recs), 'placed,', len(bones), 'effects', sorted({b_[0] for b_ in bones}))
+for model, (dist, when) in SEQUENCES.items():
+    # the model's sound, played each loop when its audio bone switches on (the geyser's burst, a firework's launch), else when the first effect does
+    recs = [r for r in anim_placed(model) if max(abs(r[12] - CX), abs(r[14] + CZ)) < HALF]
+    if not recs:
+        continue
+    b = animcopy.find(model); events = [e.decode() for e in re.findall(rb'eventfile=([A-Za-z0-9_]+)', b) if e.decode() in soundscape.TRIGGERS]
+    if not events:
+        continue
+    dur = animcopy.duration(b); t = np.arange(0, dur, 1 / 60); W, _, _ = animcopy.poses(b, t); at = []
+    for s, sk in enumerate(granny2.File(b).tree()['Skeletons']):
+        if 'audio' in sk['Name'].lower():
+            sc = np.abs(np.linalg.det(W[s][0][:, :3, :3])) ** (1 / 3)
+            if sc.max() > sc.min() * 1.2:
+                at = [round(float(t[i]), 2) for i in np.flatnonzero(np.diff((sc > (sc.min() + sc.max()) / 2).astype(int)) > 0) + 1]
+    sound = soundscape.trigger(events[0])
+    for sq in sequences:
+        if sq.get('model') == model:
+            sq['sounds'] = [{**sound, 'at': at or [min(w[0] for n_ in sq['nodes'] for w in n_[1])]}]
+    print(model, 'sound', events[0], 'at', at or 'its first effect')
+# Movers (animated.py's fh1_movers.json): vehicles that fh1Extras.lua carries along their routes, with their sprays' effects, offsets, directions and
+# on-windows. Each spray gets a node, which Lua moves with its vehicle and wakes when near, in its windows and FH1's hours for the effect
+movers_file = level / 'fh1_movers.json'; movers = json.loads(movers_file.read_text()) if movers_file.exists() else None
 blocks = {}; images = set(); amb = {}
-for name in sorted({n[0] for n in seq_nodes}):
+for name in sorted({n[0] for n in seq_nodes} | {f[0] for m in (movers or {}).get('movers', []) for f in m['fx']}):
     r = ambient(name) if name + '.xml' in EFFECT_FILES else None
     if r:
         parts, ed, img, drift, when = r; blocks.update({q['name']: q for q in parts}); blocks[ed['name']] = ed; images.add(img)
+# FH1 ejects some sprays backwards along their axis (the duster's at -2.4 m/s); timing() keeps BeamNG's speed at 0 or more, so movers get a copy that ejects
+# forwards, and their jet is turned round
+for name in sorted({f[0] for m in (movers or {}).get('movers', []) for f in m['fx']}):
+    e = f'fh1ae_{name}'; props = effect(name).find('EmitterProperties') if name + '.xml' in EFFECT_FILES else None
+    if e in blocks and props is not None and attr(props, 'Velocity', 'value') < 0:
+        blocks[e + '_r'] = {**blocks[e], 'name': e + '_r', **timing(1000 / blocks[e]['ejectionPeriodMS'], -attr(props, 'Velocity', 'value'), attr(props, 'Velocity', 'variation'))}
 for name in sorted({p[0] for p in placed}):
     if name + '.xml' in EFFECT_FILES:
         parts, ed, img = datablocks(name); blocks.update({q['name']: q for q in parts}); blocks[ed['name']] = ed; images.add(img)
@@ -318,6 +347,21 @@ for i, (name, w, axis) in enumerate(seq_nodes):
 for s in sequences:
     s['nodes'] = [[names[i]] + rest for i, *rest in s['nodes'] if names[i]]
 (level / 'fh1_sequences.json').write_text(json.dumps(sequences))
+if movers:
+    for m in movers['movers']:
+        for k, f in enumerate(m['fx']):
+            e = f'fh1ae_{f[0]}'; name = f"fh1_mv_{m['name']}_{k}_{label(f[0])}"
+            if e not in blocks:
+                print('no effect for', m['name'], f[0]); f.extend([None, None, None, None]); continue
+            # the jet in the vehicle's frame, as a LuaQuat (animated.py lua_quat): the conjugate of its rotation. FH1's wind lean is left out, as it's in world axes
+            back = e + '_r' in blocks; e = e + '_r' if back else e; R = basis(np.array(f[4:7]) * (-1 if back else 1))
+            q = (Rotation.from_matrix(R).as_quat() * [-1, -1, -1, 1]).round(5).tolist()
+            nodes.append({'name': name, 'class': 'ParticleEmitterNode', '__parent': 'fh1_fx', 'position': [round(float(v), 2) for v in m['keys'][0][:3]], 'dataBlock': 'lightExampleEmitterNodeData1',
+                          'rotationMatrix': [round(float(v), 5) for v in R.ravel()], 'emitter': e, 'active': False})
+            # appended: node name, its LuaQuat in the vehicle's frame, FH1's hours for the effect, particles alive when running
+            f.extend([name, q, hours(effect(f[0])), live(e)])
+    movers_file.write_text(json.dumps(movers))
+    print('movers:', sum(len(m['fx']) for m in movers['movers']), 'spray nodes on', len(movers['movers']), 'vehicles')
 (items.parent / 'fh1_fx').mkdir(exist_ok=True)
 (items.parent / 'fh1_fx' / 'items.level.json').write_text(''.join(json.dumps(n) + '\n' for n in nodes))
 mission.add_groups(items, 'fh1_fx')

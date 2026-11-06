@@ -1,4 +1,4 @@
--- Colorado extras: FH1's regional ambience and placed sounds, nearby particles, the sky for the time of day, fog and bloom by FH1 zone and time,
+-- Colorado extras: FH1's regional ambience and placed sounds, the rides' sounds, vehicles along their routes with their sprays, nearby particles, the sky for the time of day, fog and bloom by FH1 zone and time,
 -- and the current road on the minimap's location line.
 -- Does nothing unless the level ships fh1_extras.json. levelinfo.py writes that file and installs this one.
 
@@ -42,6 +42,8 @@ local targets = {} -- sound file -> volume to fade towards
 local sequences -- fh1_sequences.json: ANIM models' effect bones (the geyser, fireworks), switched and moved on their loops
 local running = {} -- sequences near the camera and in their hours
 local sinceSequences = 0
+local movers -- fh1_movers.json: vehicles carried along FH1's routes (tractors, combines, the crop duster, the banner plane), with their sprays and sounds
+local moverClock = 0
 
 local function deleteSource(entry)
   local sound = scenetree.findObjectById(entry.id)
@@ -193,6 +195,7 @@ local function along(path, t)
 end
 
 local function stopSequence(s)
+  s.lastT = nil
   for _, n in ipairs(s.nodes) do
     if n.on then setAwake(n[1], false) end
     n.on = false
@@ -217,8 +220,22 @@ end
 
 -- Each frame: every node of a running sequence is on during its windows of the loop, and a moving one is put on its path first
 local function playSequences()
+  local cx, cy = core_camera.getPositionXYZ()
   for s in pairs(running) do
     local t = (clock + s.phase) % s.period
+    -- the model's sound at each of its times in the loop: the geyser's burst, a firework's launch
+    if s.sounds and s.lastT and shotsOn then
+      for _, snd in ipairs(s.sounds) do
+        for _, at in ipairs(snd.at) do
+          local crossed = (s.lastT < at and at <= t) or (t < s.lastT and (at > s.lastT or at <= t))
+          if crossed then
+            local volume = level(snd, math.sqrt((cx - s.x) ^ 2 + (cy - s.y) ^ 2))
+            if volume > 0 then playShot(snd, volume) end
+          end
+        end
+      end
+    end
+    s.lastT = t
     for _, n in ipairs(s.nodes) do
       local on = false
       for _, w in ipairs(n[2]) do
@@ -232,6 +249,67 @@ local function playSequences()
       if on ~= n.on then
         setAwake(n[1], on)
         n.on = on
+      end
+    end
+  end
+end
+
+-- A mover's place and turn at its time t: its keys are evenly spaced over its period, as x, y, z and a LuaQuat, blended linearly
+local function moverPose(m, t)
+  local n = #m.keys - 1
+  local f = clamp(t / m.period, 0, 1) * n
+  local i = math.min(math.floor(f), n - 1)
+  local a, b = m.keys[i + 1], m.keys[i + 2]
+  local k = f - i
+  local pos = vec3(a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k)
+  local rot = quat(a[4] + (b[4] - a[4]) * k, a[5] + (b[5] - a[5]) * k, a[6] + (b[6] - a[6]) * k, a[7] + (b[7] - a[7]) * k)
+  rot:normalize()
+  return pos, rot
+end
+
+local function inSpans(spans, t)
+  for _, w in ipairs(spans) do
+    if t >= w[1] and t <= w[2] then return true end
+  end
+  return false
+end
+
+-- Each frame: every mover's objects go to their place on its route, and its sprays follow when near, in their spans of the lap and FH1's hours.
+-- Lua carries these, not the shape's own animation, because nothing can read a shape's animation clock. Sim time, so they stop when paused
+local function updateMovers(dt)
+  moverClock = moverClock + dt
+  local cx, cy = core_camera.getPositionXYZ()
+  local hour = hourNow()
+  for _, m in ipairs(movers.movers) do
+    local t = (moverClock + m.phase) % m.period
+    local pos, rot = moverPose(m, t)
+    m.at = pos
+    for _, o in ipairs(m.objects) do
+      local obj = scenetree.findObject(o[1])
+      if obj then
+        local p = pos + rot * vec3(o[2], o[3], o[4])
+        obj:setPosRot(p.x, p.y, p.z, rot.x, rot.y, rot.z, rot.w)
+      end
+    end
+    local near = (pos.x - cx) ^ 2 + (pos.y - cy) ^ 2 < m.fxDist * m.fxDist
+    for _, f in ipairs(m.fx) do
+      -- f: effect, offset, direction, spans, node name, LuaQuat in the vehicle's frame, FH1's hours, particle count
+      if f[9] then
+        local hours = {}
+        if f[11] then hours[6], hours[7] = f[11][1], f[11][2] end
+        local on = near and inSpans(f[8], t) and inWindow(hours, hour)
+        local node = scenetree.findObject(f[9])
+        if node then
+          if on then
+            local p = pos + rot * vec3(f[2], f[3], f[4])
+            local q = quat(f[10][1], f[10][2], f[10][3], f[10][4]) * rot
+            node:setPosRot(p.x, p.y, p.z, q.x, q.y, q.z, q.w)
+          end
+          if on ~= (f.on == true) then
+            node:setActive(on)
+            f.on = on
+          end
+        end
       end
     end
   end
@@ -387,7 +465,13 @@ local function refresh()
   end
   for _, group in ipairs(data.placedLoops or {}) do
     local volume = level(group, nearest(group, x, y))
-    if volume > 0 then targets[group.file] = volume end
+    if volume > 0 then targets[group.file] = math.max(targets[group.file] or 0, volume) end
+  end
+  for _, m in ipairs(movers and movers.movers or {}) do
+    if m.sound and m.at then
+      local volume = level(m.sound, math.sqrt((x - m.at.x) ^ 2 + (y - m.at.y) ^ 2))
+      if volume > 0 then targets[m.sound.file] = math.max(targets[m.sound.file] or 0, volume) end
+    end
   end
   updateShots(x, y)
 end
@@ -408,6 +492,15 @@ local function start()
   sequences = FS:fileExists(levelDir .. 'fh1_sequences.json') and jsonReadFile(levelDir .. 'fh1_sequences.json') or nil
   running = {}
   sinceSequences = SEQUENCE_SECONDS
+  -- animated.py's ride sounds join the placed loops and one-shots
+  movers = FS:fileExists(levelDir .. 'fh1_movers.json') and jsonReadFile(levelDir .. 'fh1_movers.json') or nil
+  if movers then
+    data.placedLoops = data.placedLoops or {}
+    data.oneshots = data.oneshots or {}
+    for _, l in ipairs(movers.loops or {}) do table.insert(data.placedLoops, l) end
+    for _, s in ipairs(movers.shots or {}) do table.insert(data.oneshots, s) end
+    movers.movers = movers.movers or {}
+  end
   skyBake = nil
   restoreBloom()
   lookZone = nil
@@ -417,8 +510,15 @@ local function start()
   shotsOn = true
 end
 
-local function onUpdate(dtReal)
+local function onUpdate(dtReal, dtSim)
   if not data then return end
+  if movers then
+    local ok, err = pcall(updateMovers, dtSim or dtReal)
+    if not ok then
+      log('E', logTag, tostring(err) .. ', moving vehicles are off')
+      movers.movers = {}
+    end
+  end
   sinceUpdate = sinceUpdate + dtReal
   clock = clock + dtReal
   sinceParticles = sinceParticles + dtReal
