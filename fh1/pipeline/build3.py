@@ -2163,12 +2163,17 @@ STARTER = re.compile('TeamTrailer', re.I)     # each event owns one trailer at i
 
 # Beaumont's parked gondola cabins: animated.py runs both lifts' cabins (ANIM_Cablecars_001 and _002), which ride over the parked ones' spots
 ANIMATED_INSTEAD = re.compile(r'^Gondola_LOD', re.I)
+# Gameplay markers, not scenery. Their records are listed for free roam, but each is owned by a GameObjs.xml gameplay node (event _NODEs,
+# reset points, outposts, gas stations), and FH1 draws them only as markers from game state: Temp_Arrow_Pointer (mesh 6620) is an
+# orange-and-white wedge lying on the road at each node, and Glow_01 (mesh 6509) is a 6 m wide, 17.7 m tall light pillar. The user saw
+# the arrows lying on the road at the festival (2026-11-06)
+MARKER = re.compile(r'^(Temp_Arrow_Pointer|Glow_\d)', re.I)
 
 
 def event_kept(r_, nm_, x, y, z):
     """Event scenery the map needs in free roam"""
     if 0 in r_['lst']:      # listed for route 0, Colorado Free Roam (Tracks id 317), so FH1 shows it in free roam: each event's start pen
-        return True         # (barriers, flags, trailer or outhouses), discount-sign flyers, marker arrows and glows. 21-31 alone are online free roam
+        return True         # (barriers, flags, trailer or outhouses) and discount-sign flyers (gameplay markers go earlier: MARKER). 21-31 alone are online free roam
     if r_['name']:          # an owner is an event id: Events.HorizonEventID in gamedb.slt, or Tracks.DevName
         return bool(STARTER.search(nm_))
     return bool(ALWAYS.search(nm_) or ROADSIDE.search(nm_))
@@ -2185,6 +2190,9 @@ for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
     if ANIMATED_INSTEAD.search(nm_):
         skip['animated instead'] += 1
+        continue
+    if MARKER.search(nm_):
+        skip['gameplay marker'] += 1
         continue
     if (r_['lst'] or r_['name']) and not event_kept(r_, nm_, x, y, z):
         skip['event only'] += 1
@@ -2345,7 +2353,7 @@ def detail_sizes(R_, cat):
 COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
 BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
                    r'(?<![a-z])bin[a-z]?(?![a-z])|bench|table|container|skip|haybale|crate|rack|hoarding|bollard', re.I)
-NOCOL = re.compile(r'rope|BannerSingleLane|Glow_|Arrow_Pointer', re.I)       # festival bunting, 35 m across, above the cars; banners over a lane, whose hull would close it; event marker cards
+NOCOL = re.compile(r'rope|BannerSingleLane', re.I)       # festival bunting, 35 m across, above the cars; banners over a lane, whose hull would close it
 # Placed props go in the forest rather than one TSStatic each: 61k scene objects, each with its own shape instance, against a small record
 # per forest item. Glowing props stay TSStatics for their instance colour, as do the shapes animated.py swaps out (OBJECTS there).
 # FH1_PROPFOREST=0 keeps TSStatics, for comparison

@@ -10,7 +10,8 @@ Implemented in `build3.py` (`event_kept`), using `zonerec.pkl` from `zones.py`. 
 |---|---|---|
 | No owner block | Buildings, telegraph poles, outpost tent | Yes |
 | Block, empty list, no owner | Signs, fences, bins, snow poles | Yes |
-| List includes byte 0 | Each event's start pen (owner `FR22_01` and so on: about 30 `OBJ_FEST_BarrierMetal`, 4 flags, the `TeamTrailer` or 2 outhouses), the 100 `flyer_` discount signs, `Temp_Arrow_Pointer` and `Glow_01` at event and gas-station markers, banners, cones, signs | Yes: 1,887 placements more on the whole map than before |
+| List includes byte 0 | Each event's start pen (owner `FR22_01` and so on: about 30 `OBJ_FEST_BarrierMetal`, 4 flags, the `TeamTrailer` or 2 outhouses), the 100 `flyer_` discount signs, banners, cones, signs | Yes: 1,718 placements more on the whole map than before |
+| Gameplay marker models (`MARKER`): `Temp_Arrow_Pointer` (mesh 6620), `Glow_01` (mesh 6509) | Arrows and light pillars at GameObjs.xml nodes | Never, in free roam or race prefabs |
 | List of race routes only | Food trucks, RVs, cones, tyre stacks, grandstands | No, except flower holders and barriers (`ALWAYS`, `ROADSIDE`). They go in their route's race prefab (below) |
 | List of 21-31 only | 20 records | No: online free roam only |
 | Owner name, no byte 0 | `BF_..._OPEN`, speed camera markers, reset points | No, except `TeamTrailer` |
@@ -19,9 +20,11 @@ Extra filters: names matching `NOUSE`, `PLANT_RE` (plants come from `.pgeo`), an
 
 **Which free roam:** `Tracks` id 317 `ColoradoFreeRoam` has RouteId 0, `DevOnly` 0 and `VisibleInMP` 0, and the `FREE_ROAM` event uses route 0. Tracks 1101 to 1111, also `ColoradoFreeRoam`, have RouteIds 21 to 31, `VisibleInMP` 1, `RibbonConfiguration` 5, and a location logo each (Festival, Clear Springs, Gladstone, Eagle Ridge, Beaumont, Carson, Media Center, Red Rock, Finley Dam): online free roam, one per starting location. Of the 152 records listing 21 to 31, 132 also list 0 (the 100 flyers and 32 others), and 20 list only the online routes. Single-player free roam is route 0.
 
-**Collision:** start-pen barriers and flags collide like other props. Discount signs are smashables (no collision), as in FH1. `BannerSingleLane` (lane-wide overhead banners), `Glow_` and `Arrow_Pointer` marker cards have none (`NOCOL`), because a convex hull of an overhead banner would close the road.
+**Gameplay markers (`MARKER`, 2026-11-06):** byte 0 also lists 132 `Temp_Arrow_Pointer` records (90 placements) and 87 `Glow_01` records (79 placements). Each one's owner is a `GameObjs.xml` gameplay node: event `_NODE`s and `_ENDNODE`s, reset points (`e<n>_reset_<n>_resetPos`, `_left`, `_right`), outposts, gas stations, workshops and `CO_Z<n>_*` markers. The arrow is a 1.9 by 3.3 m wedge, 0.85 m high. The glow is a cylinder 6 m wide and 17.7 m tall, FH1's light-pillar marker. FH1 draws these from game state, as route guidance and event markers, not as scenery. The user saw the arrows as orange-and-white blocks lying on the road at the festival, at `FESTIVAL_SECOND_NODE` and `FR66_ENDNODE`, around BeamNG (-655, -99). `build3.py` drops both models before the free-roam and race paths split, so they appear nowhere.
 
-**Near the driving line:** 44 of the new placements are within 3 m of a `colorado.nav` centre line. They are 14 overhead lane banners on festival roads, 11 `Glow_01` and 7 `Temp_Arrow_Pointer` at gameplay markers (`CO_Z<n>_FR<n>`, `GASSTATION_00<n>_DISCOVERY`, event `_NODE`s), 5 flyers, and 7 props at two spots: 3 tables and a bin at (2580, 1160) and 2 `O_Undamaged` at (-3580, 931), in BeamNG coordinates. All are kept.
+**Collision:** start-pen barriers and flags collide like other props. Discount signs are smashables (no collision), as in FH1. `BannerSingleLane`, the lane-wide overhead banners, has none (`NOCOL`), because a convex hull of an overhead banner would close the road.
+
+**Near the driving line:** 44 of the new placements are within 3 m of a `colorado.nav` centre line. They are 14 overhead lane banners on festival roads, 18 gameplay markers (since removed, see above), 5 flyers, and 7 props at two spots: 3 tables and a bin at (2580, 1160) and 2 `O_Undamaged` at (-3580, 931), in BeamNG coordinates. All are kept.
 
 **Status:** tested in-game around Red Rock only, and the user reported everything looking good there. Not tested on the rest of the map.
 
