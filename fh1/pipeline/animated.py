@@ -597,10 +597,8 @@ for kind, w in VEHICLES.items():
         kp = np.c_[[np.interp(grid, times, v) for v in (x, y, z)]].T + pos; R = np.array([turn(*a) for a in zip(*(np.interp(grid, times, v) for v in (yaw, roll, pitch)))])
         go = np.interp(grid, times, moving.astype(float)) > .5
         # A spinning part turns about the vehicle's x, so it takes the vehicle's turn and sits at the hub
-        objects = [[f'fh1_{kind}_{i}', 0, 0, 0]] + [[f'fh1_{kind}_{name}_{i}'] + [round(float(v), 3) for v in hub] for name, hub, _, _ in parts]
-        for (o, *off), shape in zip(objects, [kind] + [f'{kind}_{name}' for name, *_ in parts]):
-            rows.append({'class': 'TSStatic', 'name': o, '__parent': 'fh1_anim', 'shapeName': f'{rel}/{shape}.dae', 'position': [round(float(v), 3) for v in kp[0] + R[0] @ off],
-                         'rotationMatrix': [round(float(v), 5) for v in R[0].T.ravel()], 'collisionType': 'None', 'decalType': 'None'})
+        # name, offset, shape: fh1Extras.lua creates these TSStatics, as stock creates the ones it moves (MOVERS)
+        objects = [[f'fh1_{kind}_{i}', 0, 0, 0, f'{rel}/{kind}.dae']] + [[f'fh1_{kind}_{name}_{i}'] + [round(float(v), 3) for v in hub] + [f'{rel}/{kind}_{name}.dae'] for name, hub, _, _ in parts]
         movers.append({'name': f'{kind}_{i}', 'period': round(float(t[-1]), 3), 'phase': round(float(rng.uniform(0, t[-1])), 2), 'keys': mover_keys(kp, R), 'objects': objects,
                        'fx': [[e, *np.round(o, 3).tolist(), *np.round(d, 4).tolist(), windows(grid, go)] for e, o, d in fx], 'fxDist': MOVER_FX_DIST})
         print(kind, i, [round(float(v)) for v in pos], 'ground follows', round(float(np.ptp(z)), 1), 'm, max pitch', round(float(np.abs(pitch).max()), 1), 'max roll', round(float(np.abs(roll).max()), 1))
@@ -646,7 +644,7 @@ for kind, model in {**RIDES, **STANDALONE}.items():
             continue
         tri_bone = m['bones'][m['idx'][:, 0]] if m['skin'] else np.full(m['T'], m['bone'])
         for slots, first, count in m['segs']:
-            mat = ride_material(tl, slots[0], saved, slots[2], kind in RIGS); lit_ = lit_ or '_g' in mat or mat.endswith('_add')
+            mat = ride_material(tl, slots[0], saved, slots[2], kind in RIGS); lit_ = lit_ or '_g' in mat
             for k in np.unique(tri_bone[first:first + count]):
                 t_ = m['idx'][first:first + count][tri_bone[first:first + count] == k]
                 parts.setdefault((m['model'], int(k)), []).append((mat, m, t_))
@@ -677,10 +675,21 @@ for kind, model in {**RIDES, **STANDALONE}.items():
         ix, order, a = keys(T, box); n_keys.append(len(ix)); n_moving += 1
         c = ([(f'location.{c_}', c_, times[ix], T[ix, n, 3]) for n, c_ in enumerate('XYZ')] + [(f'rotation{c_}.ANGLE', 'ANGLE', times[ix], a[:, n]) for n, c_ in enumerate(order)], order)
         curves.update({len(groups) + n: c for n in range(len(own))}); groups += own
-    swept = np.concatenate(swept); path = out / f'{kind}.dae'; c = (swept.min(0) + swept.max(0)) / 2
-    write_lod(path, groups, np.zeros(3), ride_sizes(np.linalg.norm(np.concatenate([g[1] for g in groups]) - c, axis=1).max()), None)
-    if curves:
-        animate(path, curves, bounds(swept.min(0) - 2, swept.max(0) + 2))
+    swept = np.concatenate(swept); c = (swept.min(0) + swept.max(0)) / 2
+    sizes_ = ride_sizes(np.linalg.norm(np.concatenate([g[1] for g in groups]) - c, axis=1).max())
+    # A light rig's beams and glows (the '_add' sprites) go in their own shape, kind_beams, standing in fh1_rig_beams, which fh1Extras.lua hides by day as it
+    # hides the night overlays: drawn by day, they showed as pale rays over the main stage although their emissive was off
+    beams = [n for n, g_ in enumerate(groups) if kind in RIGS and g_[0][0].endswith('_add')]
+    glows = any('_g' in g_[0][0] for n, g_ in enumerate(groups) if n not in beams)       # bulbs and lamp lenses lit by a glow mask
+    shapes_ = [('', 'fh1_anim', glows)] + ([('_beams', 'fh1_rig_beams', True)] if beams else [])
+    for suffix, keep in (('', [n for n in range(len(groups)) if n not in beams]), ('_beams', beams)):
+        if not keep:
+            continue
+        path = out / f'{kind}{suffix}.dae'
+        write_lod(path, [groups[n] for n in keep], np.zeros(3), sizes_, None)
+        cv = {j: curves[n] for j, n in enumerate(keep) if n in curves}
+        if cv:
+            animate(path, cv, bounds(swept.min(0) - 2, swept.max(0) + 2))
     if root:
         # the body on Lua's even keys, and the effect bones on it ('L_AMB_CropDuster_Spray'). Effects eject along their bone's y axis, which in BeamNG axes is the bone matrix's z column
         grid = np.linspace(0, dur, int(round(dur / MOVER_KEY)) + 1); W2, B2, _ = animcopy.poses(b, grid)
@@ -708,14 +717,15 @@ for kind, model in {**RIDES, **STANDALONE}.items():
             kp = pos + body[:, :3, 3] @ Rm.T; kR = Rm @ body[:, :3, :3]; at_, R_ = kp[0], kR[0]
             sound = soundscape.trigger(MOVER_SOUNDS[kind]) if kind in MOVER_SOUNDS else None
             movers.append({'name': f'{kind}_{i}', 'period': round(float(dur), 3), 'phase': round(float(np.random.default_rng(i).uniform(0, dur)), 2), 'keys': mover_keys(kp, kR),
-                           'objects': [[f'fh1_{kind}_{i}', 0, 0, 0]], 'fx': fx, 'fxDist': MOVER_FX_DIST,
+                           'objects': [[f'fh1_{kind}_{i}', 0, 0, 0, f'{rel}/{kind}.dae']], 'fx': fx, 'fxDist': MOVER_FX_DIST,
                            **({'sound': {'file': sound['files'][0]['file'], 'near': sound['near'], 'far': sound['far'], 'volume': sound['volume']}} if sound else {})})
-        else:
-            for ev in tag_events(b):
-                ride_sounds.setdefault(ev, []).append([round(float(pos[0]), 1), round(float(pos[1]), 1)])
-        rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}_{i}', '__parent': 'fh1_anim', 'shapeName': f'{rel}/{kind}.dae', 'position': [round(float(v), 3) for v in at_],
-                     'rotationMatrix': [round(float(v), 5) for v in R_.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': not root,
-                     **({'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if lit_ else {})})
+            continue
+        for ev in tag_events(b):
+            ride_sounds.setdefault(ev, []).append([round(float(pos[0]), 1), round(float(pos[1]), 1)])
+        for suffix, parent, lit in shapes_:
+            rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}{suffix}_{i}', '__parent': parent, 'shapeName': f'{rel}/{kind}{suffix}.dae', 'position': [round(float(v), 3) for v in at_],
+                         'rotationMatrix': [round(float(v), 5) for v in R_.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True,
+                         **({'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if lit else {})})
     print(kind, len(recs), 'placed', [[round(float(v)) for v in (r[12] - CX, r[14] + CZ)] for r in recs][:4], len(parts), 'parts,', n_moving, 'moving,',
           sum(len(t_) for ps in parts.values() for _, _, t_ in ps), 'triangles,', sum(n_keys), 'keys over', round(dur, 1), 's')
 (out / 'main.materials.json').write_text(json.dumps(mats_))
@@ -738,9 +748,10 @@ with mission.edit(mg / 'fh1' / 'items.level.json') as r_:       # water.py edits
     for o in r_:
         if o.get('name') in moved:
             o['shapeName'] = moved[o['name']]
-(mg / 'fh1_anim').mkdir(exist_ok=True)
-(mg / 'fh1_anim' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows))
-mission.add_groups(items, 'fh1_anim')
+for grp in ('fh1_anim', 'fh1_rig_beams'):
+    (mg / grp).mkdir(exist_ok=True)
+    (mg / grp / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in rows if o['__parent'] == grp))
+mission.add_groups(items, 'fh1_anim', 'fh1_rig_beams')
 (level / 'fh1_animated.json').unlink(missing_ok=True)
 if (level / 'art' / 'textures_ungraded').exists():       # grade.py already ran: grade the new textures too. It grades from ungraded copies, so rerunning is safe
     subprocess.run([sys.executable, 'grade.py', LVL], check=True)

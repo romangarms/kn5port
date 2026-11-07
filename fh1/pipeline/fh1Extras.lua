@@ -274,6 +274,39 @@ local function inSpans(spans, t)
   return false
 end
 
+-- The movers' TSStatics, made here as stock makes the ones it moves (groundMarkerArrows, directionMarker): instance render data on, not saved with the level
+local MOVER_GROUP = 'fh1_movers_live'
+local function deleteMovers()
+  local group = scenetree.findObject(MOVER_GROUP)
+  if group then group:deleteAllObjects(); group:delete() end
+end
+
+local function createMovers()
+  deleteMovers()
+  local group = createObject('SimGroup')
+  group.canSave = false
+  group:registerObject(MOVER_GROUP)
+  local made = 0
+  for _, m in ipairs(movers.movers) do
+    local pos, rot = moverPose(m, m.phase % m.period)
+    for _, o in ipairs(m.objects) do
+      local obj = createObject('TSStatic')
+      obj:setField('shapeName', 0, o[5])
+      obj.useInstanceRenderData = true
+      obj:setField('collisionType', 0, 'None')
+      obj:setField('decalType', 0, 'None')
+      obj.canSave = false
+      local p = pos + rot * vec3(o[2], o[3], o[4])
+      obj:setPosRot(p.x, p.y, p.z, rot.x, rot.y, rot.z, rot.w)
+      obj:registerObject(o[1])
+      group:addObject(obj)
+      o.id = obj:getId()
+      made = made + 1
+    end
+  end
+  log('I', logTag, 'movers: ' .. made .. ' objects on ' .. #movers.movers .. ' routes')
+end
+
 -- Each frame: every mover's objects go to their place on its route, and its sprays follow when near, in their spans of the lap and FH1's hours.
 -- Lua carries these, not the shape's own animation, because nothing can read a shape's animation clock. Sim time, so they stop when paused
 local function updateMovers(dt)
@@ -285,10 +318,12 @@ local function updateMovers(dt)
     local pos, rot = moverPose(m, t)
     m.at = pos
     for _, o in ipairs(m.objects) do
-      local obj = scenetree.findObject(o[1])
+      local obj = o.id and scenetree.findObjectById(o.id)
       if obj then
         local p = pos + rot * vec3(o[2], o[3], o[4])
         obj:setPosRot(p.x, p.y, p.z, rot.x, rot.y, rot.z, rot.w)
+        -- a TSStatic draws from its instance data, which only this refreshes: without it setPosRot moves nothing on screen (stock groundMarkerArrows)
+        obj:updateInstanceRenderData()
       end
     end
     local near = (pos.x - cx) ^ 2 + (pos.y - cy) ^ 2 < m.fxDist * m.fxDist
@@ -319,17 +354,22 @@ end
 -- stock core_environment's nightEmissive switch, which makes them glow. Only does work when day turns to night or back
 local NIGHT_FROM, NIGHT_TO = 18, 6
 local nightShown = nil
+-- The light rigs' beams and glows (animated.py, fh1_rig_beams) too: their additive sprites drew pale rays by day although their emissive was off
+local NIGHT_GROUPS = { 'fh1_night', 'fh1_rig_beams' }
 local function updateNightLights()
   local hour = hourNow()
   if not hour then return end
   local show = hour >= NIGHT_FROM or hour < NIGHT_TO
   if show == nightShown then return end
-  local group = scenetree.findObject('fh1_night')
-  if not group then return end
   nightShown = show
-  for i = 0, group:getCount() - 1 do
-    local obj = group:getObject(i)
-    if obj then obj:setHidden(not show) end
+  for _, name in ipairs(NIGHT_GROUPS) do
+    local group = scenetree.findObject(name)
+    if group then
+      for i = 0, group:getCount() - 1 do
+        local obj = group:getObject(i)
+        if obj then obj:setHidden(not show) end
+      end
+    end
   end
 end
 
@@ -500,6 +540,11 @@ local function start()
     for _, l in ipairs(movers.loops or {}) do table.insert(data.placedLoops, l) end
     for _, s in ipairs(movers.shots or {}) do table.insert(data.oneshots, s) end
     movers.movers = movers.movers or {}
+    local ok, err = pcall(createMovers)
+    if not ok then
+      log('E', logTag, tostring(err) .. ', moving vehicles are off')
+      movers.movers = {}
+    end
   end
   skyBake = nil
   restoreBloom()
@@ -579,6 +624,7 @@ local function onUpdate(dtReal, dtSim)
 end
 
 local function onClientEndMission()
+  pcall(deleteMovers)
   pcall(restoreBloom)
   data = nil
   stopAmbience()
