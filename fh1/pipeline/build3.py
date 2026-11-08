@@ -9,7 +9,7 @@ from numba import njit
 from scipy import ndimage as ni
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
-import colfit, dds, frame, hexzones, rmb, tex, xenos
+import colfit, dds, frame, gamepath, hexzones, rmb, tex, xenos
 from daewrite import FARCUT, SKIPMID, has_col, write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng, donor
@@ -2104,7 +2104,7 @@ for bb, A, meshes, G in files:
         o_ += cnt
 lap('placed models')
 # --- CollObjs: smashable scenery
-RT0 = 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/'
+RT0 = gamepath.RIBBON
 col = open(RT0 + 'CollObjs.xml', errors='replace').read()
 pc = (r'PhysicsType="([^"]+?)\.\d+\.rmb"[^>]*>\s*<Pos x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>\s*<Orientation>\s*'
       r'<XAxis x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>\s*<YAxis x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>\s*<ZAxis x="([-\d.e]+)" y="([-\d.e]+)" z="([-\d.e]+)"/>')
@@ -2481,7 +2481,7 @@ pickle.dump(dict(world=sorted(int(c['f'].split('.')[1]) for c in sel), placed=so
 print('solid types', collections.Counter(re.sub(r'_?\d+$', '', k) for k in SOLIDS).most_common(30))
 print('shapes', len(items), 'materials', len(MATS), 'textures', sum(1 for v in TX.info.values() if v), 'missing textures', len(TX.missing))
 
-RT = 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/'
+RT = gamepath.RIBBON
 pat = (r"route_checkpoint_\d+'[^>]*>\s*<Transform pos\.x='([-\d.]+)' pos\.y='([-\d.]+)' pos\.z='([-\d.]+)' "
        r"facing\.x='([-\d.e]+)' facing\.y='[-\d.e]+' facing\.z='([-\d.e]+)'")
 bestr = None

@@ -19,11 +19,14 @@ Extracted files, captures and generated levels live in `fh1/` and stay local. Co
 
 ## Running it
 
+The easy way is the kn5port app's **Forza Horizon 1** tab (`kn5port-app`, needs `pip install .[app,fh1]`): it takes a GOD package, an ISO or extracted files, runs the steps below into a work folder, and checks ffmpeg, disk space and that BeamNG is closed first. See [the main README](../README.md#forza-horizon-1).
+
+By hand:
+
 ```
 cd fh1/pipeline
-clang -O2 -fno-builtin -ffreestanding -fno-stack-protector -mno-stack-arg-probe -c lzx.c -o lzx.o
-lld-link -dll -noentry -nodefaultlib -export:lzx_decode -out:lzx.dll lzx.o      # MSYS_NO_PATHCONV=1 in Git Bash
-python prepare.py                     # about 3 minutes, FH1_DUMP overrides the dump path
+echo D:/path/to/FH1 > ../dump_path.txt     # the folder holding default.xex and media/ (or set FH1_DUMP)
+python prepare.py                     # about 3 minutes
 python buildq.py submit -m "what changed" --by <session> --chunk colorado   # queue a build: the way to build when other sessions may be editing
 python buildq.py status               # running, queued and recent builds, with notes and changed files
 FH1_CHUNK=colorado python build3.py   # whole map, 3.2 GB, 7 minutes, 4 GB of RAM. Default chunk is redrock
@@ -42,7 +45,14 @@ python grass.py fh1_colorado          # FH1 grass, reeds, flowers and corn as fo
 python nightlights.py fh1_colorado    # Prototype: Carson's night lightmaps as glowing overlays, switched by stock core_environment. Run the same way
 ```
 
-The build writes to `mods/unpacked/<level>`, or pass an output folder. Then fully restart BeamNG. Python needs numpy, scipy, numba, pillow.
+The game's zips are XMem LZX. `lzxdec.py` decodes them with `lzx.dll` when it's built, else with a numba port of `lzx.c` (same output, checked by CRC). The DLL is a bit faster:
+
+```
+clang -O2 -fno-builtin -ffreestanding -fno-stack-protector -mno-stack-arg-probe -c lzx.c -o lzx.o
+lld-link -dll -noentry -nodefaultlib -export:lzx_decode -out:lzx.dll lzx.o      # MSYS_NO_PATHCONV=1 in Git Bash
+```
+
+The build writes to `mods/unpacked/<level>` (`KN5PORT_MODS` overrides the mods folder), or pass an output folder. Then fully restart BeamNG. Python needs numpy, scipy, numba, pillow, and ffmpeg on PATH.
 
 ## Status
 

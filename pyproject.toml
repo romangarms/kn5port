@@ -20,9 +20,12 @@ kn5port-app = "kn5port.app:main"
 
 [project.optional-dependencies]
 app = ["pywebview>=5"]
+fh1 = ["scipy>=1.8", "numba>=0.57"]
 
 [tool.setuptools]
-packages = ["kn5port", "kn5port.ui"]
+packages = ["kn5port", "kn5port.ui", "kn5port.fh1_pipeline"]
+package-dir = { "kn5port" = "kn5port", "kn5port.fh1_pipeline" = "fh1/pipeline" }
 
 [tool.setuptools.package-data]
 "kn5port.ui" = ["static/*"]
+"kn5port.fh1_pipeline" = ["*.lua", "lzx.c", "fh1radio_app/*"]

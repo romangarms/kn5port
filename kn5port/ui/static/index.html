@@ -155,17 +155,58 @@ dialog label { font-size: 12px; color: var(--dim); display: block; margin-bottom
 dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; }
 .notice { line-height: 1.55; color: var(--dim); }
 .notice strong { color: var(--text); }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .subopts { grid-template-columns: 1fr; } }
+.tabs { display: flex; gap: 4px; margin-left: 6px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
+.tabs button { background: none; border: 0; border-radius: 6px; padding: 5px 12px; color: var(--dim); font-size: 13px; font-weight: 600; }
+.tabs button.on { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.tabs button:hover:not(.on) { color: var(--text); }
+#fh1View { flex: 1; overflow: auto; min-height: 0; }
+#fh1View[hidden], main[hidden], .chips[hidden] { display: none; }
+.fh { max-width: 940px; margin: 0 auto; padding: 22px 22px 60px; display: flex; flex-direction: column; gap: 18px; }
+.fh .lead { color: var(--dim); max-width: 75ch; margin-top: 4px; }
+.fh h1 small { font-size: 13px; font-weight: 600; color: var(--faint); margin-left: 8px; }
+.numh { display: flex; align-items: center; gap: 10px; }
+.num { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--panel2); color: var(--dim); border: 1px solid var(--line); }
+.num.ok { background: rgba(63,185,124,.16); color: var(--ok); border-color: rgba(63,185,124,.4); }
+.fh .field input { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; outline: none; min-width: 0; }
+.fh .field input:focus { border-color: var(--accent); }
+.srcline { font-size: 13px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.srcline .k { font-weight: 600; }
+.srcline.ok .k { color: var(--ok); }
+.srcline.bad .k { color: var(--bad); }
+a.lnk, button.lnk { color: var(--accent); background: none; border: 0; padding: 0; text-decoration: none; font-size: 13px; }
+a.lnk:hover, button.lnk:hover { text-decoration: underline; }
+.checks { display: flex; flex-direction: column; }
+.ck { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 9px 0; border-top: 1px solid var(--line); }
+.ck:first-child { border-top: 0; padding-top: 0; }
+.ck:last-child { padding-bottom: 0; }
+.ck .ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.ck .ic.ok { background: rgba(63,185,124,.16); color: var(--ok); }
+.ck .ic.warn { background: rgba(232,179,61,.16); color: var(--warn); }
+.ck .ic.bad { background: rgba(239,91,91,.16); color: var(--bad); }
+.ck .ct2 { font-size: 13px; }
+.ck .cd { font-size: 12px; color: var(--dim); margin-top: 2px; overflow-wrap: anywhere; }
+.ck code, .howto code { font-family: var(--mono); font-size: 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.bar { height: 6px; background: var(--panel2); border-radius: 99px; overflow: hidden; margin-top: 10px; }
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.inst { font-size: 11px; color: var(--ok); font-weight: 600; }
+.howto { line-height: 1.55; color: var(--dim); font-size: 13px; }
+.howto h3 { color: var(--text); font-size: 14px; margin: 10px 0 2px; }
+.howto ol, .howto ul { margin: 4px 0; padding-left: 20px; }
+.howto strong { color: var(--text); }
+dialog.wide { width: min(760px, 94vw); }
+dialog.wide .db { max-height: 70vh; overflow: auto; }
+@media (max-width: 900px) { .tabs button { padding: 5px 8px; } main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .subopts { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
   <div class="brand"><img src="/favicon.png" alt=""><span>kn5<b>port</b></span></div>
+  <nav class="tabs" id="tabs"><button data-tab="ac" class="on">Assetto Corsa</button><button data-tab="fh1">Forza Horizon 1</button></nav>
   <div class="chips" id="chips"></div>
   <div class="spacer"></div>
   <button class="iconbtn" id="settingsBtn" title="Folders">⚙ Folders</button>
 </header>
-<main>
+<main id="acView">
   <div id="list">
     <div class="search"><input id="q" placeholder="Search tracks, authors, countries…" autocomplete="off"><span class="count" id="count"></span></div>
     <div class="filters" id="filters"></div>
@@ -174,6 +215,27 @@ dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px so
   </div>
   <div id="detail"><div class="empty">Pick a track to inspect and convert it.</div></div>
 </main>
+<div id="fh1View" hidden><div class="fh" id="fh"></div></div>
+
+<dialog id="howto" class="wide">
+  <div class="dh">Getting your Forza Horizon files</div>
+  <div class="db howto">
+    <p>kn5port converts <strong>Forza Horizon (2012, Xbox 360)</strong> from a copy you own. It comes with no game files and doesn't get around any copy protection. Pick any one of these:</p>
+    <h3>A Games on Demand (GOD) package</h3>
+    <p>The way the game is stored on an Xbox 360 hard drive or USB stick, for the digital version or a disc installed to the drive. Copy the whole title folder off the drive:</p>
+    <ul><li><code>Content\0000000000000000\4D5309C9</code> &nbsp;(4D5309C9 is Forza Horizon's title ID)</li></ul>
+    <p>It holds <code>00007000\&lt;long name&gt;</code> and a <code>&lt;long name&gt;.data</code> folder of <code>Data0000</code>, <code>Data0001</code>… files. Pick the <code>4D5309C9</code> folder, or any folder inside it.</p>
+    <h3>A disc image (.iso)</h3>
+    <p>An image of your own game disc, made with a disc-dumping tool and a compatible drive. Pick the <code>.iso</code> file. Images of the full disc and trimmed images both work.</p>
+    <h3>Extracted files</h3>
+    <p>A folder holding <code>default.xex</code> and <code>media\</code>, for example the folder you run in the Xenia emulator, or the output of <code>extract-xiso</code>.</p>
+    <p>For a GOD package or an ISO, kn5port reads it directly and copies out only what the converter uses (about 4 GB) into its work folder. You don't need to convert anything yourself.</p>
+    <h3>If kn5port can't read your copy</h3>
+    <p>Turn it into extracted files with other tools, then pick that folder: a GOD package with <code>god2iso</code>, then the ISO with <code>extract-xiso -x</code>.</p>
+    <p><strong>Never share converted levels or game files.</strong> The result is for you to drive on this computer.</p>
+  </div>
+  <div class="df"><button class="primary" id="howtoOk">Close</button></div>
+</dialog>
 
 <dialog id="settings">
   <div class="dh">Folders</div>
@@ -189,10 +251,11 @@ dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px so
 <dialog id="notice">
   <div class="dh">Before you convert anything</div>
   <div class="db notice">
-    <p>kn5port converts tracks <strong>you already have</strong> into BeamNG levels on this computer. The result is a derivative of someone else's work, so:</p>
+    <p>kn5port converts tracks and maps <strong>you already have</strong> into BeamNG levels on this computer. The result is a derivative of someone else's work, so:</p>
     <p>• <strong>Never share converted levels</strong> — not as mods, uploads, or in bug reports.<br>
        • <strong>Check each track's license.</strong> Some forbid conversions to other games, even for personal use.<br>
-       • Protected / encrypted tracks are skipped; kn5port doesn't get around protection.</p>
+       • Protected / encrypted tracks are skipped; kn5port doesn't get around protection.<br>
+       • Forza Horizon is converted only from <strong>your own copy</strong> of the game. kn5port includes no game files.</p>
   </div>
   <div class="df"><button class="primary" id="n_ok">I understand</button></div>
 </dialog>
@@ -560,9 +623,224 @@ $("#s_save").addEventListener("click", async () => {
 });
 $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port.ack", "1"); } catch (_) {} $("#notice").close(); });
 
+// ---- Forza Horizon 1 tab ----------------------------------------------------------------------------------
+const fh = { s: null, job: null, chunk: null, radio: null, adv: false, polling: false, loading: false };
+const FH_STAGES = { install: "Install packages", extract: "Copy game files", prepare: "Read map tables", build: "Build level", radio: "Radio mod" };
+const gb = (x) => x == null ? "?" : x >= 100 ? `${Math.round(x)} GB` : `${x.toFixed(1)} GB`;
+const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+function setTab(tab) {
+  state.tab = tab;
+  try { localStorage.setItem("kn5port.tab", tab); } catch (_) {}
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  $("#chips").hidden = tab !== "ac";
+  $("#acView").hidden = tab !== "ac";
+  $("#fh1View").hidden = tab !== "fh1";
+  if (tab === "fh1") fhRefresh();
+}
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) setTab(b.dataset.tab); });
+
+async function fhRefresh() {
+  if (fh.loading) return;
+  fh.loading = true;
+  try {
+    fh.s = await api("/api/fh1/state");
+    if (fh.s.job && (!fh.job || fh.job.id !== fh.s.job.id)) {
+      fh.job = { ...fh.s.job, lines: [] };
+      const full = await api("/api/fh1/job?since=0"); fh.job.lines = full.lines || [];
+    }
+    if (!fh.chunk) fh.chunk = fh.s.job?.chunk || "colorado";
+    if (fh.radio === null) fh.radio = !fh.s.radio;
+    fhRender();
+    if (fh.job && fh.job.status === "running") fhPoll();
+  } catch (e) { $("#fh").innerHTML = `<div class="alert bad">Couldn't read the Forza Horizon state: ${esc(e.message)}</div>`; }
+  finally { fh.loading = false; }
+}
+
+function fhChecks(s) {
+  const c = s.chunks.find((x) => x.key === fh.chunk) || s.chunks[0];
+  const row = (st, title, desc, action = "") => `<div class="ck"><span class="ic ${st}">${st === "ok" ? "✓" : st === "warn" ? "!" : "✕"}</span>
+    <div><div class="ct2">${title}</div>${desc ? `<div class="cd">${desc}</div>` : ""}</div><div>${action}</div></div>`;
+  const out = [];
+  out.push(s.missing_packages.length
+    ? row("bad", "Python packages", `Missing ${s.missing_packages.map(esc).join(", ")}. kn5port can install them into <code>${esc(s.python)}</code>.`,
+        `<button class="secondary" id="fhInstall" ${fhBusy() ? "disabled" : ""}>Install</button>`)
+    : row("ok", "Python packages", "numpy, scipy, numba and Pillow are installed."));
+  out.push(s.ffmpeg ? row("ok", "ffmpeg", esc(s.ffmpeg))
+    : row("bad", "ffmpeg", `Needed for the level's ambient sound and the radio. Install it from a terminal with <code>winget install Gyan.FFmpeg</code>, or from <a class="lnk" href="https://ffmpeg.org/download.html" target="_blank" rel="noopener">ffmpeg.org</a>, then check again.`,
+        `<button class="secondary" data-recheck>Check again</button>`));
+  out.push(s.mods ? row("ok", "BeamNG mods folder", esc(s.mods))
+    : row("bad", "BeamNG mods folder", "Not found. Set it under Folders.", `<button class="secondary" id="fhFolders">Folders</button>`));
+  const needWork = (s.extracted ? 0 : s.need.game) + (s.prepared ? 0 : s.need.prepared);
+  const needMods = c.gb + (fh.radio ? s.need.radio : 0);
+  const sameDrive = s.work.slice(0, 2).toLowerCase() === (s.mods || "").slice(0, 2).toLowerCase();
+  const need = sameDrive ? needWork + needMods : Math.max(needWork, needMods);
+  const free = s.free_gb == null ? null : Math.min(s.free_gb, s.mods_free_gb ?? s.free_gb);
+  out.push(row(free == null || free > needWork + needMods + 2 ? "ok" : free > need + 0.5 ? "warn" : "bad", "Disk space",
+    `${gb(needWork)} for the work folder${s.extracted ? "" : " (game files and map tables)"}, ${gb(needMods)} for the level${fh.radio ? " and radio" : ""}. Free: ${gb(s.free_gb)}${sameDrive ? "" : ` (work folder), ${gb(s.mods_free_gb)} (mods)`}.`));
+  if (s.ram_gb) out.push(row(s.ram_gb >= c.ram + 2 ? "ok" : s.ram_gb >= c.ram ? "warn" : "bad", "Memory",
+    `${c.name} needs about ${c.ram} GB while building; this PC has ${Math.round(s.ram_gb)} GB.${s.ram_gb < c.ram + 2 ? " Close other programs (and BeamNG) first." : ""}`));
+  out.push(row("ok", "Work folder", `<code>${esc(s.work)}</code>. Holds the copied game files and the map tables, so later builds skip those steps.`,
+    `<button class="secondary" data-fhopen="work">Open</button>`));
+  return out.join("");
+}
+
+const fhBusy = () => fh.job && fh.job.status === "running";
+
+function fhJobHtml(j) {
+  if (!j) return "";
+  const steps = (j.stages || []).map((k) => {
+    const i = j.stages.indexOf(k), cur = j.stages.indexOf(j.stage);
+    const cls = j.status === "done" || (cur > i) || j.stage === "done" ? "done" : (k === j.stage && j.status === "running" ? "active" : "");
+    return `<div class="step ${cls}">${esc(FH_STAGES[k] || k)}</div>`;
+  }).join("");
+  let res = "";
+  if (j.status !== "running") {
+    const c = fh.s?.chunks.find((x) => x.key === j.chunk);
+    const head = j.install ? { done: "Installed. The checks above are updated.", failed: "Installing failed (see the log).", cancelled: "Cancelled." }[j.status]
+      : { done: `Built. Fully restart BeamNG, then pick ${c ? `“${c.name}” (${c.level})` : "the level"} from the level list.`,
+          failed: "The build failed (see the log).", cancelled: "Cancelled." }[j.status];
+    const cls = j.status === "done" ? "" : j.status === "cancelled" ? "warn" : "bad";
+    res = `<div class="box result ${cls}" style="margin-top:12px"><p><b>${esc(head)}</b></p>
+      <div class="actions" style="margin-top:8px">${j.status === "done" && !j.install ? `<button class="secondary" data-fhopen="level">Open level folder</button>` : ""}
+      <span class="muted">${Math.floor(j.elapsed / 60)} min ${j.elapsed % 60} s</span></div></div>`;
+  }
+  return `<div class="steps" style="grid-template-columns:repeat(${Math.max(1, (j.stages || []).length)},1fr)">${steps}</div>
+    ${j.progress != null && j.status === "running" ? `<div class="bar"><i style="width:${(j.progress * 100).toFixed(1)}%"></i></div>` : ""}
+    <div class="log" id="fhlog">${esc((j.lines || []).join("\n") || "Starting…")}</div>${res}`;
+}
+
+function fhRender() {
+  const s = fh.s; if (!s) return;
+  const top = $("#fh1View").scrollTop;
+  const src = s.source, srcOk = !!src.kind;
+  const busy = fhBusy();
+  const c = s.chunks.find((x) => x.key === fh.chunk) || s.chunks[0];
+  const steps = srcOk ? [!s.extracted && `copy about ${s.need.game} GB of game files out of the ${src.kind === "god" ? "GOD package" : "ISO"}`,
+    !s.prepared && "read the map's tables (about 3 minutes, once)", `build ${c.name}`, fh.radio && "build the radio mod"].filter(Boolean) : [];
+  $("#fh").innerHTML = `
+    <div><h1>Forza Horizon 1 <small>Colorado → BeamNG</small></h1>
+      <div class="lead">Turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG level: the terrain, roads, buildings, plants, water, lights, races and radio. Everything happens on this computer, for your personal use only.</div></div>
+    ${s.frozen ? `<div class="alert warn">The Forza Horizon converter needs the Python version of kn5port for now: install Python, then <code>pip install kn5port[app,fh1]</code> from a copy of this repository and run <code>kn5port-app</code>.</div>` : ""}
+
+    <section><h2 class="numh"><span class="num ${srcOk ? "ok" : ""}">1</span>Your copy of Forza Horizon</h2>
+      <div class="og">
+        <div class="field"><input type="text" id="fhGame" value="${esc(s.game)}" placeholder="A GOD folder (4D5309C9), an .iso file, or a folder with default.xex and media\\" ${busy ? "disabled" : ""}>
+          <button class="secondary" data-pick="folder" ${busy ? "disabled" : ""}>Folder…</button><button class="secondary" data-pick="file" ${busy ? "disabled" : ""}>ISO file…</button></div>
+        <div class="srcline ${srcOk ? "ok" : s.game ? "bad" : ""}"><span class="k">${srcOk ? "✓ " + esc(src.why) : s.game ? "✕ " + esc(src.why) : "Pick a GOD package, a disc image or extracted files."}</span>
+          ${srcOk && src.kind !== "folder" ? `<span class="muted">${s.extracted ? "Game files already copied." : `kn5port will copy what it needs (about ${s.need.game} GB) into its work folder.`}</span>` : ""}
+          <span class="spacer"></span><button class="lnk" id="fhHowto">How do I get these files?</button></div>
+      </div></section>
+
+    <section><h2 class="numh"><span class="num ok">2</span>What to build</h2>
+      <div class="og"><div class="choices">${s.chunks.map((x) => `
+        <button class="choice ${x.key === fh.chunk ? "on" : ""}" data-chunk="${x.key}" ${busy ? "disabled" : ""}>
+          <span class="ct"><i>${esc(x.name)}</i>${x.key === "colorado" ? '<span class="rec">Recommended</span>' : ""}</span>
+          <span class="pc"><span>${esc(x.desc)}</span><span>${gb(x.gb)} level · <code style="font-size:11px">${esc(x.level)}</code></span>
+          ${s.levels[x.key] ? `<span class="inst">Installed, built ${day(s.levels[x.key])}</span>` : ""}</span></button>`).join("")}
+        </div>
+        <label class="check"><input type="checkbox" id="fhRadio" ${fh.radio ? "checked" : ""} ${busy ? "disabled" : ""}> Also build the FH1 radio mod${s.radio ? " again" : ""}</label>
+        <div class="note" style="margin-top:-6px">A separate mod (fh1_radio, ${gb(s.need.radio)}): FH1's three stations with their DJs, tuned with ] and [, and music when a race starts. It works on any map.</div>
+      </div></section>
+
+    <section><h2 class="numh"><span class="num">3</span>Before you build</h2><div class="box checks">${fhChecks(s)}</div></section>
+
+    <section><h2 class="numh"><span class="num">4</span>Build</h2>
+      <div class="actions">
+        <button class="primary" id="fhGo" ${busy || !srcOk || s.frozen ? "disabled" : ""}>${s.levels[c.key] ? `Build ${esc(c.name)} again` : `Build ${esc(c.name)}`}</button>
+        ${busy ? '<button class="secondary" id="fhCancel">Cancel</button>' : ""}
+        ${!busy && s.levels[c.key] ? '<button class="secondary" data-fhopen="level">Open level folder</button>' : ""}
+        <span class="muted">${busy ? "Working… you can switch tabs; closing kn5port stops the build." : steps.length ? "This will " + steps.join(", then ") + "." : ""}</span>
+      </div>
+      <div class="muted" style="margin-top:8px">BeamNG has to be closed while building: the build replaces the level's files.</div>
+      <div id="fhProblems"></div>
+      <div style="margin-top:14px" id="fhJob">${fhJobHtml(fh.job)}</div>
+      <details class="og" style="margin-top:16px" ${fh.adv ? "open" : ""} id="fhAdv"><summary><span class="og-t">Advanced</span></summary>
+        <div><label class="muted">Work folder (empty for the default: ${esc(s.work_default)})</label>
+          <div class="field" style="margin-top:4px"><input type="text" id="fhWork" value="${esc(s.work === s.work_default ? "" : s.work)}" placeholder="${esc(s.work_default)}" ${busy ? "disabled" : ""}><button class="secondary" data-pick="work" ${busy ? "disabled" : ""}>Browse…</button></div></div>
+        <label class="check"><input type="checkbox" id="fhForce"> Read the map tables again (only after updating kn5port's FH1 scripts)</label>
+      </details>
+    </section>`;
+  $("#fh1View").scrollTop = top;
+  const log = $("#fhlog"); if (log) log.scrollTop = log.scrollHeight;
+}
+
+async function fhSave(body) {
+  try { fh.s = await api("/api/fh1/settings", body); fhRender(); } catch (e) { alert(e.message); }
+}
+
+async function fhPoll() {
+  if (fh.polling) return;
+  fh.polling = true;
+  try {
+    while (fh.job && fh.job.status === "running") {
+      await new Promise((r) => setTimeout(r, 800));
+      let u; try { u = await api(`/api/fh1/job?since=${fh.job.lines.length}`); } catch (_) { continue; }
+      if (!u.id || u.id !== fh.job.id) break;
+      const stageChanged = u.stage !== fh.job.stage || u.status !== fh.job.status || JSON.stringify(u.stages) !== JSON.stringify(fh.job.stages);
+      fh.job.lines.push(...u.lines); Object.assign(fh.job, { status: u.status, stage: u.stage, stages: u.stages, progress: u.progress, elapsed: u.elapsed });
+      if (state.tab !== "fh1") continue;
+      const log = $("#fhlog");
+      if (!stageChanged && log) {
+        const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+        if (u.lines.length) { if (log.textContent === "Starting…") log.textContent = ""; log.textContent += (log.textContent ? "\n" : "") + u.lines.join("\n"); }
+        if (stick) log.scrollTop = log.scrollHeight;
+        const bar = document.querySelector("#fhJob .bar > i"); if (bar && u.progress != null) bar.style.width = (u.progress * 100).toFixed(1) + "%";
+      } else $("#fhJob").innerHTML = fhJobHtml(fh.job), ($("#fhlog") && ($("#fhlog").scrollTop = 1e9));
+    }
+  } finally { fh.polling = false; }
+  await fhRefresh();
+}
+
+$("#fh").addEventListener("click", async (e) => {
+  const t = e.target;
+  const ch = t.closest("[data-chunk]");
+  if (ch && !ch.disabled) { fh.chunk = ch.dataset.chunk; fhRender(); return; }
+  const pick = t.closest("[data-pick]")?.dataset.pick;
+  if (pick) {
+    try {
+      const start = pick === "work" ? $("#fhWork").value || fh.s.work_default : $("#fhGame").value;
+      const r = await api(pick === "file" ? "/api/pick-file" : "/api/pick-folder", { start });
+      if (r.path) await fhSave(pick === "work" ? { fh1_work: r.path } : { fh1_game: r.path });
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const open = t.closest("[data-fhopen]")?.dataset.fhopen;
+  if (open) { api("/api/fh1/open", { what: open, chunk: fh.job?.chunk && open === "level" && fh.job.status === "done" ? fh.job.chunk : fh.chunk }).catch((err) => alert(err.message)); return; }
+  if (t.closest("[data-recheck]")) { fhRefresh(); return; }
+  if (t.id === "fhHowto") { $("#howto").showModal(); return; }
+  if (t.id === "fhFolders") { $("#settingsBtn").click(); return; }
+  if (t.id === "fhCancel") { api("/api/fh1/cancel", {}).catch((err) => alert(err.message)); return; }
+  if (t.id === "fhInstall" || t.id === "fhGo") {
+    try {
+      const body = { chunk: fh.chunk, radio: fh.radio, force_prepare: !!$("#fhForce")?.checked };
+      if (t.id === "fhGo") {
+        const p = await api("/api/fh1/check", body);
+        if (p.problems.length) {
+          $("#fhProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${p.problems.map(esc).join("<br>")}</div>`;
+          return;
+        }
+      }
+      const j = await api(t.id === "fhGo" ? "/api/fh1/build" : "/api/fh1/install", body);
+      fh.job = { ...j, lines: j.lines || [] };
+      fhRender(); fhPoll();
+    } catch (err) { $("#fhProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${esc(err.message)}</div>`; }
+  }
+});
+$("#fh").addEventListener("change", (e) => {
+  if (e.target.id === "fhGame") fhSave({ fh1_game: e.target.value });
+  else if (e.target.id === "fhWork") fhSave({ fh1_work: e.target.value });
+  else if (e.target.id === "fhRadio") { fh.radio = e.target.checked; fhRender(); }
+});
+$("#fh").addEventListener("toggle", (e) => { if (e.target.id === "fhAdv") fh.adv = e.target.open; }, true);
+$("#howtoOk").addEventListener("click", () => $("#howto").close());
+
 (async () => {
   let ack = null; try { ack = localStorage.getItem("kn5port.ack"); } catch (_) {}
   if (!ack) $("#notice").showModal();
+  let tab = "ac"; try { tab = localStorage.getItem("kn5port.tab") || "ac"; } catch (_) {}
+  if (location.hash === "#fh1" || location.hash === "#ac") tab = location.hash.slice(1);
+  if (tab === "fh1") setTab("fh1");
   if (!TOKEN) { $("#grid").innerHTML = '<div class="muted">Open kn5port through <code>kn5port ui</code> (the link it prints includes an access token).</div>'; return; }
   try {
     await refresh();

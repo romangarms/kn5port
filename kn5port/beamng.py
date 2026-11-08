@@ -81,7 +81,9 @@ def find_install(explicit=None):
 
 
 def find_mods(explicit=None):
-    """The user's mods folder: %LOCALAPPDATA%/BeamNG/BeamNG.drive/current/mods on 0.32+, older layouts too."""
+    """The user's mods folder: %LOCALAPPDATA%/BeamNG/BeamNG.drive/current/mods on 0.32+, older layouts too.
+    KN5PORT_MODS overrides it (the app sets it for the FH1 pipeline's scripts)."""
+    explicit = explicit or os.environ.get("KN5PORT_MODS")
     if explicit:
         return Path(explicit)
     local = os.environ.get("LOCALAPPDATA")
