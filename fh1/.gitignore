@@ -1,0 +1,17 @@
+# Whitelist: nothing in fh1/ is tracked unless named here, so game data can't be committed by accident.
+*
+!.gitignore
+!README.md
+!CLAUDE.md
+!docs/
+docs/*
+!docs/*.md
+!pipeline/
+pipeline/*
+!pipeline/*.py
+!pipeline/*.lua
+!pipeline/lzx.c
+!pipeline/fh1radio_app/
+pipeline/fh1radio_app/*
+!pipeline/fh1radio_app/app.js
+!pipeline/fh1radio_app/app.json

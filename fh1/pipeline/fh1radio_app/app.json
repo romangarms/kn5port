@@ -1,0 +1,22 @@
+{
+  "domElement": "<fh1-radio></fh1-radio>",
+  "name": "FH1 Radio",
+  "types": [
+    "ui.apps.categories.utility"
+  ],
+  "description": "Forza Horizon radio on the FH1 levels: station, song and the radio's own volume",
+  "css": {
+    "left": "20px",
+    "top": "120px",
+    "width": "300px",
+    "height": "150px",
+    "min-width": "240px",
+    "min-height": "130px"
+  },
+  "author": "Playground Games (FH1), converted",
+  "version": "0.1",
+  "directive": "fh1Radio",
+  "category": "General",
+  "isAuxiliary": false,
+  "interactive": "yes"
+}
