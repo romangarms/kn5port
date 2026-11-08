@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import beamng, xbox
+from .. import beamng, runtime, xbox
 
 REPO_FH1 = Path(__file__).resolve().parents[2] / "fh1"
 
@@ -45,11 +45,25 @@ PREPARED_FILES = ["ents.json", "list.json", "fnmap.pkl", "cat2.pkl", "pvsrec.pkl
 
 
 def pipeline_src():
-    """the pipeline scripts: the repo's fh1/pipeline, or the copy installed with the package"""
+    """the pipeline scripts: the exe's bundled copy, the repo's fh1/pipeline, or the copy installed with the package"""
+    if runtime.needed():
+        p = Path(getattr(sys, "_MEIPASS", "")) / "fh1_pipeline"
+        return p if (p / "build3.py").exists() else None
     if (REPO_FH1 / "pipeline" / "build3.py").exists():
         return REPO_FH1 / "pipeline"
     p = Path(__file__).resolve().parents[1] / "fh1_pipeline"
     return p if (p / "build3.py").exists() else None
+
+
+def interpreter():
+    """the Python that runs the pipeline: this one, or the exe's private one once it's set up (else None)"""
+    return runtime.python() if runtime.needed() else Path(sys.executable)
+
+
+def missing_packages():
+    if runtime.needed():
+        return []                       # the private Python comes with all of them
+    return [pip for mod, pip in PACKAGES if importlib.util.find_spec(mod) is None]
 
 
 def default_work():
@@ -180,13 +194,14 @@ class FH1:
         for key, lvl, *_ in CHUNKS:
             info = mods / "unpacked" / lvl / "levels" / lvl / "info.json"
             levels[key] = int(info.stat().st_mtime) if info.exists() else 0
-        missing = [pip for mod, pip in PACKAGES if importlib.util.find_spec(mod) is None]
+        py = interpreter()
         return {
             "game": self.settings.get("fh1_game", ""), "work": str(work), "work_default": str(default_work()),
             "source": det, "extracted": bool(game), "prepared": self.prepared(game),
-            "pipeline": bool(pipeline_src()), "frozen": bool(getattr(sys, "frozen", False)),
-            "missing_packages": missing, "python": sys.executable,
-            "ffmpeg": find_ffmpeg(), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
+            "pipeline": bool(pipeline_src()), "missing_packages": missing_packages(), "python": str(py or ""),
+            "runtime": {"needed": runtime.needed(), "ready": bool(py), "mb": runtime.DOWNLOAD_MB,
+                        "dir": str(runtime.root())},
+            "ffmpeg": find_ffmpeg(), "winget": bool(shutil.which("winget")), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
             "ram_gb": _ram_gb(), "mods": str(mods) if str(mods) not in ("", ".") else "",
             "levels": levels, "radio": (mods / "unpacked" / "fh1_radio").exists(),
             "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5]} for c in CHUNKS],
@@ -198,8 +213,8 @@ class FH1:
         """reasons a conversion can't start now"""
         s = self.state()
         out = []
-        if s["frozen"]:
-            out.append("The Forza Horizon converter runs from the Python version of kn5port for now (see the README).")
+        if s["runtime"]["needed"] and not s["runtime"]["ready"]:
+            out.append("Set up Python for the converter first (under Before you build).")
         if not s["pipeline"]:
             out.append("The FH1 pipeline scripts weren't found next to kn5port.")
         if s["missing_packages"]:
@@ -237,12 +252,18 @@ class FH1:
             self.job = Job(self, opts)
             return self.job
 
-    def install_packages(self):
+    def setup_task(self, what):
+        """'python': the packages (pip) or, in the exe, the private Python; 'ffmpeg': ffmpeg through winget"""
         with self.lock:
             if self.busy():
                 raise RuntimeError("a Forza Horizon job is already running")
-            missing = [pip for mod, pip in PACKAGES if importlib.util.find_spec(mod) is None]
-            self.job = Job(self, {"install": missing or ["scipy", "numba"]})
+            if what == "ffmpeg":
+                if not shutil.which("winget"):
+                    raise RuntimeError("winget isn't available: install ffmpeg from ffmpeg.org instead.")
+                task = "ffmpeg"
+            else:
+                task = "runtime" if runtime.needed() else "pip"
+            self.job = Job(self, {"task": task})
             return self.job
 
 
@@ -273,7 +294,7 @@ class Job:
     def view(self, since=0):
         return {"id": self.id, "status": self.status, "stage": self.stage, "stages": self.stages,
                 "progress": self.progress, "lines": self.lines[since:], "next": len(self.lines),
-                "chunk": self.opts.get("chunk"), "install": bool(self.opts.get("install")),
+                "chunk": self.opts.get("chunk"), "task": self.opts.get("task", ""),
                 "elapsed": round((self.ended or time.time()) - self.started)}
 
     def cancel(self):
@@ -306,11 +327,27 @@ class Job:
 
     def _run(self):
         try:
-            if self.opts.get("install"):
-                self.stages = ["install"]; self.stage = "install"
-                self.say(f"Installing {', '.join(self.opts['install'])} into {sys.executable}")
-                self._cmd([sys.executable, "-m", "pip", "install", "--disable-pip-version-check"] + self.opts["install"],
-                          Path.home())
+            task = self.opts.get("task")
+            if task == "pip":
+                pkgs = missing_packages() or [p for _, p in PACKAGES]
+                self.stages = ["python"]; self.stage = "python"
+                self.say(f"Installing {', '.join(pkgs)} into {sys.executable}")
+                self._cmd([sys.executable, "-m", "pip", "install", "--disable-pip-version-check"] + pkgs, Path.home())
+            elif task == "runtime":
+                self.stages = ["python"]; self.stage = "python"
+
+                def prog(x):
+                    self.progress = x
+                runtime.setup(self.say, prog, lambda: self._cancel)
+                self.progress = None
+            elif task == "ffmpeg":
+                self.stages = ["ffmpeg"]; self.stage = "ffmpeg"
+                self.say("Installing ffmpeg (Gyan.FFmpeg) with winget")
+                self._cmd(["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--silent", "--disable-interactivity",
+                           "--accept-source-agreements", "--accept-package-agreements"], Path.home())
+                if not find_ffmpeg():
+                    raise RuntimeError("winget finished, but ffmpeg still isn't found. Restart kn5port and check again.")
+                self.say(f"ffmpeg is at {find_ffmpeg()}")
             else:
                 self._convert()
             if self.status == "running":
@@ -364,13 +401,22 @@ class Job:
             shutil.rmtree(snap)
         shutil.copytree(src, snap, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.o", "*.lib", "*.exp"))
         (work / "dump_path.txt").write_text(str(game).replace("\\", "/") + "\n", encoding="utf8")
-        pkg_root = str(Path(__file__).resolve().parents[2])
+        py_exe = interpreter()
+        if not py_exe:
+            raise RuntimeError("Python for the converter isn't set up yet.")
+        if runtime.needed():      # the private Python imports kn5port from a copy of the exe's bundled sources
+            pkg_root = str(runtime.app_sources(Path(sys._MEIPASS) / "kn5port_src" / "kn5port"))
+        else:
+            pkg_root = str(Path(__file__).resolve().parents[2])
         ff = find_ffmpeg()
         path = os.pathsep.join([str(Path(ff).parent)] * bool(ff) + [os.environ.get("PATH", "")])
-        env = dict(os.environ, PATH=path, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), PYTHONIOENCODING="utf8",
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONSTARTUP")}
+        env.update(PATH=path, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), PYTHONIOENCODING="utf8",
                    PYTHONUNBUFFERED="1", NUMBA_CACHE_DIR=str(work / "numbacache"),
                    PYTHONPATH=os.pathsep.join([pkg_root] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
-        py = [sys.executable, "-u"]
+        if runtime.needed():
+            env["PYTHONNOUSERSITE"] = "1"      # the private Python sees only its own packages
+        py = [str(py_exe), "-u"]
 
         if "prepare" in self.stages:
             self.stage = "prepare"

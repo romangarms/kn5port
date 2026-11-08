@@ -6,7 +6,6 @@ import json, math, os, re, sys
 from pathlib import Path
 import numpy as np
 from numba import njit
-from matplotlib.path import Path as MplPath
 from scipy import ndimage as ni
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
@@ -102,6 +101,17 @@ def simplify(P, tol):
     return P[keep]
 
 
+def in_polygon(q, pts):
+    """even-odd test of points pts (n, 2) against polygon q (m, 2), the rule matplotlib's Path.contains_points uses"""
+    x, y = pts[:, 0], pts[:, 1]; out = np.zeros(len(pts), bool)
+    for a in range(len(q)):
+        (xa, ya), (xb, yb) = q[a], q[(a + 1) % len(q)]
+        span = (ya > y) != (yb > y)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            out ^= span & (x < (xb - xa) * (y - ya) / (yb - ya) + xa)
+    return out
+
+
 def ribbon(N, XY, inset=0.0):
     """which points XY lie on the strip a River draws through nodes N (x, y, z, width): at each node its width across the line through its
     neighbours, joined node to node as quads. inset: metres taken off each side"""
@@ -112,7 +122,7 @@ def ribbon(N, XY, inset=0.0):
         q = np.array([L[i], L[i + 1], R[i + 1], R[i]]); lo_, hi_ = q.min(0), q.max(0)
         k = np.flatnonzero((XY >= lo_).all(1) & (XY <= hi_).all(1))
         if len(k):
-            out[k[MplPath(q).contains_points(XY[k])]] = True
+            out[k[in_polygon(q, XY[k])]] = True
     return out
 
 

@@ -479,7 +479,7 @@ def make_handler(app, port_ref):
                     return self._send(200, {"problems": app.fh1.problems(body)})
                 if u.path in ("/api/fh1/build", "/api/fh1/install"):
                     try:
-                        j = app.fh1.start(body) if u.path == "/api/fh1/build" else app.fh1.install_packages()
+                        j = app.fh1.start(body) if u.path == "/api/fh1/build" else app.fh1.setup_task(body.get("what"))
                     except RuntimeError as e:
                         return self._send(409, {"error": str(e)})
                     return self._send(200, j.view())

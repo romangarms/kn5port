@@ -625,7 +625,7 @@ $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port
 
 // ---- Forza Horizon 1 tab ----------------------------------------------------------------------------------
 const fh = { s: null, job: null, chunk: null, radio: null, adv: false, polling: false, loading: false };
-const FH_STAGES = { install: "Install packages", extract: "Copy game files", prepare: "Read map tables", build: "Build level", radio: "Radio mod" };
+const FH_STAGES = { python: "Set up Python", ffmpeg: "Install ffmpeg", extract: "Copy game files", prepare: "Read map tables", build: "Build level", radio: "Radio mod" };
 const gb = (x) => x == null ? "?" : x >= 100 ? `${Math.round(x)} GB` : `${x.toFixed(1)} GB`;
 const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
@@ -662,13 +662,17 @@ function fhChecks(s) {
   const row = (st, title, desc, action = "") => `<div class="ck"><span class="ic ${st}">${st === "ok" ? "✓" : st === "warn" ? "!" : "✕"}</span>
     <div><div class="ct2">${title}</div>${desc ? `<div class="cd">${desc}</div>` : ""}</div><div>${action}</div></div>`;
   const out = [];
-  out.push(s.missing_packages.length
-    ? row("bad", "Python packages", `Missing ${s.missing_packages.map(esc).join(", ")}. kn5port can install them into <code>${esc(s.python)}</code>.`,
-        `<button class="secondary" id="fhInstall" ${fhBusy() ? "disabled" : ""}>Install</button>`)
+  const dis = fhBusy() ? "disabled" : "";
+  if (s.runtime.needed) out.push(s.runtime.ready ? row("ok", "Python for the converter", `Set up in <code>${esc(s.runtime.dir)}</code>.`)
+    : row("bad", "Python for the converter", `The converter runs on its own copy of Python. kn5port downloads Python 3.12 from python.org and numpy, scipy, numba and Pillow from PyPI (${s.runtime.mb} MB, each checked against a fixed checksum) into <code>${esc(s.runtime.dir)}</code>. Nothing else on your PC changes.`,
+        `<button class="primary" data-setup="python" ${dis}>Set up</button>`));
+  else out.push(s.missing_packages.length
+    ? row("bad", "Python packages", `Missing ${s.missing_packages.map(esc).join(", ")}. kn5port can install them into <code>${esc(s.python)}</code> with pip.`,
+        `<button class="primary" data-setup="python" ${dis}>Install</button>`)
     : row("ok", "Python packages", "numpy, scipy, numba and Pillow are installed."));
   out.push(s.ffmpeg ? row("ok", "ffmpeg", esc(s.ffmpeg))
-    : row("bad", "ffmpeg", `Needed for the level's ambient sound and the radio. Install it from a terminal with <code>winget install Gyan.FFmpeg</code>, or from <a class="lnk" href="https://ffmpeg.org/download.html" target="_blank" rel="noopener">ffmpeg.org</a>, then check again.`,
-        `<button class="secondary" data-recheck>Check again</button>`));
+    : row("bad", "ffmpeg", `Needed for the level's ambient sound and the radio.${s.winget ? " kn5port can install it with winget (the Gyan.FFmpeg package, about 100 MB)." : ""} Or get it from <a class="lnk" href="https://ffmpeg.org/download.html" target="_blank" rel="noopener">ffmpeg.org</a>, then check again.`,
+        `${s.winget ? `<button class="primary" data-setup="ffmpeg" ${dis}>Install</button> ` : ""}<button class="secondary" data-recheck>Check again</button>`));
   out.push(s.mods ? row("ok", "BeamNG mods folder", esc(s.mods))
     : row("bad", "BeamNG mods folder", "Not found. Set it under Folders.", `<button class="secondary" id="fhFolders">Folders</button>`));
   const needWork = (s.extracted ? 0 : s.need.game) + (s.prepared ? 0 : s.need.prepared);
@@ -697,12 +701,12 @@ function fhJobHtml(j) {
   let res = "";
   if (j.status !== "running") {
     const c = fh.s?.chunks.find((x) => x.key === j.chunk);
-    const head = j.install ? { done: "Installed. The checks above are updated.", failed: "Installing failed (see the log).", cancelled: "Cancelled." }[j.status]
+    const head = j.task ? { done: "Done. The checks above are updated.", failed: "Setting up failed (see the log).", cancelled: "Cancelled." }[j.status]
       : { done: `Built. Fully restart BeamNG, then pick ${c ? `“${c.name}” (${c.level})` : "the level"} from the level list.`,
           failed: "The build failed (see the log).", cancelled: "Cancelled." }[j.status];
     const cls = j.status === "done" ? "" : j.status === "cancelled" ? "warn" : "bad";
     res = `<div class="box result ${cls}" style="margin-top:12px"><p><b>${esc(head)}</b></p>
-      <div class="actions" style="margin-top:8px">${j.status === "done" && !j.install ? `<button class="secondary" data-fhopen="level">Open level folder</button>` : ""}
+      <div class="actions" style="margin-top:8px">${j.status === "done" && !j.task ? `<button class="secondary" data-fhopen="level">Open level folder</button>` : ""}
       <span class="muted">${Math.floor(j.elapsed / 60)} min ${j.elapsed % 60} s</span></div></div>`;
   }
   return `<div class="steps" style="grid-template-columns:repeat(${Math.max(1, (j.stages || []).length)},1fr)">${steps}</div>
@@ -721,7 +725,6 @@ function fhRender() {
   $("#fh").innerHTML = `
     <div><h1>Forza Horizon 1 <small>Colorado → BeamNG</small></h1>
       <div class="lead">Turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG level: the terrain, roads, buildings, plants, water, lights, races and radio. Everything happens on this computer, for your personal use only.</div></div>
-    ${s.frozen ? `<div class="alert warn">The Forza Horizon converter needs the Python version of kn5port for now: install Python, then <code>pip install kn5port[app,fh1]</code> from a copy of this repository and run <code>kn5port-app</code>.</div>` : ""}
 
     <section><h2 class="numh"><span class="num ${srcOk ? "ok" : ""}">1</span>Your copy of Forza Horizon</h2>
       <div class="og">
@@ -747,7 +750,7 @@ function fhRender() {
 
     <section><h2 class="numh"><span class="num">4</span>Build</h2>
       <div class="actions">
-        <button class="primary" id="fhGo" ${busy || !srcOk || s.frozen ? "disabled" : ""}>${s.levels[c.key] ? `Build ${esc(c.name)} again` : `Build ${esc(c.name)}`}</button>
+        <button class="primary" id="fhGo" ${busy || !srcOk || (s.runtime.needed && !s.runtime.ready) ? "disabled" : ""}>${s.levels[c.key] ? `Build ${esc(c.name)} again` : `Build ${esc(c.name)}`}</button>
         ${busy ? '<button class="secondary" id="fhCancel">Cancel</button>' : ""}
         ${!busy && s.levels[c.key] ? '<button class="secondary" data-fhopen="level">Open level folder</button>' : ""}
         <span class="muted">${busy ? "Working… you can switch tabs; closing kn5port stops the build." : steps.length ? "This will " + steps.join(", then ") + "." : ""}</span>
@@ -811,9 +814,10 @@ $("#fh").addEventListener("click", async (e) => {
   if (t.id === "fhHowto") { $("#howto").showModal(); return; }
   if (t.id === "fhFolders") { $("#settingsBtn").click(); return; }
   if (t.id === "fhCancel") { api("/api/fh1/cancel", {}).catch((err) => alert(err.message)); return; }
-  if (t.id === "fhInstall" || t.id === "fhGo") {
+  const setup = t.closest("[data-setup]")?.dataset.setup;
+  if (setup || t.id === "fhGo") {
     try {
-      const body = { chunk: fh.chunk, radio: fh.radio, force_prepare: !!$("#fhForce")?.checked };
+      const body = setup ? { what: setup } : { chunk: fh.chunk, radio: fh.radio, force_prepare: !!$("#fhForce")?.checked };
       if (t.id === "fhGo") {
         const p = await api("/api/fh1/check", body);
         if (p.problems.length) {
@@ -821,7 +825,7 @@ $("#fh").addEventListener("click", async (e) => {
           return;
         }
       }
-      const j = await api(t.id === "fhGo" ? "/api/fh1/build" : "/api/fh1/install", body);
+      const j = await api(setup ? "/api/fh1/install" : "/api/fh1/build", body);
       fh.job = { ...j, lines: j.lines || [] };
       fhRender(); fhPoll();
     } catch (err) { $("#fhProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${esc(err.message)}</div>`; }
