@@ -1,0 +1,455 @@
+"""The app's Forza Horizon 1 tab: checks, settings and the conversion job.
+
+A conversion runs the fh1/pipeline scripts as subprocesses, from a copy of the pipeline inside the work folder
+(``<work>/app_pipeline``), because the scripts read and write their data one folder up (``../``):
+
+1. extract   copy the needed game files out of an ISO or GOD package into <work>/game (skipped for a folder)
+2. prepare   prepare.py: decode the map's tables into <work> (once per game copy, about 3 minutes)
+3. build     build3.py and its post-build scripts, into <mods>/unpacked/<level>
+4. radio     radio.py, the separate fh1_radio mod (optional)
+"""
+import ctypes
+import importlib.util
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from .. import beamng, runtime, xbox
+
+REPO_FH1 = Path(__file__).resolve().parents[2] / "fh1"
+
+# key, level, name, what it is, level size on disk in GB, peak RAM in GB
+CHUNKS = [
+    ("colorado", "fh1_colorado", "Whole map", "All of Colorado, 16 km square on a 4 m grid. About 10 minutes.", 3.3, 6),
+    ("redrock", "fh1_redrock", "Red Rock", "4 km around Red Rock on a 2 m grid. A quick test, about 2 minutes.", 0.3, 3),
+    ("clearsprings", "fh1_clearsprings", "Clear Springs", "4 km around Clear Springs on a 2 m grid. About 4 minutes.", 0.5, 3),
+]
+CHUNK = {c[0]: c for c in CHUNKS}
+PACKAGES = [("numpy", "numpy"), ("scipy", "scipy"), ("numba", "numba"), ("PIL", "pillow")]
+GAME_GB = 4.2           # the part of media/ the pipeline reads
+PREPARED_GB = 2.8       # x/, tables, caches
+RADIO_GB = 0.35
+
+# what to copy out of an ISO or GOD package: everything the pipeline opens
+WANT = re.compile(r"^(default\.xex|media/[^/]+\.zip|media/tracks/colorado/.*|media/audio/radio/.*|"
+                  r"media/audio/tracks/colorado/.*|media/db/.*|media/stringtables/.*|media/ui/textures/.*)$", re.I)
+PREPARED_FILES = ["ents.json", "list.json", "fnmap.pkl", "cat2.pkl", "pvsrec.pkl", "mt.npy", "meshtab.pkl",
+                  "texshader.pkl", "reg.json", "zonerec.pkl"]
+
+
+def pipeline_src():
+    """the pipeline scripts: the exe's bundled copy, the repo's fh1/pipeline, or the copy installed with the package"""
+    if runtime.needed():
+        p = Path(getattr(sys, "_MEIPASS", "")) / "fh1_pipeline"
+        return p if (p / "build3.py").exists() else None
+    if (REPO_FH1 / "pipeline" / "build3.py").exists():
+        return REPO_FH1 / "pipeline"
+    p = Path(__file__).resolve().parents[1] / "fh1_pipeline"
+    return p if (p / "build3.py").exists() else None
+
+
+def interpreter():
+    """the Python that runs the pipeline: this one, or the exe's private one once it's set up (else None)"""
+    return runtime.python() if runtime.needed() else Path(sys.executable)
+
+
+def missing_packages():
+    if runtime.needed():
+        return []                       # the private Python comes with all of them
+    return [pip for mod, pip in PACKAGES if importlib.util.find_spec(mod) is None]
+
+
+def default_work():
+    if (REPO_FH1 / "pipeline").exists() and (REPO_FH1 / "x").is_dir():
+        return REPO_FH1                         # a development checkout with its data already prepared
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.local/share")
+    return Path(base) / "kn5port" / "fh1"
+
+
+def _free_gb(p):
+    p = Path(p)
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    try:
+        return shutil.disk_usage(p).free / 2 ** 30
+    except OSError:
+        return None
+
+
+def _ram_gb():
+    if sys.platform != "win32":
+        try:
+            return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2 ** 30
+        except (ValueError, OSError, AttributeError):
+            return None
+
+    class MS(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + \
+                   [(n, ctypes.c_ulonglong) for n in ("total", "avail", "tpf", "apf", "tv", "av", "aev")]
+    m = MS(); m.dwLength = ctypes.sizeof(MS)
+    return m.total / 2 ** 30 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else None
+
+
+def find_ffmpeg():
+    """ffmpeg on PATH, or on the PATH as it is now in the registry (installed after the app started), or winget's"""
+    hit = shutil.which("ffmpeg")
+    if hit or sys.platform != "win32":
+        return hit or ""
+    dirs = []
+    try:
+        import winreg
+        for hive, key in ((winreg.HKEY_CURRENT_USER, r"Environment"),
+                          (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+            try:
+                with winreg.OpenKey(hive, key) as k:
+                    dirs += os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]).split(";")
+            except OSError:
+                pass
+    except ImportError:
+        pass
+    dirs.append(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links"))
+    return shutil.which("ffmpeg", path=os.pathsep.join(d for d in dirs if d)) or ""
+
+
+def beamng_running():
+    if sys.platform != "win32":
+        return False
+    try:
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10,
+                             creationflags=0x08000000).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "beamng.drive" in out
+
+
+def _read_json(p):
+    try:
+        return json.loads(Path(p).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _source_key(det):
+    """identifies a game copy: path plus the size and time of its main file, so a replaced copy is extracted again"""
+    p = Path(det["path"])
+    st = p.stat() if p.exists() else None
+    return f"{det['kind']}|{p}|{st.st_size if st else 0}|{int(st.st_mtime) if st else 0}"
+
+
+class FH1:
+    def __init__(self, settings, save):
+        self.settings = settings
+        self.save = save
+        self.job = None
+        self.lock = threading.Lock()
+
+    # -- settings
+    def work(self):
+        return Path(self.settings.get("fh1_work") or default_work())
+
+    def mods(self):
+        return Path(self.settings.get("mods") or beamng.find_mods() or "")
+
+    def update(self, body):
+        for k in ("fh1_game", "fh1_work"):
+            if k in body:
+                self.settings[k] = str(body[k] or "").strip().strip('"')
+        self.save(self.settings)
+
+    # -- what's there
+    def game_dir(self, det=None):
+        """the extracted game folder the pipeline reads, or None if it still has to be extracted"""
+        det = det or xbox.detect(self.settings.get("fh1_game"))
+        if det["kind"] == "folder":
+            return Path(det["path"])
+        if det["kind"] in ("iso", "god"):
+            mark = _read_json(self.work() / "game" / ".kn5port-source.json")
+            if mark.get("key") == _source_key(det) and (self.work() / "game/media/tracks/colorado/bin.zip").exists():
+                return self.work() / "game"
+        return None
+
+    def prepared(self, game):
+        mark = _read_json(self.work() / "prepared.json")
+        files = all((self.work() / f).exists() for f in PREPARED_FILES)
+        if game and files and Path(mark.get("dump", "")) == Path(game):
+            return True
+        # a development checkout prepared by hand before this app existed: trust its dump_path.txt
+        saved = self.work() / "dump_path.txt"
+        return bool(game and files and not mark and saved.exists()
+                    and Path(saved.read_text(encoding="utf8").strip()) == Path(game))
+
+    def state(self):
+        det = xbox.detect(self.settings.get("fh1_game"))
+        game = self.game_dir(det)
+        work = self.work()
+        mods = self.mods()
+        levels = {}
+        for key, lvl, *_ in CHUNKS:
+            info = mods / "unpacked" / lvl / "levels" / lvl / "info.json"
+            levels[key] = int(info.stat().st_mtime) if info.exists() else 0
+        py = interpreter()
+        return {
+            "game": self.settings.get("fh1_game", ""), "work": str(work), "work_default": str(default_work()),
+            "source": det, "extracted": bool(game), "prepared": self.prepared(game),
+            "pipeline": bool(pipeline_src()), "missing_packages": missing_packages(), "python": str(py or ""),
+            "runtime": {"needed": runtime.needed(), "ready": bool(py), "mb": runtime.DOWNLOAD_MB,
+                        "dir": str(runtime.root())},
+            "ffmpeg": find_ffmpeg(), "winget": bool(shutil.which("winget")), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
+            "ram_gb": _ram_gb(), "mods": str(mods) if str(mods) not in ("", ".") else "",
+            "levels": levels, "radio": (mods / "unpacked" / "fh1_radio").exists(),
+            "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5]} for c in CHUNKS],
+            "need": {"game": GAME_GB, "prepared": PREPARED_GB, "radio": RADIO_GB},
+            "job": self.job.view(len(self.job.lines)) if self.job else None,
+        }
+
+    def problems(self, opts):
+        """reasons a conversion can't start now"""
+        s = self.state()
+        out = []
+        if s["runtime"]["needed"] and not s["runtime"]["ready"]:
+            out.append("Set up Python for the converter first (under Before you build).")
+        if not s["pipeline"]:
+            out.append("The FH1 pipeline scripts weren't found next to kn5port.")
+        if s["missing_packages"]:
+            out.append("Missing Python packages: " + ", ".join(s["missing_packages"]) + ".")
+        if not s["ffmpeg"]:
+            out.append("ffmpeg wasn't found. The level's ambient sound and the radio need it.")
+        if not s["source"]["kind"]:
+            out.append("Pick your copy of Forza Horizon.")
+        if not s["mods"]:
+            out.append("Set your BeamNG mods folder under Folders.")
+        if opts.get("chunk") not in CHUNK:
+            out.append("Pick which part of the map to build.")
+        if beamng_running():
+            out.append("Close BeamNG first: building replaces the level's files, which BeamNG keeps open.")
+        need = (0 if s["extracted"] else GAME_GB) + (0 if s["prepared"] else PREPARED_GB)
+        if s["free_gb"] is not None and s["free_gb"] < need + 0.5:
+            out.append(f"Not enough free space for the work folder: {need:.1f} GB needed, {s['free_gb']:.1f} GB free.")
+        if opts.get("chunk") in CHUNK and s["mods_free_gb"] is not None:
+            lv = CHUNK[opts["chunk"]][4] + (RADIO_GB if opts.get("radio") else 0)
+            if s["mods_free_gb"] < lv + 0.3:
+                out.append(f"Not enough free space in the mods folder: {lv:.1f} GB needed, {s['mods_free_gb']:.1f} GB free.")
+        return out
+
+    # -- jobs
+    def busy(self):
+        return self.job is not None and self.job.alive()
+
+    def start(self, opts):
+        with self.lock:
+            if self.busy():
+                raise RuntimeError("a Forza Horizon job is already running")
+            why = self.problems(opts)
+            if why:
+                raise RuntimeError(" ".join(why))
+            self.job = Job(self, opts)
+            return self.job
+
+    def setup_task(self, what):
+        """'python': the packages (pip) or, in the exe, the private Python; 'ffmpeg': ffmpeg through winget"""
+        with self.lock:
+            if self.busy():
+                raise RuntimeError("a Forza Horizon job is already running")
+            if what == "ffmpeg":
+                if not shutil.which("winget"):
+                    raise RuntimeError("winget isn't available: install ffmpeg from ffmpeg.org instead.")
+                task = "ffmpeg"
+            else:
+                task = "runtime" if runtime.needed() else "pip"
+            self.job = Job(self, {"task": task})
+            return self.job
+
+
+class Job:
+    def __init__(self, fh1, opts):
+        self.fh1 = fh1
+        self.opts = opts
+        self.id = secrets.token_hex(6)
+        self.lines = []
+        self.status = "running"
+        self.stage = ""
+        self.stages = []
+        self.progress = None          # 0..1 while extracting
+        self.started = time.time()
+        self.ended = None
+        self.proc = None
+        self._cancel = False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def alive(self):
+        return self.thread.is_alive()
+
+    def say(self, text):
+        for line in str(text).splitlines() or [""]:
+            self.lines.append(line.rstrip())
+
+    def view(self, since=0):
+        return {"id": self.id, "status": self.status, "stage": self.stage, "stages": self.stages,
+                "progress": self.progress, "lines": self.lines[since:], "next": len(self.lines),
+                "chunk": self.opts.get("chunk"), "task": self.opts.get("task", ""),
+                "elapsed": round((self.ended or time.time()) - self.started)}
+
+    def cancel(self):
+        if self.status != "running":
+            return
+        self._cancel = True
+        self.status = "cancelled"
+        p = self.proc
+        if p and p.poll() is None:
+            if sys.platform == "win32":    # the build starts worker processes of its own: end the whole tree
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True,
+                               creationflags=0x08000000)
+            else:
+                p.kill()
+
+    # -- running
+    def _cmd(self, args, cwd, env=None):
+        self.proc = subprocess.Popen(args, cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace",
+                                     creationflags=0x08000000 if sys.platform == "win32" else 0)
+        for line in self.proc.stdout:
+            line = line.rstrip()
+            if line.strip():
+                self.lines.append(line)
+        rc = self.proc.wait()
+        if self._cancel:
+            raise KeyboardInterrupt
+        if rc:
+            raise RuntimeError(f"{Path(args[2] if len(args) > 2 else args[0]).name} failed (exit code {rc})")
+
+    def _run(self):
+        try:
+            task = self.opts.get("task")
+            if task == "pip":
+                pkgs = missing_packages() or [p for _, p in PACKAGES]
+                self.stages = ["python"]; self.stage = "python"
+                self.say(f"Installing {', '.join(pkgs)} into {sys.executable}")
+                self._cmd([sys.executable, "-m", "pip", "install", "--disable-pip-version-check"] + pkgs, Path.home())
+            elif task == "runtime":
+                self.stages = ["python"]; self.stage = "python"
+
+                def prog(x):
+                    self.progress = x
+                runtime.setup(self.say, prog, lambda: self._cancel)
+                self.progress = None
+            elif task == "ffmpeg":
+                self.stages = ["ffmpeg"]; self.stage = "ffmpeg"
+                self.say("Installing ffmpeg (Gyan.FFmpeg) with winget")
+                self._cmd(["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--silent", "--disable-interactivity",
+                           "--accept-source-agreements", "--accept-package-agreements"], Path.home())
+                if not find_ffmpeg():
+                    raise RuntimeError("winget finished, but ffmpeg still isn't found. Restart kn5port and check again.")
+                self.say(f"ffmpeg is at {find_ffmpeg()}")
+            else:
+                self._convert()
+            if self.status == "running":
+                self.status = "done"
+        except KeyboardInterrupt:
+            self.status = "cancelled"
+            self.say("Cancelled.")
+        except Exception as e:                  # noqa: BLE001 (shown to the user)
+            if self.status == "running":
+                self.status = "failed"
+            self.say(f"Error: {e}")
+        finally:
+            self.ended = time.time()
+            self.proc = None
+
+    def _convert(self):
+        f = self.fh1
+        work = f.work(); work.mkdir(parents=True, exist_ok=True)
+        det = xbox.detect(f.settings.get("fh1_game"))
+        game = f.game_dir(det)
+        prepared = f.prepared(game) and not self.opts.get("force_prepare")
+        self.stages = (["extract"] if not game else []) + (["prepare"] if not prepared else []) + ["build"] + \
+            (["radio"] if self.opts.get("radio") else [])
+
+        if not game:
+            self.stage = "extract"
+            game = work / "game"
+            self.say(f"Copying the game files the converter needs out of the {det['kind'].upper()} into {game}")
+            g = xbox.open_game(det["path"])
+            try:
+                last = [0.0]
+
+                def prog(done, total, path):
+                    self.progress = done / max(total, 1)
+                    if time.time() - last[0] > 2:
+                        last[0] = time.time()
+                        self.say(f"  {self.progress * 100:4.0f}%  {path}")
+                n = g.extract(game, lambda p: bool(WANT.match(p)), prog, lambda: self._cancel)
+            finally:
+                g.close()
+            if not (game / "media/tracks/colorado/bin.zip").exists():
+                raise RuntimeError("This copy has no media/tracks/colorado/bin.zip, so it isn't Forza Horizon (2012), "
+                                   "or it's incomplete.")
+            (game / ".kn5port-source.json").write_text(json.dumps({"key": _source_key(det)}))
+            self.progress = None
+            self.say(f"Copied {n} files.")
+
+        snap = work / "app_pipeline"
+        src = pipeline_src()
+        if snap.exists():
+            shutil.rmtree(snap)
+        shutil.copytree(src, snap, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.o", "*.lib", "*.exp"))
+        (work / "dump_path.txt").write_text(str(game).replace("\\", "/") + "\n", encoding="utf8")
+        py_exe = interpreter()
+        if not py_exe:
+            raise RuntimeError("Python for the converter isn't set up yet.")
+        if runtime.needed():      # the private Python imports kn5port from a copy of the exe's bundled sources
+            pkg_root = str(runtime.app_sources(Path(sys._MEIPASS) / "kn5port_src" / "kn5port"))
+        else:
+            pkg_root = str(Path(__file__).resolve().parents[2])
+        ff = find_ffmpeg()
+        path = os.pathsep.join([str(Path(ff).parent)] * bool(ff) + [os.environ.get("PATH", "")])
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONSTARTUP")}
+        env.update(PATH=path, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), PYTHONIOENCODING="utf8",
+                   PYTHONUNBUFFERED="1", NUMBA_CACHE_DIR=str(work / "numbacache"),
+                   PYTHONPATH=os.pathsep.join([pkg_root] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
+        if runtime.needed():
+            env["PYTHONNOUSERSITE"] = "1"      # the private Python sees only its own packages
+        py = [str(py_exe), "-u"]
+
+        if "prepare" in self.stages:
+            self.stage = "prepare"
+            self.say("Reading the map's tables (about 3 minutes; only done once per copy of the game)")
+            (work / "prepared.json").unlink(missing_ok=True)
+            self._cmd(py + ["prepare.py"], snap, env)
+            (work / "prepared.json").write_text(json.dumps({"dump": str(game), "time": int(time.time())}))
+
+        key, lvl, name = CHUNK[self.opts["chunk"]][:3]
+        self.stage = "build"
+        self.say(f"Building {name} as {lvl} into {f.mods() / 'unpacked' / lvl}")
+        if beamng_running():
+            raise RuntimeError("BeamNG is running: close it, then build again.")
+        self._cmd(py + ["build3.py"], snap, dict(env, FH1_CHUNK=key))
+
+        if self.opts.get("radio"):
+            self.stage = "radio"
+            self.say("Building the FH1 radio mod (fh1_radio)")
+            self._cmd(py + ["radio.py"], snap, env)
+        self.stage = "done"
+        self.say(f"Done. Fully restart BeamNG, then pick \"{CHUNK[key][2]}\" (level {lvl}) from the level list.")
+
+
+def pick_tk(start="", file=False):
+    """a native folder or file dialog through tkinter, for the browser version of the app"""
+    import tkinter
+    from tkinter import filedialog
+    root = tkinter.Tk(); root.withdraw(); root.attributes("-topmost", True)
+    try:
+        if file:
+            return filedialog.askopenfilename(initialdir=start or None, parent=root,
+                                              filetypes=[("Disc images", "*.iso *.xiso"), ("All files", "*.*")]) or ""
+        return filedialog.askdirectory(initialdir=start or None, parent=root, mustexist=True) or ""
+    finally:
+        root.destroy()
+

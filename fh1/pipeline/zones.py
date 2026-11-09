@@ -12,7 +12,7 @@ then one placement record for every id after the first, in the same order, up to
   u8 n, n bytes  list
   32 bytes       owner name (gameplay id such as FR22_03)
 """
-import struct, collections, json, re, pickle, sys
+import os, struct, collections, json, re, pickle, sys
 import numpy as np
 mt = np.load('../mt.npy'); T = mt['t'].astype(np.int64); FL = mt['f'].astype(np.int64)
 H = np.array([0. if ((u >> 10) & 31) == 0 else (-1. if u & 0x8000 else 1.) * (1 + (u & 1023) / 1024) * 2. ** (((u >> 10) & 31) - 15) for u in range(65536)])
@@ -66,7 +66,11 @@ if __name__ == '__main__':
     for c in F:
         nm.setdefault(int(c['f'].split('.')[1]), c['name'])
     base = lambda n: re.sub(r'\d+$', '', re.sub(r'_LOD.*$', '', n)).rstrip('_')
-    R = pickle.load(open('../memrec.pkl', 'rb')); L = pickle.load(open('../memobj_all.pkl', 'rb'))
+    # a live capture from a real drive, used only to check placements against what the game drew. Optional
+    have = os.path.exists('../memrec.pkl') and os.path.exists('../memobj_all.pkl')
+    R = pickle.load(open('../memrec.pkl', 'rb')) if have else {}; L = pickle.load(open('../memobj_all.pkl', 'rb')) if have else {}
+    if not have:
+        print('no live capture (memrec.pkl, memobj_all.pkl): skipping the accuracy check')
     live = collections.defaultdict(set); liveid = collections.defaultdict(set)
     for k, v in L.items():
         p = (round(v[0], 1), round(v[2], 1)); live[p].add(base(nm.get(k[0], '')))

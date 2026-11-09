@@ -2,7 +2,8 @@ import struct,collections,pickle,re,os
 import numpy as np,rmb,tex
 from PIL import Image,ImageDraw
 T=pickle.load(open('../meshtab.pkl','rb')); R=pickle.load(open('../pvsrec.pkl','rb')); idx={r[4]:(r[3],r[2]) for r in R}
-b=open("D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/Colorado_00.pvs",'rb').read()
+import gamepath
+b=open(gamepath.RIBBON + "Colorado_00.pvs",'rb').read()
 o=0x861db+8; S=[]
 for i in range(173):
     n=struct.unpack_from('>I',b,o)[0]; S.append(b[o+4:o+4+n].decode('latin1').split(chr(92))[-1]); o+=4+n

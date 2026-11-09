@@ -57,12 +57,20 @@ def main():
         r = window.create_file_dialog(webview.FOLDER_DIALOG, directory=start or "")
         return (r[0] if isinstance(r, (list, tuple)) and r else r) or ""
 
+    def pick_file(start=""):
+        r = window.create_file_dialog(webview.OPEN_DIALOG, directory=start or "",
+                                      file_types=("Disc images (*.iso;*.xiso)", "All files (*.*)"))
+        return (r[0] if isinstance(r, (list, tuple)) and r else r) or ""
+
     app.pick_folder = pick_folder
+    app.pick_file = pick_file
     try:
         webview.start()
     finally:
         for j in app.jobs.values():
             j.cancel()
+        if app.fh1.job:
+            app.fh1.job.cancel()
         httpd.shutdown()
 
 

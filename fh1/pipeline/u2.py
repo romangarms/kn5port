@@ -1,8 +1,9 @@
-import struct,os,re,ctypes,zlib
+import struct,os,re,zlib
+import lzxdec
 from PIL import Image
 Image.MAX_IMAGE_PIXELS=None
-d=ctypes.CDLL(os.path.abspath('lzx.dll')); work=ctypes.create_string_buffer((1<<21)+16384)
-p="D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/UI.zip"
+import gamepath
+p=gamepath.MEDIA + "UI.zip"
 f=open(p,'rb'); sz=os.path.getsize(p); f.seek(sz-22); e=f.read(22)
 _,dn,cdn,n1,n2,cs,co,cl=struct.unpack('<IHHHHIIH',e); f.seek(co); b=f.read(cs); o=0
 os.makedirs('../ui',exist_ok=True)
@@ -12,7 +13,9 @@ while b[o:o+4]==b'PK\x01\x02':
     if n.startswith('New Map/') and n.lower().endswith(('.jpg',)) :
         f.seek(lo); h=f.read(30); ln,lx=struct.unpack('<HH',h[26:30]); f.seek(lo+30+ln+lx); dd=f.read(c)
         if m==21:
-            out=ctypes.create_string_buffer(u+8); r=d.lzx_decode(dd,c,out,u,17,work); dd=out.raw[:u]
+            try: dd=lzxdec.decode(dd,u,17)
+            except IOError as x:      # nine Map Ref images don't decode (lzx.dll fails on them too); only MapGameReady is used
+                print(n,'skipped:',x); continue
         print(n,len(dd),zlib.crc32(dd)&0xffffffff==crc)
         open('../ui/'+n.replace('/','_').replace(' ','_'),'wb').write(dd)
 im=Image.open('../ui/New_Map_MapGameReady.jpg'); print(im.size); im.thumbnail((1600,1600)); im.convert('RGB').save('../ui/map_small.jpg',quality=85)

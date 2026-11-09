@@ -1,5 +1,7 @@
-import zr,os,collections,json,time
-out='../x'; os.makedirs(out,exist_ok=True)
+import zr,os,collections,json,shutil,time
+out='../x'
+if os.path.isdir(out): shutil.rmtree(out)   # start empty: the '.lc' rule below must only see this run's files
+os.makedirs(out)
 seen={}; dif=collections.Counter(); bad=[]; t=time.time(); n=0; tot=0
 for e in sorted(zr.E0,key=lambda e:zr.offs(e)):
     k=e['n']

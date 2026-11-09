@@ -1,6 +1,7 @@
 import struct,collections,json,re,pickle
 import numpy as np
-b=open("D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/Colorado_00.pvs",'rb').read()
+import gamepath
+b=open(gamepath.RIBBON + "Colorado_00.pvs",'rb').read()
 ids=set(); names={n for n,_ in json.load(open('../list.json'))}
 for n in names:
     m=re.match(r'_0x([0-9A-Fa-f]{8})\.(bix|bin)',n)

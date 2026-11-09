@@ -96,6 +96,29 @@ Useful options:
 
 `kn5port validate <level folder> --ac-track <track>` re-checks a converted level.
 
+## Forza Horizon 1
+
+The app's **Forza Horizon 1** tab converts Colorado from your own copy of Forza Horizon (2012, Xbox 360) into
+BeamNG levels: terrain, roads, buildings, plants, water, animated objects, lights, FH1's races as time trials,
+ambient sound, and FH1's radio as a separate mod. It works in `kn5port.exe`: the first time, **Set up** downloads
+a private Python 3.12 from python.org and numpy, scipy, numba and Pillow from PyPI (107 MB, every file pinned to
+a version and checked against a fixed SHA-256) into `%LOCALAPPDATA%\kn5port\runtime`, isolated from any other
+Python on your PC. From source, `pip install .[app,fh1]` and `kn5port-app` use your own Python instead.
+
+1. **Your copy**: pick a Games on Demand package (the `4D5309C9` title folder copied off an Xbox 360 drive,
+   from `Content\0000000000000000\4D5309C9`), a disc image (`.iso`), or extracted files (a folder holding
+   `default.xex` and `media\`). kn5port reads GOD packages and ISOs itself and copies out only what it needs,
+   about 4 GB. "How do I get these files?" in the app explains each.
+2. **What to build**: the whole map (16 km square, 3.3 GB, about 6 GB of RAM while building), or a 4 km
+   chunk around Red Rock or Clear Springs. Optionally the radio mod.
+3. **Checks** before it starts: Python (one-click setup), ffmpeg (for sound; one-click install through winget,
+   or from ffmpeg.org), disk space, memory, and that BeamNG is closed.
+4. **Build**: the first build reads the map's tables once (about 3 minutes); later builds skip that.
+
+The work folder (`%LOCALAPPDATA%\kn5port\fh1`, about 7 GB) keeps the copied game files and tables between
+builds. The pipeline itself lives in [`fh1/`](fh1/README.md), with notes on every FH1 file format it reads.
+The same rules apply as for AC tracks: kn5port includes no game files, and converted levels are for you only.
+
 ## Building the exe
 
 On Windows: `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `dist\kn5port.exe`.

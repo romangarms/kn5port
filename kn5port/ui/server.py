@@ -19,7 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .. import __version__, beamng
+from .. import __version__, beamng, xbox
+from .fh1 import FH1, pick_tk
 
 STATIC = Path(__file__).parent / "static"
 
@@ -310,6 +311,8 @@ class App:
         if self.settings.get("tracks"):
             self.scanner.start(self.settings["tracks"])
         self.pick_folder = None       # set by the desktop app (native dialog)
+        self.pick_file = None
+        self.fh1 = FH1(self.settings, save_settings)
         self.palettes = {}            # level -> summary dict
         self.palettes_running = False
         self.start_palettes()
@@ -419,6 +422,11 @@ def make_handler(app, port_ref):
                         app.inspect_cache[key] = inspect_track(d, None, app.settings.get("beamng"),
                                                                app.settings.get("mods"))
                     return self._send(200, app.inspect_cache[key])
+                if u.path == "/api/fh1/state":
+                    return self._send(200, app.fh1.state())
+                if u.path == "/api/fh1/job":
+                    j = app.fh1.job
+                    return self._send(200, j.view(int((q.get("since") or ["0"])[0])) if j else {})
                 m = re.match(r"^/api/jobs/([0-9a-f]+)$", u.path)
                 if m:
                     j = app.jobs.get(m.group(1))
@@ -454,8 +462,51 @@ def make_handler(app, port_ref):
                     return self._send(200, det)
                 if u.path == "/api/pick-folder":
                     start = str(body.get("start") or "")
-                    path = app.pick_folder(start) if app.pick_folder else pick_folder_tk(start)
+                    path = app.pick_folder(start) if app.pick_folder else pick_tk(start)
                     return self._send(200, {"path": path or ""})
+                if u.path == "/api/pick-file":
+                    start = str(body.get("start") or "")
+                    path = app.pick_file(start) if app.pick_file else pick_tk(start, file=True)
+                    return self._send(200, {"path": path or ""})
+                if u.path == "/api/fh1/detect":
+                    return self._send(200, xbox.detect(body.get("path", "")))
+                if u.path == "/api/fh1/settings":
+                    if app.fh1.busy():
+                        return self._send(409, {"error": "wait for the running job to finish"})
+                    app.fh1.update(body)
+                    return self._send(200, app.fh1.state())
+                if u.path == "/api/fh1/check":
+                    return self._send(200, {"problems": app.fh1.problems(body)})
+                if u.path in ("/api/fh1/build", "/api/fh1/install"):
+                    try:
+                        j = app.fh1.start(body) if u.path == "/api/fh1/build" else app.fh1.setup_task(body.get("what"))
+                    except RuntimeError as e:
+                        return self._send(409, {"error": str(e)})
+                    return self._send(200, j.view())
+                if u.path == "/api/fh1/cancel":
+                    if app.fh1.job:
+                        app.fh1.job.cancel()
+                    return self._send(200, {"ok": True})
+                if u.path == "/api/fh1/open":
+                    # opens only the work folder, the game folder, or a built FH1 level
+                    from .fh1 import CHUNK
+                    what = body.get("what")
+                    if what == "work":
+                        target = app.fh1.work()
+                    elif what == "game":
+                        target = app.fh1.game_dir() or Path(xbox.detect(app.settings.get("fh1_game"))["path"] or ".")
+                    elif what == "level" and body.get("chunk") in CHUNK:
+                        lvl = CHUNK[body["chunk"]][1]
+                        target = app.fh1.mods() / "unpacked" / lvl / "levels" / lvl
+                    else:
+                        return self._send(400, {"error": "bad request"})
+                    if not target.exists():
+                        return self._send(404, {"error": "not found"})
+                    if sys.platform == "win32":
+                        os.startfile(str(target))          # noqa: S606 (local, fixed paths only)
+                    else:
+                        subprocess.Popen(["xdg-open", str(target)])
+                    return self._send(200, {"ok": True})
                 if u.path == "/api/convert":
                     d = track_dir(app.settings, body.get("track", ""))
                     with app.lock:
@@ -548,4 +599,6 @@ def serve(port=0, open_browser=True):
     finally:
         for j in app.jobs.values():
             j.cancel()
+        if app.fh1.job:
+            app.fh1.job.cancel()
         httpd.server_close()

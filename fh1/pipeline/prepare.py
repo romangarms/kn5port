@@ -1,10 +1,10 @@
 """Rebuild every derived file from the FH1 dump. Run from fh1/pipeline: python prepare.py
 
-Needs lzx.dll, see the README. Everything it writes goes to fh1/, which is gitignored.
+Uses lzx.dll if built (see the README), else lzxdec.py's numba decoder. Everything it writes goes to fh1/, which is gitignored.
 """
 import json, os, pickle, re, struct, subprocess, sys
 
-DUMP = os.environ.get('FH1_DUMP', 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix')
+from gamepath import DUMP
 
 
 def run(script):

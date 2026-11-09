@@ -1,5 +1,6 @@
 import struct,os,collections,json,re
-p=os.environ.get('FH1_DUMP', 'D:/Roms/Xbox 360/Xenia/FH1XeniaFix') + '/media/tracks/colorado/bin.zip'
+import gamepath
+p=gamepath.MEDIA + 'tracks/colorado/bin.zip'
 f=open(p,'rb'); sz=os.path.getsize(p)
 f.seek(sz-22); e=f.read(22); _,dn,cdn,n1,n2,cs,co,cl=struct.unpack('<IHHHHIIH',e)
 f.seek(co); b=f.read(cs); o=0; ents=[]

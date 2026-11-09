@@ -1,6 +1,7 @@
 import struct,collections,pickle,re,json
 import numpy as np,rmb
-b=open("D:/Roms/Xbox 360/Xenia/FH1XeniaFix/media/tracks/colorado/Ribbon_00/Colorado_00.pvs",'rb').read()
+import gamepath
+b=open(gamepath.RIBBON + "Colorado_00.pvs",'rb').read()
 R=pickle.load(open('../pvsrec.pkl','rb')); idx={r[4]:(r[3],r[2]) for r in R}
 o=0x1990db+4; T=[]
 for i in range(14560):

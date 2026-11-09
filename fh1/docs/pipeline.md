@@ -15,7 +15,9 @@ The drivable map spans about x -8000 to 7400, z -5200 to 6200. Far backdrop mesh
 
 Output goes to `mods/unpacked/<level>`, or to a folder passed as the first argument. An unpacked mod is `mods/unpacked/<level>/levels/<level>/`. BeamNG needs a full restart to see changes. Close it before building: it holds enough RAM to get in the way.
 
-Use `FH1_DUMP` to override the dump path in `prepare.py`. Note that `build3.py` has the route folder path hard-coded in `RT`.
+Every script finds the game through `gamepath.py`: `FH1_DUMP`, else the path in `fh1/dump_path.txt` (the app writes it). `KN5PORT_MODS` overrides the BeamNG mods folder for every script, through `beamng.find_mods()`. `zones.py` checks placements against the live capture (`memrec.pkl`, `memobj_all.pkl`) only when those files exist.
+
+The app runs the scripts from its own copy, `<work folder>/app_pipeline/`, the same way the build queue uses `build_snapshot_<chunk>/`. With this checkout's data prepared, its work folder defaults to `fh1/` itself.
 
 ## `prepare.py` order
 
