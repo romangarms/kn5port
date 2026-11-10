@@ -725,7 +725,9 @@ for kind, model in {**RIDES, **STANDALONE}.items():
         for suffix, parent, lit in shapes_:
             rows.append({'class': 'TSStatic', 'name': f'fh1_{kind}{suffix}_{i}', '__parent': parent, 'shapeName': f'{rel}/{kind}{suffix}.dae', 'position': [round(float(v), 3) for v in at_],
                          'rotationMatrix': [round(float(v), 5) for v in R_.T.ravel()], 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True,
-                         **({'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if lit else {})})
+                         **({'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if lit else {}),
+                         # Beams start hidden and fh1Extras.lua shows them at night: shown by default, they stayed as grey rays by day whenever the script didn't run
+                         **({'hidden': True} if parent == 'fh1_rig_beams' else {})})
     print(kind, len(recs), 'placed', [[round(float(v)) for v in (r[12] - CX, r[14] + CZ)] for r in recs][:4], len(parts), 'parts,', n_moving, 'moving,',
           sum(len(t_) for ps in parts.values() for _, _, t_ in ps), 'triangles,', sum(n_keys), 'keys over', round(dur, 1), 's')
 (out / 'main.materials.json').write_text(json.dumps(mats_))

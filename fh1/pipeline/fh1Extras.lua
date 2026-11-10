@@ -354,6 +354,7 @@ end
 -- stock core_environment's nightEmissive switch, which makes them glow. Only does work when day turns to night or back
 local NIGHT_FROM, NIGHT_TO = 18, 6
 local nightShown = nil
+local sinceNight = 0
 -- The light rigs' beams and glows (animated.py, fh1_rig_beams) too: their additive sprites drew pale rays by day although their emissive was off
 local NIGHT_GROUPS = { 'fh1_night', 'fh1_rig_beams' }
 local function updateNightLights()
@@ -525,6 +526,7 @@ local function start()
   levelDir = mission and mission ~= '' and path.split(mission)
   if not levelDir or not FS:fileExists(levelDir .. 'fh1_extras.json') then return end
   data = jsonReadFile(levelDir .. 'fh1_extras.json')
+  log('I', logTag, 'started on ' .. levelDir)
   awake = {}
   sinceParticles = PARTICLE_SECONDS
   emitters = FS:fileExists(levelDir .. 'fh1_particles.json') and jsonReadFile(levelDir .. 'fh1_particles.json') or nil
@@ -550,6 +552,7 @@ local function start()
   restoreBloom()
   lookZone = nil
   nightShown = nil
+  sinceNight = SKY_SECONDS
   sinceSky = SKY_SECONDS
   ambienceOn = true
   shotsOn = true
@@ -568,6 +571,7 @@ local function onUpdate(dtReal, dtSim)
   clock = clock + dtReal
   sinceParticles = sinceParticles + dtReal
   sinceSky = sinceSky + dtReal
+  sinceNight = sinceNight + dtReal
   if sky and sinceSky >= SKY_SECONDS then
     sinceSky = 0
     local ok, err = pcall(updateSky)
@@ -575,6 +579,10 @@ local function onUpdate(dtReal, dtSim)
       log('E', logTag, tostring(err) .. ', sky changes are off')
       sky = nil
     end
+  end
+  -- Not tied to the sky: without fh1_sky.json the beams would never show at night
+  if sinceNight >= SKY_SECONDS then
+    sinceNight = 0
     local okNight, errNight = pcall(updateNightLights)
     if not okNight then log('E', logTag, tostring(errNight) .. ', night lights stay as they are') end
   end

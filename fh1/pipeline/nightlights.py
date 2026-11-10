@@ -177,7 +177,8 @@ for tid, parts in sorted(geo.items()):
     write_lod(out / f'{name}.dae', [((mat, (0,)), P_, N_, UV, np.arange(len(P_)))], ctr, (max(int(R_ / (FAR + R_) * PX), 2),), None)
     # Not named like its material: BeamNG refuses an object that shares a material's name. Stock core_environment sets instanceColor to nightEmissiveColor at night and to black by day
     rows.append({'class': 'TSStatic', 'name': f'fh1_nightlit_{name}', '__parent': 'fh1_night', 'shapeName': f'{rel}/{name}.dae', 'position': [round(float(v), 3) for v in ctr],
-                 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1', 'nightEmissiveColor': '255 255 255'})
+                 'collisionType': 'None', 'decalType': 'None', 'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1', 'nightEmissiveColor': '255 255 255',
+                 'hidden': True})      # fh1Extras.lua shows them at night, so they never sheen by day
     stats['shapes'] += 1; stats['triangles'] += len(P_) // 3
 (out / 'main.materials.json').write_text(json.dumps(mats, indent=1))
 mg = items.parent; (mg / 'fh1_night').mkdir(exist_ok=True)
