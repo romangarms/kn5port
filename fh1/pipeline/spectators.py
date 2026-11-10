@@ -1,11 +1,10 @@
 """FH1's 3D crowds, standing still: Spectators.zip's people where the track's crowd sets put them, facing where FH1 turns them, sitting where its crowd
 class sits. FH1 animates them (cheers, idles); here each holds the pose its model is stored in.
-Crowd sets are the track's `crowd*` .pgeo files (version 42, 1,741 of them, about 146k people; see docs/formats.md). Which stand here, by set name:
-the festival site (stages, stalls, grandstands, campsites), the Horizon outposts, the PR and street-race hubs and the activation zones, always; event
-venues (showcases, multiplayer, street races) and race-day spectators lining the festival race routes only off the road, as FH1 shows those only
-while their event runs, when the road is closed. Road is build3.py's raster of FH1's road-shader triangles (logs/<level>-road.npz, 4 m cells on the
-whole map), so a spectator within a cell of a road edge counts as on it. Sets share spots (`_shared` sets, one crowd per event), so a person within
-SAME metres of one already kept is dropped. One forest item per person, of 38 shapes: 19 models standing and seated, FH1's 4 LODs.
+Crowd sets are the track's `crowd*` .pgeo files (version 42, 1,741 of them, about 146k people; see docs/formats.md). Only the festival site's
+stand here (SITE: stages, stalls, grandstands, campsites, the garage, area 3). Every other set belongs to an event (race routes, showcases,
+multiplayer venues, hubs, outposts, activation zones), which FH1 shows only while it runs, and many stand on roads it closes for it: the festival
+race crowds line Carson's streets. Names don't say where a set is (festival_main_crowd_002 is a Carson race). A person within SAME metres of one
+already kept is dropped, as sets share spots. One forest item per person, of 38 shapes: 19 models standing and seated, FH1's 4 LODs.
 Models (.skinbin, big-endian): u32 pairs (1, value) for a header, then vertices of 36 bytes: u32 1, position and normal as 3 floats each (y up, front
 +z, feet at 0), U and V as u16 / 65535, two bone bytes and two weight bytes summing to 255. Then (1, index count) and a triangle list of u16. The
 header's (first, count) pairs cut that list into 4 LODs. The vertices already hold the pose, standing or seated. Textures (spectators.xml ties model
@@ -26,8 +25,7 @@ PX = 1250.0; FARS = (20.0, 50.0, 120.0, 250.0)   # metres each LOD is drawn to, 
 CUTOUT = 250            # a texture with more texels than 1 in CUTOUT under half alpha is cut out
 S = np.eye(3)[[0, 2, 1]]   # FH1 x, up, z -> BeamNG x, y, up, as the world. It mirrors, so faces are turned back
 NAME = re.compile(rb'\x00(crowd[A-Za-z0-9_\-\[\]]*)\x00')
-ALWAYS = re.compile(r'festivalcrowd|festival_main_crowd|fest_area3_barriers|horizonoutpost|prhub|pr_crowd|activationzone|main_town_sr_hub')
-OFFROAD = re.compile(r'showcase|multiplayer|street|festival|track_|p2p|racecrowd|e3_route|crowd_moun|reservoircrowd')
+SITE = re.compile(r'_festivalcrowd_|_festival_crowd_area03')
 SIT = {0, 4}            # crowd class index (class id - 1): 001 Sit and 005 LoopingSit use the Sitting skeleton
 
 
@@ -84,17 +82,6 @@ def xds(name):
     return tex.decode(b[52:52 + ((w + 3) // 4) * ((h + 3) // 4) * f[1]], w, h, f[0])
 
 
-def on_road(xy):
-    """True where build3.py's road raster has road, None for all when the build left no raster"""
-    f = Path('../logs') / f'{LVL}-road.npz'
-    if not f.exists():
-        return None
-    z = np.load(f); road = z['road']; sq = float(z['SQ']); half = float(z['HALF'])
-    ij = np.floor((xy + half) / sq).astype(int); ok = ((ij >= 0) & (ij < road.shape[0])).all(1); out = np.ones(len(xy), bool)
-    out[ok] = road[ij[ok, 1], ij[ok, 0]]
-    return out
-
-
 def main():
     from kn5port import beamng
     level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL
@@ -107,18 +94,10 @@ def main():
     sets, bad = crowd_sets(); stats = {'sets': len(sets), 'unreadable sets': bad}
     P = []; A = []; C = []; K = []
     for nm, p, a, c in sets:
-        kind = 'always' if ALWAYS.search(nm) else 'offroad' if OFFROAD.search(nm) else None
-        stats[f'{kind} sets'] = stats.get(f'{kind} sets', 0) + 1
-        if kind:
-            P.append(p); A.append(a); C.append(c); K += [kind] * len(p)
-    P = np.concatenate(P); A = np.concatenate(A); C = np.concatenate(C); K = np.array(K)
-    keep = (np.abs(P[:, :2]) < HALF - 1).all(1)
-    road = on_road(P[:, :2]); off = K == 'offroad'
-    if road is None:
-        print('no road raster (logs/' + LVL + '-road.npz): event and race crowds left out'); keep &= ~off
-    else:
-        stats['on the road, dropped'] = int((keep & off & road).sum()); keep &= ~(off & road)
-    order = np.r_[np.where(keep & ~off)[0], np.where(keep & off)[0]]     # the always-shown crowds win a shared spot
+        if SITE.search(nm):
+            P.append(p); A.append(a); C.append(c); stats['festival sets'] = stats.get('festival sets', 0) + 1
+    P = np.concatenate(P); A = np.concatenate(A); C = np.concatenate(C)
+    order = np.where((np.abs(P[:, :2]) < HALF - 1).all(1))[0]
     pairs = cKDTree(P[order]).query_pairs(SAME, output_type='ndarray'); dup = np.zeros(len(order), bool); dup[pairs.max(1)] = True
     stats['repeats dropped'] = int(dup.sum()); idx = order[~dup]
     managed = {k: v for k, v in json.loads((level / 'art' / 'forest' / 'managedItemData.json').read_text()).items() if not k.startswith('fh1_spectator_')}
@@ -155,7 +134,7 @@ def main():
     for item, r_ in rows.items():
         (fdir / f'{item}.forest4.json').write_text(''.join(json.dumps(o) + '\n' for o in r_))
     (level / 'art' / 'forest' / 'managedItemData.json').write_text(json.dumps(managed, indent=2))
-    stats['placed'] = len(idx); stats['always shown'] = int((K[idx] == 'always').sum())
+    stats['placed'] = len(idx)
     stats['on the festival ground'] = int(((P[idx, 0] > -1614) & (P[idx, 0] < -18) & (P[idx, 1] > -432) & (P[idx, 1] < 651)).sum())
     print(stats)
     if (level / 'art' / 'textures_ungraded').exists():       # grade.py already ran: grade the new textures too. It grades from ungraded copies, so rerunning is safe

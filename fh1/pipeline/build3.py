@@ -1518,7 +1518,7 @@ print('dropped sections by mesh', DROPPED.most_common(24))
 lap('world meshes')
 shown = np.isfinite(Cov)
 road = np.isfinite(Road)
-np.savez_compressed(Path('../logs') / f'{LVL}-road.npz', road=road, SQ=SQ, HALF=HALF)     # spectators.py keeps event crowds off it. road[j, i] is BeamNG (i, j) x SQ - HALF
+np.savez_compressed(Path('../logs') / f'{LVL}-road.npz', road=road, SQ=SQ, HALF=HALF)     # FH1's road-shader triangles, for checks. road[j, i] is BeamNG (i, j) x SQ - HALF
 if road.any():
     RF = pyramid_fill(np.where(road, Road, np.nan)); dist = ni.distance_transform_edt(~road) * SQ
 else:
