@@ -188,5 +188,9 @@ names = road_names(roads); loops_, shots_ = placed(objects)
                                                    'placedLoops': loops_, 'oneshots': shots_}))
 (mod / 'lua' / 'ge' / 'extensions').mkdir(parents=True, exist_ok=True); (mod / 'scripts' / LVL).mkdir(parents=True, exist_ok=True)
 shutil.copy('fh1Extras.lua', mod / 'lua' / 'ge' / 'extensions' / 'fh1Extras.lua')
+# Every FH1 mod ships fh1Extras.lua at the same game path and BeamNG loads only one of them, so an old chunk's copy (fh1_clearsprings) ran
+# in place of this one: no night beams, no movers. Keep them all current
+for other in mod.parent.glob('fh1_*/lua/ge/extensions/fh1Extras.lua'):
+    shutil.copy('fh1Extras.lua', other)
 (mod / 'scripts' / LVL / 'modScript.lua').write_text('load("fh1Extras")\nsetExtensionUnloadMode("fh1Extras", "manual")\n')
 print('done', len(points), 'spawns', len(z), 'zones', len(names), 'named nodes', len(emitters), 'reverb emitters', sum(len(l['points']) for l in loops_ + shots_), 'placed sounds ->', level)
