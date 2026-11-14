@@ -1,10 +1,10 @@
 import pickle,re,struct,numpy as np,sys
-import rmb,tex,pv
+import rmb,tex,pv,gamepath
 from matlib import materials
 from PIL import Image,ImageDraw
 MT=pickle.load(open('../meshtab.pkl','rb')); IDX,SH=pickle.load(open('../texshader.pkl','rb'))
 def load(no):
-    b=open(f'../x/coloradoout.{no:05d}.rmb.bin','rb').read(); return b,rmb.parse(b)
+    b=open(f'../x/{gamepath.MESH}.{no:05d}.rmb.bin','rb').read(); return b,rmb.parse(b)
 def groups(no,form):
     b,P=load(no); ids=MT[no][0]; out=[]; M=materials(b,P)
     for m in P['meshes']:

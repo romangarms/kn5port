@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ni
-import dds, frame, gamezip, mission, tex
+import dds, frame, gamepath, gamezip, mission, tex
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
@@ -52,7 +52,7 @@ SCENE = {'theLevelInfo': {'globalEnviromentMap': 'fh1_sky_cubemap', 'fogDensity'
 # FH1's look by area: PostProcessingZones_Safe.xml gives each zone a fog and a bloom template (dynamicpost.zip) and a fade time in seconds.
 # Its colour grade also changes by zone, which BeamNG 0.40 can't do at runtime. Fog density is relative to Redrock's 2.35, as the level's
 # fog was tuned at Red Rock. fh1Extras.lua eases towards the zone under the camera
-FOG_REF = 2.35; CENTRE = {'fh1_colorado': (-300.0, 500.0), 'fh1_redrock': (-6000.0, 4250.0), 'fh1_clearsprings': (1700.0, 2000.0)}[LVL]
+FOG_REF = 2.35; CENTRE = {'fh1_colorado': (-300.0, 500.0), 'fh1_redrock': (-6000.0, 4250.0), 'fh1_clearsprings': (1700.0, 2000.0), 'fh1_coloradodirt': (-300.0, 500.0)}[LVL]
 SKYBOX = {'name': 'fh1_skybox', 'class': 'SkyBox', '__parent': 'MissionGroup', 'material': 'fh1_sky'}
 
 
@@ -83,7 +83,7 @@ def xds(name):
 
 
 def curves(minute):
-    t = ET.parse(gamezip.MEDIA + 'tracks/colorado/Ribbon_00/TimeOfDayA.xml').getroot(); out = {}
+    t = ET.parse(gamepath.RIBBON + 'TimeOfDayA.xml').getroot(); out = {}
     for c in t:
         k = c.findall('Key')
         if k:
@@ -189,7 +189,7 @@ def zones():
     """FH1's post-processing zones as BeamNG x, y triangles, with fog density and bloom cutoff and scale relative to the level's own."""
     t = lambda n: {e.get('Name'): e.attrib for e in ET.fromstring(gamezip.read('dynamicpost.zip', f'Tracks/Colorado/{n}_Templates.xml'))}
     fog, bloom = t('Fog'), t('Bloom'); out = []
-    for z in ET.parse(gamezip.MEDIA + 'tracks/colorado/Ribbon_00/PostProcessingZones_Safe.xml').getroot():
+    for z in ET.parse(gamepath.RIBBON + 'PostProcessingZones_Safe.xml').getroot():
         b = bloom[z.get('BloomTemplate')]
         out.append({'name': z.get('Name'), 'fog': round(float(fog[z.get('Fog')]['Density']) / FOG_REF, 3), 'bloomCutoff': float(b['Cutoff']),
                     'bloomScale': float(b['Scale']), 'lerp': float(z.get('LerpTime')),

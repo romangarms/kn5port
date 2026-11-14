@@ -10,6 +10,8 @@ Run everything from `fh1/pipeline`. Scripts read and write `../`.
 |---|---|---|---|---|---|
 | `redrock` (default) | `fh1_redrock` | 2048 at 2 m | -6000, 4250 | 275 MB | 1 minute |
 | `colorado` | `fh1_colorado` | 4096 at 4 m | -300, 500 | 3.2 GB | 7 minutes, peak 4 GB RAM |
+| `clearsprings` | `fh1_clearsprings` | 2048 at 2 m | 1700, 2000 | | |
+| `coloradodirt` | `fh1_coloradodirt` | 4096 at 4 m | -300, 500 | | Rally Expansion; builds in `fh1/dirt/`, see Other tracks |
 
 The drivable map spans about x -8000 to 7400, z -5200 to 6200. Far backdrop meshes reach further and overhang the square.
 
@@ -18,6 +20,19 @@ Output goes to `mods/unpacked/<level>`, or to a folder passed as the first argum
 Every script finds the game through `gamepath.py`: `FH1_DUMP`, else the path in `fh1/dump_path.txt` (the app writes it). `KN5PORT_MODS` overrides the BeamNG mods folder for every script, through `beamng.find_mods()`. `zones.py` checks placements against the live capture (`memrec.pkl`, `memobj_all.pkl`) only when those files exist.
 
 The app runs the scripts from its own copy, `<work folder>/app_pipeline/`, the same way the build queue uses `build_snapshot_<chunk>/`. With this checkout's data prepared, its work folder defaults to `fh1/` itself.
+
+## Other tracks: the Rally Expansion
+
+FH1's Rally Expansion is its own track, `ColoradoDirt`: the game loads it in place of Colorado. It is a rebuild of Colorado in the same frame with 614 of Colorado's 1,434 zones (Red Rock, Redstone and the mountains mostly; no festival), about 40% of its meshes new or re-cut, and every mesh renumbered. Its 34 routes are `Tracks` rows in the DLC's database patch, with no `Events` or `Races` rows: `events.dlc_races()` makes each a one-lap rally stage.
+
+Each track's data lives in its own work folder, the folder above the scripts: `fh1/` for Colorado, `fh1/dirt/` for the Rally Expansion. A `track.json` there names the track and the DLC package (`FH1_TRACK` and `FH1_DLC` override it), and `gamepath.py` gives every script the track's files: `BINZIP`, `RIBBON`, `PVS`, `HEX`, `NAV`, `AUDIO`, `MESH` (the mesh file stem), `NAME` (its `MediaName`) and `db()`, `gamedb.slt` with the DLC patch attached as `patch`. Code that names a mesh looks it up by name in `cat2.pkl`, as each track numbers its meshes differently.
+
+```
+python prepare_dlc.py "<Xenia>/content/4D5309C9/00000002/6F6992766050D818245ADD408031E280FB5F4E634D/Media"
+python buildq.py submit --chunk coloradodirt -m "..." --by <name>
+```
+
+`prepare_dlc.py` writes `fh1/dirt/track.json` and `dump_path.txt`, unpacks the track's ribbon, nav and settings from `DLCZips/1600_pri_65.zip` into `fh1/dirt/track/`, then runs `prepare.py` from a copy of `pipeline/` in `fh1/dirt/prep_snapshot/`. The `coloradodirt` lane builds from `fh1/dirt/build_snapshot_coloradodirt/` (`WORKS` in `buildq.py`), and `build3.py` stops if a chunk's track doesn't match its work folder's. The bin zip has every entry once, unlike Colorado's, and the DLC's other 12 packages are cars and the Car Challenge pack.
 
 ## `prepare.py` order
 

@@ -1,13 +1,14 @@
 """FH1's English string tables (media/stringtables/EN.zip, LSB2 files, UTF-16 big endian). The database refers to a string as `_&<id>`: the id's low 16 bits
 are the string's key in its table, the high 16 bits name the table."""
 import struct, zipfile
-import gamezip
+import gamepath, gamezip
 
 
-def read(table):
-    """{key: text} for one table, such as 'Events.str'"""
-    z = zipfile.ZipFile(gamezip.MEDIA + 'stringtables/EN.zip')
-    b = z.read(table) if z.getinfo(table).compress_type == 0 else gamezip.read('stringtables/EN.zip', table)
+def read(table, dlc=False):
+    """{key: text} for one table, such as 'Events.str'. dlc: the track's DLC copy of it, which holds the DLC's strings"""
+    zp, name = (gamepath.DLC + '/DLCZips/StringTables_pri_1750.zip', 'EN/' + table) if dlc and gamepath.DLC else (gamezip.MEDIA + 'stringtables/EN.zip', table)
+    z = zipfile.ZipFile(zp)
+    b = z.read(name) if z.getinfo(name).compress_type == 0 else gamezip.read(zp, name)
     n = struct.unpack('>I', b[40:44])[0]; rows = [struct.unpack('>HI', b[44 + 6 * i:50 + 6 * i]) for i in range(n)]
     text = b[50 + 6 * n:]          # after the rows, a 0xffff row holding the text's length in characters
     out = {}

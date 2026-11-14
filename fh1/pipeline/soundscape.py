@@ -48,8 +48,8 @@ TRIGGER_VOLUME = .7
 def trigger_distances():
     """{event: (min, max distance in metres, volume)} from Triggerable_Events.fev. Each event's name is followed 0x30 bytes on by its 3D min and max
     distance as floats, and 0x8c on by its volume: rides 150 m, sprinklers 65, the geyser 300, fireworks 500, aircraft 250 to 600"""
-    import gamezip
-    b = open(gamezip.MEDIA + f'audio/tracks/colorado/{TRIGGER_BANK}.fev', 'rb').read(); out = {}
+    import gamepath
+    b = open(gamepath.AUDIO + f'{TRIGGER_BANK}.fev', 'rb').read(); out = {}
     for m in re.finditer(rb'([A-Za-z_0-9]+)\x00', b):
         name = m.group(1).decode(); e = m.end()
         if name in TRIGGERS and name not in out and len(b) > e + 0x90 and struct.unpack('<I', b[m.start() - 4:m.start()])[0] == len(name) + 1:
@@ -63,8 +63,8 @@ def trigger_distances():
 
 def trigger_clips():
     """{event: [(file stem, sample tuple)]} from the triggerable bank, numbered in bank order"""
-    import gamezip
-    b = open(gamezip.MEDIA + f'audio/tracks/colorado/{TRIGGER_BANK}.fsb', 'rb').read(); s = samples(b); out = {}
+    import gamepath
+    b = open(gamepath.AUDIO + f'{TRIGGER_BANK}.fsb', 'rb').read(); s = samples(b); out = {}
     for event, pattern in TRIGGERS.items():
         found = [x for x in s if re.match(pattern, x[0])]
         if not found:

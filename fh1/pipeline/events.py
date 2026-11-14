@@ -2,9 +2,9 @@
 media/db/gamedb.slt with its English names. All positions are in FH1's game axes (x, y up, z), whose z is the mesh z negated."""
 import re, sqlite3
 import numpy as np
-import gamezip, strtab
+import gamepath, gamezip, strtab
 
-RIBBON = gamezip.MEDIA + 'tracks/colorado/Ribbon_00/'
+RIBBON = gamepath.RIBBON
 NUM = r'(-?[\d.]+(?:e-?\d+)?)'
 
 
@@ -33,8 +33,26 @@ def route(n):
 
 def races():
     """every event with a route, as dicts: id (Events.HorizonEventID), name, kind (its career type), track (the route's name), route (TrackRoute number), laps, length (FH1's driven metres, one lap)"""
+    if gamepath.DBPATCH:
+        return dlc_races()
     E, T, C = strtab.read('Events.str'), strtab.read('Tracks.str'), strtab.read('CareerEventTypes.str')
     db = sqlite3.connect(gamezip.MEDIA + 'db/gamedb.slt')
     rows = db.execute('select e.HorizonEventID, e.Name, ct.Name, t.DisplayName, t.RouteId, r.NumLaps, t.Length from Events e join Races r on r.EventId = e.Id '
                       'join Tracks t on t.id = r.TrackId left join CareerEventTypes ct on ct.id = e.CareerTypeId where t.MediaName = "Colorado" order by e.HorizonEventID')
     return [dict(id=i, name=strtab.lookup(E, n), kind=strtab.lookup(C, k), track=strtab.lookup(T, d), route=r, laps=laps, length=length) for i, n, k, d, r, laps, length in rows]
+
+
+def dlc_races():
+    """A DLC track's races. The Rally Expansion has no Events or Races rows: each route is a Tracks row of its database patch, a one-lap stage"""
+    T = strtab.read('Tracks.str', dlc=True)
+    rows = gamepath.db().execute('select id, DevName, DisplayName, RouteId, Length from patch.Tracks where MediaName = ? and RouteId > 0 order by RouteId', (gamepath.NAME,))
+    return [dict(id=i, name=strtab.lookup(T, d) or dev.replace('_', ' ').title(), kind='Rally', track=strtab.lookup(T, d) or dev, route=r, laps=1, length=length)
+            for i, dev, d, r, length in rows]
+
+
+def race_routes():
+    """the routes the track's races drive, route 0 (free roam) left out"""
+    if gamepath.DBPATCH:
+        return {r['route'] for r in dlc_races()}
+    return {int(r_) for (r_,) in sqlite3.connect(gamezip.MEDIA + 'db/gamedb.slt').execute(
+        'select t.RouteId from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId where t.MediaName = ?', (gamepath.NAME,))} - {0}

@@ -1,6 +1,6 @@
 import struct,os,collections,json,re
 import gamepath
-p=gamepath.MEDIA + 'tracks/colorado/bin.zip'
+p=gamepath.BINZIP
 f=open(p,'rb'); sz=os.path.getsize(p)
 f.seek(sz-22); e=f.read(22); _,dn,cdn,n1,n2,cs,co,cl=struct.unpack('<IHHHHIIH',e)
 f.seek(co); b=f.read(cs); o=0; ents=[]

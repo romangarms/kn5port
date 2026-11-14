@@ -2,12 +2,12 @@
 Layout is in docs/formats.md. Zone z is opposite to mesh z, as in colorado.nav."""
 import struct
 import numpy as np
-import gamezip
+import gamepath
 
 
 def hexes():
     """-> {zone number: (x, zone z) hex centre}, hex radius"""
-    b = open(gamezip.MEDIA + 'tracks/colorado/Ribbon_00/Colorado_00.hex', 'rb').read()
+    b = open(gamepath.HEX, 'rb').read()
     _, _, R, X0, Z0, cnt, W, H = struct.unpack_from('>4sI3fIII', b, 0)
     g = np.frombuffer(b, '>u4', W * H, 0x20).astype(np.int64); out = {}
     for k in np.where(g < cnt)[0]:

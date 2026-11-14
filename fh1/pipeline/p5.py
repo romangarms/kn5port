@@ -1,8 +1,9 @@
 import struct,collections,pickle,re
 import numpy as np,rmb
 import gamepath
-b=open(gamepath.RIBBON + "Colorado_00.pvs",'rb').read()
-o=0x87d4d+4; N=62173
+b=open(gamepath.PVS,'rb').read()
+import pvs
+o,N=pvs.tables(b)['draw']
 print('tail after 18B records',hex(o+18*N),b[o+18*N:o+18*N+80].hex(' ',4))
 a=np.frombuffer(b,dtype=np.dtype([('t','>u2'),('p','>u2'),('f','>u2'),('g','>u2'),('s','>u2',(5,))]),count=N,offset=o)
 print(a[:6]); print(a[-4:])

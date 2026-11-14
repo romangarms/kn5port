@@ -4,7 +4,7 @@ Uses lzx.dll if built (see the README), else lzxdec.py's numba decoder. Everythi
 """
 import json, os, pickle, re, struct, subprocess, sys
 
-from gamepath import DUMP
+import gamepath
 
 
 def run(script):
@@ -19,7 +19,7 @@ def file_list():
 
 
 def filename_map():
-    b = open(DUMP + '/media/tracks/colorado/Ribbon_00/FilenameMap_00.dat', 'rb').read()
+    b = open(gamepath.RIBBON + 'FilenameMap_00.dat', 'rb').read()
     n = struct.unpack('>I', b[:4])[0] // 4
     of = struct.unpack('>%dI' % n, b[:n * 4])
     names = [b[of[i]:(of[i + 1] if i + 1 < n else len(b))].split(b'\0')[0].decode('latin1') for i in range(n)]

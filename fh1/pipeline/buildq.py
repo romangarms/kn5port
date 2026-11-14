@@ -37,8 +37,11 @@ def current(chunk):
     return Q / f'current.{chunk}.json'
 
 
+WORKS = {'coloradodirt': 'dirt'}     # a chunk of another track builds in that track's work folder, fh1/<this>/, whose data it reads as ../
+
+
 def snap(chunk):
-    return SNAPS / f'build_snapshot_{chunk}'
+    return (SNAPS / WORKS[chunk] if chunk in WORKS else SNAPS) / f'build_snapshot_{chunk}'
 
 
 def alive(pid):
@@ -183,6 +186,7 @@ def run(chunk):
                 (PENDING / f"{r['id']}.json").unlink(missing_ok=True)
             out = RUNS / f'{rid}-{chunk}.out'; env = dict(os.environ, FH1_CHUNK=k[0], PYTHONUNBUFFERED='1', **dict(k[1]))
             env.setdefault('NUMBA_CACHE_DIR', str(FH1 / 'numbacache'))      # the snapshot is copied without __pycache__, which held numba's compiled code
+            env['PYTHONPATH'] = os.pathsep.join([str(FH1.parent)] + [p_ for p_ in [os.environ.get('PYTHONPATH')] if p_])     # the repo root, for kn5port: the scripts' ../.. misses it from a deeper work folder (WORKS)
             t0 = time.time()
             with open(out, 'w', encoding='utf8') as f_:
                 p_ = subprocess.Popen([sys.executable, '-u', BUILD], cwd=SNAP, env=env, stdout=f_, stderr=subprocess.STDOUT, creationflags=NOWIN)

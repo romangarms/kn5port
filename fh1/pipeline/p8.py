@@ -3,9 +3,10 @@ import numpy as np,rmb,tex
 from PIL import Image,ImageDraw
 T=pickle.load(open('../meshtab.pkl','rb')); R=pickle.load(open('../pvsrec.pkl','rb')); idx={r[4]:(r[3],r[2]) for r in R}
 import gamepath
-b=open(gamepath.RIBBON + "Colorado_00.pvs",'rb').read()
-o=0x861db+8; S=[]
-for i in range(173):
+b=open(gamepath.PVS,'rb').read()
+import pvs
+o,NS=pvs.tables(b,R)['shaders']; S=[]
+for i in range(NS):
     n=struct.unpack_from('>I',b,o)[0]; S.append(b[o+4:o+4+n].decode('latin1').split(chr(92))[-1]); o+=4+n
 pickle.dump((idx,S),open('../texshader.pkl','wb'))
 def mats(bb,m):

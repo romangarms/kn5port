@@ -1,12 +1,12 @@
 """colorado.nav: FH1's road network. Layout is in docs/formats.md."""
 import collections, struct
 import numpy as np
-import gamezip
+import gamepath
 
 
 def read():
     """Returns node positions as (x, north, height) and {road id: {'nodes': ordered node ids, 'tags': {key: value}}}."""
-    b = open(gamezip.MEDIA + 'tracks/colorado/colorado.nav', 'rb').read()
+    b = open(gamepath.NAV, 'rb').read()
     n, roads_, tags_, slots, _, nkeys, nvals = struct.unpack('>7I', b[4:32])
     r = np.frombuffer(b, '>u4', count=n * 8, offset=44).reshape(n, 8).astype('i8')
     p = np.frombuffer(b, '>f4', count=n * 8, offset=44).reshape(n, 8)[:, :3].astype('f8')

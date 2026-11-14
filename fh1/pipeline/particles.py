@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import animcopy, frame, gamezip, granny2, mission, soundscape, tex
+import animcopy, frame, gamepath, gamezip, granny2, mission, soundscape, tex
 from scipy.spatial.transform import Rotation
 from animsets import placed as anim_placed
 
@@ -193,7 +193,7 @@ i_ = b_.rfind(b'PK\x05\x06'); n_ = struct.unpack('<H', b_[i_ + 10:i_ + 12])[0]; 
 for _ in range(n_):
     nl, xl, cl = struct.unpack('<HHH', b_[o_ + 28:o_ + 34]); EFFECT_FILES.append(b_[o_ + 46:o_ + 46 + nl].decode('latin1')); o_ += 46 + nl + xl + cl
 
-root = ET.fromstring(open(gamezip.MEDIA + 'tracks/colorado/Ribbon_00/ParticleEmitters.xml', 'rb').read().decode('utf-8-sig', 'ignore'))
+root = ET.fromstring(open(gamepath.RIBBON + 'ParticleEmitters.xml', 'rb').read().decode('utf-8-sig', 'ignore'))
 placed = []
 for e in root:
     eff = e.find('Effect'); pos = e.find('Position')

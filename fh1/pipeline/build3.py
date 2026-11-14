@@ -53,8 +53,11 @@ class Tee:
 # FH1_CHUNK picks the area: level name, title, heightfield size, grid spacing, centre, map art size
 CHUNKS = {'redrock': ('fh1_redrock', 'Colorado: Red Rock (FH1 chunk)', 2048, 2.0, -6000.0, 4250.0, 2048),
           'colorado': ('fh1_colorado', 'Colorado (FH1)', 4096, 4.0, -300.0, 500.0, 4096),
-          'clearsprings': ('fh1_clearsprings', 'Colorado: Clear Springs (FH1 chunk)', 2048, 2.0, 1700.0, 2000.0, 2048)}
+          'clearsprings': ('fh1_clearsprings', 'Colorado: Clear Springs (FH1 chunk)', 2048, 2.0, 1700.0, 2000.0, 2048),
+          'coloradodirt': ('fh1_coloradodirt', 'Colorado Rally (FH1)', 4096, 4.0, -300.0, 500.0, 4096)}
 LVL, TITLE, N, SQ, CX, CZ, BASE = CHUNKS[os.environ.get('FH1_CHUNK', 'redrock')]
+if (LVL == 'fh1_coloradodirt') != (gamepath.TRACK == 'coloradodirt'):     # each track's data lives in its own work folder: fh1/ for Colorado, fh1/dirt/ for the Rally Expansion
+    sys.exit(f'chunk {LVL} does not match the work folder {gamepath.WORK}, which holds {gamepath.TRACK}')
 LOG = Path('../logs') / f'{LVL}-{time.strftime("%Y%m%d-%H%M%S")}.log'; LOG.parent.mkdir(exist_ok=True)
 LOGF = open(LOG, 'w', encoding='utf8', buffering=1); sys.stdout = Tee(sys.stdout, LOGF); sys.stderr = Tee(sys.stderr, LOGF)
 print('log', LOG.resolve())
@@ -63,7 +66,7 @@ CELL = 250.0; TEXMAX = 1024; CACHE = Path('../ddscache')       # delete CACHE af
 LOD_DIST = (300.0, 800.0); PROP_FAR = 1600.0; PX = 1250.0
 IMPOSTERS = os.environ.get('FH1_IMPOSTERS', '1') != '0'
 # FH1's far mountains stand up to 18 km out, beyond the square. The whole map keeps them as a backdrop; a chunk would pull in the rest of the map
-BACKDROP = os.environ.get('FH1_BACKDROP', '1' if LVL == 'fh1_colorado' else '0') != '0'; VISIBLE = 24000 if BACKDROP else 6000
+BACKDROP = os.environ.get('FH1_BACKDROP', '1' if LVL in ('fh1_colorado', 'fh1_coloradodirt') else '0') != '0'; VISIBLE = 24000 if BACKDROP else 6000
 HALF = N * SQ / 2; X0, X1, Z0, Z1 = CX - HALF, CX + HALF, CZ - HALF, CZ + HALF
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(beamng.find_mods()) / 'unpacked' / LVL
 level = root / 'levels' / LVL; rel = f'/levels/{LVL}'
@@ -104,7 +107,7 @@ GBITS = collections.defaultdict(list)
 for t_, g_ in zip(DRAW['t'].astype(int), DRAW['g'].astype(int)):
     GBITS[t_].append(g_)
 PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
-NOMESH = {6664}      # Plane001: a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
+NOMESH = {6664} if gamepath.TRACK == 'colorado' else set()      # Colorado's Plane001 (not the other one, 8254): a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
 TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD|^Mountains_Area\d+_NOLOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
 # TERR_CUBE (FH1's coarse filler, 80 to 130 m triangles, and box stand-ins for Carson's town blocks) stays out. As a last fill tier it
@@ -1960,7 +1963,7 @@ def lod_sibling(no):
 
 
 def model_groups(no):
-    fs = f'coloradoout.{no:05d}.rmb.bin'
+    fs = f'{gamepath.MESH}.{no:05d}.rmb.bin'
     if not os.path.exists('../x/' + fs):
         return [], None, None, ''
     global NM
@@ -2182,9 +2185,8 @@ def event_kept(r_, nm_, x, y, z):
 # Race layouts: a record's list bytes are the Tracks.RouteId values (TrackRoute<n>.xml) of the races that show it, and 0 is the route of
 # "Colorado Free Roam" (see free-roam.md). Each event route's props go in their own prefab, which the race mission loads while it runs
 # (races.py copies it in as mainPrefab.prefab.json). Owner-named records are the events' start pens, listed for route 0, and stay out
-import sqlite3, gamezip
-RACE_ROUTES = {int(r_) for (r_,) in sqlite3.connect(gamezip.MEDIA + 'db/gamedb.slt').execute(
-    'select t.RouteId from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId where t.MediaName = "Colorado"')} - {0}
+import events
+RACE_ROUTES = events.race_routes()
 RACE = defaultdict(dict)            # route -> {(base, x, z): (t, name, x, y, z, rotation)}
 for (did, p_), r_ in pickle.load(open('../zonerec.pkl', 'rb')).items():
     t = int(DRAW['t'][did]); nm_ = names_.get(t, ''); x, y, z = r_['pos'][0], r_['pos'][1], -r_['pos'][2]
@@ -2358,7 +2360,7 @@ NOCOL = re.compile(r'rope|BannerSingleLane', re.I)       # festival bunting, 35 
 # per forest item. Glowing props stay TSStatics for their instance colour, as do the shapes animated.py swaps out (OBJECTS there).
 # FH1_PROPFOREST=0 keeps TSStatics, for comparison
 PROPFOREST = os.environ.get('FH1_PROPFOREST', '1') != '0'; PROPDATA = {}
-KEEPSTATIC = {6625, 6627, 6429}
+KEEPSTATIC = {n for n, nm in NAMEOF.items() if nm in ('PLA_FARM_WindmillMetal_LOD00_', 'PLA_FARM_WindmillWood_LOD00_', 'GLOB_STFN_WindTurbine_02_LOD00_')}     # animated.py's OBJECTS
 KEEPMESH = re.compile(r'bridge|ramp|jump|stage|platform|deck|road|tunnel|pavement|kerb|curb|car_?park|parking|dam(?![a-z])', re.I)
 
 

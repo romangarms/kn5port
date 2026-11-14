@@ -1,4 +1,4 @@
-"""Reads entries from the game's LZX zips in media/. These keep normal local headers, unlike bin.zip."""
+"""Reads entries from the game's LZX zips in media/, or from a zip given by its full path. These keep normal local headers, unlike bin.zip."""
 import os, struct, zlib
 import lzxdec
 
@@ -6,7 +6,7 @@ from gamepath import MEDIA
 
 
 def read(name, wanted):
-    b = open(MEDIA + name, 'rb').read()
+    b = open(name if os.path.isabs(name) else MEDIA + name, 'rb').read()
     i = b.rfind(b'PK\x05\x06'); n = struct.unpack('<H', b[i + 10:i + 12])[0]; o = struct.unpack('<I', b[i + 16:i + 20])[0]
     for _ in range(n):
         crc, cs, us = struct.unpack('<III', b[o + 16:o + 28]); nl, xl, cl = struct.unpack('<HHH', b[o + 28:o + 34])

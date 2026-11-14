@@ -9,7 +9,7 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from daewrite import FARCUT, write_lod
-import animcopy, dds, frame, gamezip, granny, granny2, mission, rmb, soundscape, tex
+import animcopy, dds, frame, gamepath, gamezip, granny, granny2, mission, rmb, soundscape, tex
 from animsets import placed, records
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -17,20 +17,26 @@ from kn5port import beamng
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); S = np.diag([1., 1., -1.])
-# shape: the built shape for this mesh. group: the anim_proc set that places it. hub and axis: the Fan bone from its ANIM_*.pgeo, checked against the mesh, in BeamNG axes.
+# name: the source mesh, whose built shape is m<its number>; a track without it skips the object. group: the anim_proc set that places it. hub and axis: the Fan bone from its ANIM_*.pgeo, checked against the mesh, in BeamNG axes.
 # radius and depth: parts wholly inside this disc are the fan. origin: the point of the shape that a set's position means, where the ANIM model is centred differently.
 # turns: seconds per turn, chosen by eye as FH1's curves aren't decoded. Each speed needs its own shape, as the animation lives in the file.
 # tower_lod and fan_lod: detail sizes, from build3.py's detail_sizes for the object's radius
-OBJECTS = {'metal': dict(shape='m6625', group='fx_windmillsmetal', hub=(-.507, -1.174, 9.931), radius=1.75, depth=.6, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
-           'wood': dict(shape='m6627', group='fx_windmillswood', hub=(-.02, -1.55, 9.94), radius=1.75, depth=.5, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
-           'turbine': dict(shape='m6429', group='fx_maintown', hub=(7.42, -4.6, 82.17), radius=56, depth=1.6, origin=(7.5, -1.35, 0), turns=(5, 6, 7.5), tower_lod=(211, 88, 45), fan_lod=(190, 70, 1))}
+OBJECTS = {'metal': dict(name='PLA_FARM_WindmillMetal_LOD00_', group='fx_windmillsmetal', hub=(-.507, -1.174, 9.931), radius=1.75, depth=.6, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
+           'wood': dict(name='PLA_FARM_WindmillWood_LOD00_', group='fx_windmillswood', hub=(-.02, -1.55, 9.94), radius=1.75, depth=.5, turns=(2.4, 2.9, 3.5), tower_lod=(25, 9, 3), fan_lod=(20, 6, 1)),
+           'turbine': dict(name='GLOB_STFN_WindTurbine_02_LOD00_', group='fx_maintown', hub=(7.42, -4.6, 82.17), radius=56, depth=1.6, origin=(7.5, -1.35, 0), turns=(5, 6, 7.5), tower_lod=(211, 88, 45), fan_lod=(190, 70, 1))}
 AXIS = (0, 1, 0)
-# mesh: the source meshes for LOD0 and LOD1. model: the file holding the route. group: the anim_proc set that places it. lod: detail sizes
+# mesh: the source meshes for LOD0 and LOD1, by name, as each track numbers them differently. model: the file holding the route. group: the anim_proc set that places it. lod: detail sizes
 # front: which way along y the mesh faces, given for vehicles whose route is a quantised curve. key: seconds between keys.
 # parts: meshes that spin about the vehicle's x axis through hub, in BeamNG axes, once per `seconds`. The combine's reel speed is chosen by eye
-VEHICLES = {'tractor': dict(mesh=(6680, 6681), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1)),
-            'combine': dict(mesh=(6621, 6622), model='ANIM_CombineHarvester_001.pgeo', group='clrd_festival_combineharvester', lod=(40, 14, 1), front=-1, key=.25,
-                            parts={'reel': dict(mesh=6623, hub=(0, -5.607, .992), seconds=1.5)})}
+VEHICLES = {'tractor': dict(mesh=('Tractor_LOD00', 'Tractor_LOD01'), model='ANIM_Tractor_001.pgeo', group='clrd_festival_tractor', lod=(40, 14, 1)),
+            'combine': dict(mesh=('L_Front_Wheel_LOD00', 'L_Front_Wheel_LOD01'), model='ANIM_CombineHarvester_001.pgeo', group='clrd_festival_combineharvester', lod=(40, 14, 1), front=-1, key=.25,
+                            parts={'reel': dict(mesh='Reel_LOD00', hub=(0, -5.607, .992), seconds=1.5)})}
+_NO = {}
+for c_ in pickle.load(open('../cat2.pkl', 'rb')):
+    _NO.setdefault(c_['name'], int(c_['f'].split('.')[1]))
+OBJECTS = {k: {**{a: v for a, v in w.items() if a != 'name'}, 'shape': f"m{_NO[w['name']]}"} for k, w in OBJECTS.items() if w['name'] in _NO}
+VEHICLES = {k: dict(w, mesh=tuple(_NO[n] for n in w['mesh']), parts={p: dict(q, mesh=_NO[q['mesh']]) for p, q in w.get('parts', {}).items()})
+            for k, w in VEHICLES.items() if all(n in _NO for n in w['mesh']) and all(q['mesh'] in _NO for q in w.get('parts', {}).values())}
 KEY_SECONDS = 1.0; STOPPED = .05; AXLES = 1.4; TRACK = 1.0
 # Planes come from Granny meshes. texture: the track pool texture its UVs land on (formats.md, animatedobjects.zip). The route is level in FH1 once its tilted frame is removed
 # The crop duster flies with the rides now: its decoded route is level once its skeleton's placement is applied. This path is kept for another plane
@@ -287,7 +293,7 @@ def mesh_groups(nos):
     MT = pickle.load(open('../meshtab.pkl', 'rb')); IDX = pickle.load(open('../texshader.pkl', 'rb'))[0]
     mats = json.loads((level / 'art' / 'shapes' / f'{LVL}.materials.json').read_text()); out = []
     for lv, no in enumerate(nos):
-        m = rmb.parse(open(f'../x/coloradoout.{no:05d}.rmb.bin', 'rb').read())['meshes'][0]
+        m = rmb.parse(open(f'../x/{gamepath.MESH}.{no:05d}.rmb.bin', 'rb').read())['meshes'][0]
         p, nr, _ = rmb.verts(m); a = np.frombuffer(m['vb'], 'u1').reshape(-1, m['sd'])
         r0 = np.frombuffer(a[:, 16:20].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535
         pb = np.c_[p[:, 0], -p[:, 2], p[:, 1]]; nb = np.c_[nr[:, 0], -nr[:, 2], nr[:, 1]]

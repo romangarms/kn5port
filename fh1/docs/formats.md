@@ -46,10 +46,10 @@ Slots by shader name (working: surveyed over every material in the catalog):
 
 ## `Colorado_00.pvs`, FPVS (proven)
 
-Read by `p3.py`, `p5.py`, `p7.py`, `p8.py`.
+Read by `p3.py`, `p5.py`, `p7.py`, `p8.py`, which find the tables with `pvs.py`. Every track's FPVS has the same layout; the Rally Expansion's `ColoradoDirt_00.pvs` differs only in its counts (150 shaders, 24,154 draws, 9,979 mesh records).
 
 - At 0xAC, a 28-byte texture table: index to `_0x` texture id (`pvsrec.pkl`).
-- 173 shader names.
+- After the last texture record: u32 260, the u32 shader count, then 173 shader names, each a u32 length and its bytes. Then the u32 draw count and the draw table, then the u32 mesh-record count and the mesh records. Each table starts where the one before ends, so `pvs.py` walks them.
 - A 62,173-record, 18-byte draw table, `mt.npy`: `t` mesh number, `p`, `f` flag, `g`, `s[5]`. Draw ids throughout the game index this table.
   - **LOD groups (proven).** `p` is a signed i16 offset to the next record of the same LOD group, and following it always comes back round: 6,511 rings of 3 (LOD0, 1, 2), 6,153 rings of 2, 17,774 of 1. `g` bits 12-13 are the level: 0, 1, 2 in rings of 3, and 0 and 3 in rings of 2. Lone meshes are 3, or 0. Bit 11 is set on the top member (LOD0, or a lone mesh). Every mesh file is in exactly one ring at one level. Names agree for 14,071 of 14,939 world meshes. Where they don't, the ring is right: names join unrelated meshes (every `Object025`) and exporters misnamed some LODs (`ROAD_CLRD_Mountains_Area03_53_LOD00` with `_49_LOD01`, `racehub_LOD00` with `hubgrass_LOD01`). 254 records with `g` under 0x4000 point outside any ring, into some other hierarchy. They have no catalog names. `build3.py` reads this in `lod_rings`.
 - 14,560 per-mesh records (`meshtab.pkl`): texture index list, shader list, OBB.

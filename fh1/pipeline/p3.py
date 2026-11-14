@@ -1,7 +1,7 @@
 import struct,collections,json,re,pickle
 import numpy as np
 import gamepath
-b=open(gamepath.RIBBON + "Colorado_00.pvs",'rb').read()
+b=open(gamepath.PVS,'rb').read()
 ids=set(); names={n for n,_ in json.load(open('../list.json'))}
 for n in names:
     m=re.match(r'_0x([0-9A-Fa-f]{8})\.(bix|bin)',n)

@@ -1,6 +1,6 @@
 import ctypes,json,zlib,os,struct
 import gamepath
-P=gamepath.MEDIA + 'tracks/colorado/bin.zip'
+P=gamepath.BINZIP
 import lzxdec
 _f=open(P,'rb')
 E0=json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','ents.json')))

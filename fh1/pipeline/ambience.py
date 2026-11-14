@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import gamezip, soundscape
+import gamepath, gamezip, soundscape
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 LOOPS = {'AMB_Quads_Stream': {'Festival_Quad_F': 'festival', 'Main_Town_Quad_F_MoreBass': 'main_town', 'Mountains_Quad_F_MoreBass': 'mountains',
@@ -41,7 +41,7 @@ def export(sample, data, stem, tmp, target):
 done = 0
 with tempfile.TemporaryDirectory() as tmp:
     for bank, loops in LOOPS.items():
-        b = open(gamezip.MEDIA + f'audio/tracks/colorado/{bank}.fsb', 'rb').read()
+        b = open(gamepath.AUDIO + f'{bank}.fsb', 'rb').read()
         for name, frames, at, size, rate, channels in soundscape.samples(b):
             if name in loops:
                 export((name, frames, at, size, rate, channels), b, loops[name], tmp, TARGET_RMS)
