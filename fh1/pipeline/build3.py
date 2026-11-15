@@ -1068,11 +1068,25 @@ for (did, p_), r_ in ZREC.items():
             SHELL.add(t)
 
 
-def world_mesh(c):
-    """The game only draws a world-space mesh through a free-roam record at the origin. A mesh with no record is never loaded,
-    and a placeholder texture marks FH1's blocked-out ground"""
+# FILL: also build what no zone loads where no zone draws ground. The Rally Expansion ships ground and props for all of Colorado but streams
+# only its 614 zones round the stages: Carson's ring road, the lake, the middle of the map and the festival were holes. Its meshes there have
+# no zone record at all, so they come in as world meshes, fill only cells no hex draws (hex_selection's fallback), and their props only
+# where no hex draws (zone_objects). Colorado's zones cover all of it, so FILL stays off there. FH1_FILLUNLOADED=0/1 overrides
+FILL = os.environ.get('FH1_FILLUNLOADED', '0' if gamepath.TRACK == 'colorado' else '1') != '0'
+RECORDED = {int(DRAW['t'][did]) for did, _ in ZREC}
+
+
+def unrecorded_world(c):
+    """a mesh no zone record places, modelled in world space: ground by name, or a box that keeps clear of the origin, where origin-local props sit"""
     no = int(c['f'].split('.')[1])
-    if no in movedno or gkey(c) in moved or no not in atzero:
+    return no not in RECORDED and (bool(TERR.search(c['name']) or FAR.search(c['name'])) or not (c['mn'][0] < 1 and c['mx'][0] > -1 and c['mn'][2] < 1 and c['mx'][2] > -1))
+
+
+def world_mesh(c):
+    """The game only draws a world-space mesh through a free-roam record at the origin. A mesh with no record is never loaded (FILL: it
+    is, where no zone draws), and a placeholder texture marks FH1's blocked-out ground"""
+    no = int(c['f'].split('.')[1])
+    if no in movedno or gkey(c) in moved or no not in atzero and not (FILL and unrecorded_world(c)):
         return False
     return not (no < len(MT) and any(IDX[i][0] == PLACEHOLDER for i in MT[no][0]))
 
@@ -1109,7 +1123,7 @@ Road = np.full((N, N), np.nan, 'f8'); Water = np.full((N, N), np.nan, 'f8'); Cov
 # That replaces the far tiers' priorities and every footprint and height rule for water and rock. Cells no hex draws ground for take the
 # finest ground over them, close-range ground (g bit 3) first. Clear Springs 2026-11-04: no visible holes (user-checked).
 # FH1_HEXGROUND=0 goes back to the far tiers and their clipping
-HEXGROUND = os.environ.get('FH1_HEXGROUND', '1') == '1'; HG = 16.0; HEX_K = 8
+HEXGROUND = os.environ.get('FH1_HEXGROUND', '1') == '1'; HG = 16.0; HEX_K = 8; HEXDONE = None
 GROUNDFX = re.compile(r'^(h_blnd|h_vblnd|h_road)'); NOTGROUND = re.compile(r'sign|barrier|armco|fence|rail|wall|pole|bridge|decal|cable|building|^TERR_CUBE', re.I)
 HN = (int(np.ceil((X1 - X0) / HG)), int(np.ceil((Z1 - Z0) / HG)))
 HEXSEL = {}; HEXRING = {}       # ring -> sorted selected cell numbers; file -> ring, for the ground files
@@ -1213,6 +1227,12 @@ def zone_objects(cs):
             if any(zn_ in zl for zn_ in h.ravel().tolist()):
                 out.append(c)
                 continue
+        if FILL and HEXDONE is not None:       # where no hex draws ground, FH1 streams nothing: keep what the track has there
+            g_ = hg_grid(np.array([(c['mn'][0] + c['mx'][0]) / 2, 0, (c['mn'][2] + c['mx'][2]) / 2]))
+            i_, j_ = int(g_[0]), int(g_[1])
+            if not (0 <= i_ < HN[0] and 0 <= j_ < HN[1]) or not HEXDONE[j_ * HN[0] + i_]:
+                out.append(c); stats['zone_objects_unloaded_kept'] += 1; stats['zone_objects_unloaded_kept_tris'] += c['nt']
+                continue
         stats['zone_objects_dropped'] += 1; stats['zone_objects_dropped_tris'] += c['nt']; DROPPED['no zone loads: ' + re.sub(r'\d+', '#', c['name'])[:30]] += c['nt']
     return out
 
@@ -1305,6 +1325,7 @@ def hex_selection(cs):
         ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b), l in zip(uk, ld_)])
         decided[o_[ld_[inv]]] = True; sel[o_[ok[inv]]] = True
     done = np.zeros(HN[0] * HN[1], bool); done[pc[sel]] = True
+    global HEXDONE; HEXDONE = done.copy()           # cells a hex draws ground for, before the fallback below
     # copies of one tile in separate rings, such as TERR_CLRD_FEST_AREA_09_LOD00 and _LOD02: the finest in each cell
     lk = np.array([hash(lodkey(name_[r_])) for r_ in rings_]); lv = np.array([lod(name_[r_]) for r_ in rings_])
     s_ = np.flatnonzero(sel); o_ = s_[np.lexsort((lv[pr[s_]], lk[pr[s_]], pc[s_]))]
@@ -1791,10 +1812,11 @@ def axis(w):
 
 def model_table(w, M, total):
     """model records (flag, k, a, n, lods), in model order: model k owns n packed instances and a full-transform ones.
-    Returns ([a], [n]), or None if they don't account for the packed block. Empty tail models may have no record"""
+    Returns ([a], [n]), or None if they don't account for the packed block. Empty tail models may have no record.
+    The word before a record is 0, 1, 4 or 5; 5 precedes BarrierConcrete_mult, whose rows carry a tint"""
     a_ = []; n_ = []
     for i in range(1, len(w) - 4):
-        if len(a_) < M and w[i] <= 1 and w[i - 1] in (0, 1, 4) and w[i + 1] == len(a_) and w[i + 2] < 100000 and w[i + 3] <= total and 1 <= w[i + 4] <= 64:
+        if len(a_) < M and w[i] <= 1 and w[i - 1] in (0, 1, 4, 5) and w[i + 1] == len(a_) and w[i + 2] < 100000 and w[i + 3] <= total and 1 <= w[i + 4] <= 64:
             a_.append(w[i + 2]); n_.append(w[i + 3])
     a_ += [0] * (M - len(a_)); n_ += [0] * (M - len(n_))
     return (a_, n_) if sum(n_) == total else None
@@ -1824,6 +1846,13 @@ def placed_blocks(b, a_, lo, hi):
 
 EVENT = re.compile(r'festival|multiplayer|street|showcase|activation|crowd|_track_|testfest|_fest_|_pr_barriers|ghostmp', re.I)
 LAYERS_SEEN = collections.Counter(); LOSTSET = collections.Counter(); PLACED = []
+
+
+def entry_start(b):
+    """The 64 byte model entries start at the first 16 byte boundary after the set name's NUL (agrees with the 'tga' tag and
+    the 0x80 / 0xd0 rules on every set those read, both tracks). Rally Expansion sets have no 'tga' tag"""
+    m_ = re.search(rb'[A-Za-z]odels', b[0x50:0x100])
+    return None if m_ is None else (b.index(b'\0', 0x50 + m_.start()) + 16) & ~15
 
 
 def model_ids(b, h_, M):
@@ -1865,7 +1894,7 @@ def read_pgeo(n):
             return None
         # the header's start moves in some files. Model entries are 64 bytes and the first ids follow the last entry's 'tga' tag
         t_ = b.find(b'tga\0', 0x98, 0xd0 + 0x40 * M + 0x40)
-        h_ = t_ + 4 - 0x40 * M if t_ >= 0 else 0xd0
+        h_ = t_ + 4 - 0x40 * M if t_ >= 0 else entry_start(b)
         ids_ = model_ids(b, h_, M)
         if ids_ is None:
             stats['proc_bad'] += 1
@@ -1900,6 +1929,8 @@ def read_pgeo(n):
         stats['pgeo_badhdr'] += 1
         return None
     h_ = 0xd0 if b[0x98:0xa3] == b'models_proc' else 0x80        # named sets carry a longer header
+    if model_ids(b, h_, M) is None:                              # such as the Rally Expansion's models_hr_* barrier sets at 0xc0
+        h_ = entry_start(b)
     o = h_ + 0x44 * M; start = len(b) - size
     w = struct.unpack_from('>%dI' % ((start - o) // 4), b, o)
     table = model_table(w, M, size // 40)

@@ -125,7 +125,8 @@ Read by `read_pgeo` in `build3.py`. Magic `OEGP`, version 42. Bounding box at 0x
 **Placed sets** (`size == 0`, `models_proc_*`):
 
 - 96-byte full transforms, followed by 32-byte trailers. In the `(1, k, count, 0, t)` record form, `t` is the number of trailers after that model's rows, usually 1 but 2 in `__R00G06349` and `__R00G06371`. Blocks sit at the end of the file.
-- The header start varies. Don't assume 0xd0, or a name-length rule (that theory failed). Find `tga\0` after 0x98: the first draw ids follow it, and the entries are the 64 × M bytes before that point.
+- The header start varies. Don't assume 0xd0. Find `tga\0` after 0x98: the first draw ids follow it, and the entries are the 64 × M bytes before that point. Sets without the tag, which includes all of the Rally Expansion's, start their entries at the first 16-byte boundary after the NUL that ends the set name (`entry_start`). That rule agrees with the tag on every set that has one, in both tracks. The Rally Expansion's `models_hr_*` sets are packed sets (size 0) with the same start.
+- After the ids, each model has a block ending in `(pre, flag, k, count, 0, trailers)`. `pre` is 4, or 5 before `BarrierConcrete_mult` models, whose rows carry a grey tint in words 16-18. Accepting 5 also recovered 107 concrete barriers in 6 of Colorado's `Models_Ungrouped` sets, which were dropped before.
 
 The set name carries layer tags such as `[freeroam]`, which appears on 55 sets, the trees plus Red Rock fencing.
 

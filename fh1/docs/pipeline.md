@@ -32,6 +32,8 @@ python prepare_dlc.py "<Xenia>/content/4D5309C9/00000002/6F6992766050D818245ADD4
 python buildq.py submit --chunk coloradodirt -m "..." --by <name>
 ```
 
+**Unloaded areas.** The DLC ships ground and props for all of Colorado, but its zones stream only the corridors round the stages. So FH1 Rally never shows Carson's ring road, the lake, the middle of the map or the festival up close. `build3.py`'s `FILL` builds those areas from the DLC's own meshes. It is on for tracks other than Colorado, and `FH1_FILLUNLOADED` overrides it. World meshes with no zone record enter the hex ground and fill only cells no hex draws. Props no zone loads are kept only where no hex draws ground. Carson's town streets aren't in the DLC at all, so they stay empty; the user chose DLC geometry only, nothing from Colorado.
+
 `prepare_dlc.py` writes `fh1/dirt/track.json` and `dump_path.txt`, unpacks the track's ribbon, nav and settings from `DLCZips/1600_pri_65.zip` into `fh1/dirt/track/`, then runs `prepare.py` from a copy of `pipeline/` in `fh1/dirt/prep_snapshot/`. The `coloradodirt` lane builds from `fh1/dirt/build_snapshot_coloradodirt/` (`WORKS` in `buildq.py`), and `build3.py` stops if a chunk's track doesn't match its work folder's. The bin zip has every entry once, unlike Colorado's, and the DLC's other 12 packages are cars and the Car Challenge pack.
 
 ## `prepare.py` order
