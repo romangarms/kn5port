@@ -4,7 +4,8 @@
     kn5port convert  <AC track folder> [--mods <BeamNG mods folder>] [--terrain auto|off|SIZE] ...
     kn5port validate <level folder>
 
-Everything runs locally on files you already have. Converted levels are for personal use: never share them.
+Everything runs locally on files you already have. Levels converted from community tracks (mods) are
+for personal use: never share them.
 """
 import argparse
 import re
@@ -17,8 +18,16 @@ from . import __version__, beamng
 from .kn5 import KN5, KN5Error
 from .profile import Profile, read_surfaces, mostly_flat, phys_key
 
-NOTICE = ("kn5port converts content you own for personal use. Check the track's license (some forbid conversions), "
-          "and never share converted levels.")
+NOTICE = ("This is a community track: converting it is for personal use. Check its license (some forbid conversions), "
+          "and never share the converted level.")
+
+# Assetto Corsa's own tracks (folder names Kunos ships); everything else is a mod and gets the notice
+KUNOS_TRACKS = {"drift", "imola", "magione", "monza", "mugello", "spa", "trento-bondone", "vallelunga"}
+
+
+def is_kunos(track):
+    name = Path(track).name.lower()
+    return name.startswith("ks_") or name in KUNOS_TRACKS
 
 
 def inspect_track(track, profile=None, beamng_path=None, mods_path=None):
@@ -135,7 +144,8 @@ def cmd_convert(a):
     track = Path(a.track)
     if not track.exists():
         sys.exit(f"no such folder: {track}")
-    print(NOTICE)
+    if not is_kunos(track):
+        print(NOTICE)
     name = re.sub(r"[^A-Za-z0-9_]", "_", a.level or track.name).lower()
     if a.out:
         mod_root = Path(a.out)

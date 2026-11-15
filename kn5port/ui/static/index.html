@@ -232,7 +232,6 @@ dialog.wide .db { max-height: 70vh; overflow: auto; }
     <p>For a GOD package or an ISO, kn5port reads it directly and copies out only what the converter uses (about 4 GB) into its work folder. You don't need to convert anything yourself.</p>
     <h3>If kn5port can't read your copy</h3>
     <p>Turn it into extracted files with other tools, then pick that folder: a GOD package with <code>god2iso</code>, then the ISO with <code>extract-xiso -x</code>.</p>
-    <p><strong>Never share converted levels or game files.</strong> The result is for you to drive on this computer.</p>
   </div>
   <div class="df"><button class="primary" id="howtoOk">Close</button></div>
 </dialog>
@@ -251,9 +250,8 @@ dialog.wide .db { max-height: 70vh; overflow: auto; }
 <dialog id="notice">
   <div class="dh">Before you convert anything</div>
   <div class="db notice">
-    <p>kn5port converts tracks and maps <strong>you already have</strong> into BeamNG levels on this computer. The result is a derivative of someone else's work, so:</p>
-    <p>• <strong>Never share converted levels</strong> — not as mods, uploads, or in bug reports.<br>
-       • <strong>Check each track's license.</strong> Some forbid conversions to other games, even for personal use.<br>
+    <p>kn5port converts tracks and maps <strong>you already have</strong> into BeamNG levels on this computer.</p>
+    <p>• <strong>Community-made tracks (mods) are someone else's work.</strong> Never share levels converted from them — not as mods, uploads, or in bug reports — and check each mod's license: some forbid conversions to other games, even for personal use.<br>
        • Protected / encrypted tracks are skipped; kn5port doesn't get around protection.<br>
        • Forza Horizon is converted only from <strong>your own copy</strong> of the game. kn5port includes no game files.</p>
   </div>
@@ -724,7 +722,7 @@ function fhRender() {
     !s.prepared && "read the map's tables (about 3 minutes, once)", `build ${c.name}`, fh.radio && "build the radio mod"].filter(Boolean) : [];
   $("#fh").innerHTML = `
     <div><h1>Forza Horizon 1 <small>Colorado → BeamNG</small></h1>
-      <div class="lead">Turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG level: the terrain, roads, buildings, plants, water, lights, races and radio. Everything happens on this computer, for your personal use only.</div></div>
+      <div class="lead">Turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG level: the terrain, roads, buildings, plants, water, lights, races and radio. Everything happens on this computer.</div></div>
 
     <section><h2 class="numh"><span class="num ${srcOk ? "ok" : ""}">1</span>Your copy of Forza Horizon</h2>
       <div class="og">
