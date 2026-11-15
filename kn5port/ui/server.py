@@ -506,7 +506,7 @@ def make_handler(app, port_ref):
                     app.fh1.update(body)
                     return self._send(200, app.fh1.state())
                 if u.path == "/api/fh1/check":
-                    return self._send(200, {"problems": app.fh1.problems(body)})
+                    return self._send(200, {"problems": app.fh1.problems(body), "folders": app.fh1.missing_folders()})
                 if u.path in ("/api/fh1/build", "/api/fh1/install"):
                     try:
                         j = app.fh1.start(body) if u.path == "/api/fh1/build" else app.fh1.setup_task(body.get("what"))

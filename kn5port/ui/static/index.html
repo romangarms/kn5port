@@ -147,6 +147,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes s { to { transform: rotate(360deg); } }
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 0; width: min(620px, 92vw); }
+dialog input[type=text].need { border-color: var(--bad); }
 dialog::backdrop { background: rgba(0,0,0,.6); }
 dialog .dh { padding: 16px 20px; border-bottom: 1px solid var(--line); font-weight: 700; }
 dialog .db { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
@@ -246,6 +247,7 @@ dialog.wide .db { max-height: 70vh; overflow: auto; }
 <dialog id="settings">
   <div class="dh">Folders</div>
   <div class="db">
+    <div class="alert bad" id="s_need" hidden></div>
     <div><label>Assetto Corsa tracks folder</label><div class="field"><input type="text" id="s_tracks" placeholder="…\steamapps\common\assettocorsa\content\tracks"><button class="secondary" data-browse="tracks">Browse…</button></div></div>
     <div><label>BeamNG.drive install folder</label><div class="field"><input type="text" id="s_beamng" placeholder="…\steamapps\common\BeamNG.drive"><button class="secondary" data-browse="beamng">Browse…</button></div></div>
     <div><label>BeamNG mods folder (converted levels go into mods\unpacked)</label><div class="field"><input type="text" id="s_mods" placeholder="%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods"><button class="secondary" data-browse="mods">Browse…</button></div></div>
@@ -648,11 +650,20 @@ $("#s_detect").addEventListener("click", async (e) => {
   const d = await api("/api/detect", {});
   for (const k of ["tracks", "beamng", "mods"]) if (d[k]) $("#s_" + k).value = d[k];
 });
-$("#settingsBtn").addEventListener("click", () => {
-  for (const k of ["tracks", "beamng", "mods"]) $("#s_" + k).value = state.settings[k] || "";
+// need: Folders fields a build is waiting on ("beamng", "mods"), outlined in red under a note saying why
+function openFolders(need = []) {
+  for (const k of ["tracks", "beamng", "mods"]) {
+    $("#s_" + k).value = state.settings[k] || "";
+    $("#s_" + k).classList.toggle("need", need.includes(k));
+  }
+  const names = { beamng: "BeamNG.drive install folder (the one that holds content\\levels)", mods: "BeamNG mods folder" };
+  $("#s_need").hidden = !need.length;
+  $("#s_need").textContent = need.length ? `The Forza Horizon build couldn't find your ${need.map((k) => names[k]).join(" or ")}. Set it here, then press Save.` : "";
   $("#s_updcheck").checked = state.settings.update_check !== false; updRender();
   $("#settings").showModal();
-});
+  if (need.length) $("#s_" + need[0]).focus();
+}
+$("#settingsBtn").addEventListener("click", () => openFolders());
 $("#s_cancel").addEventListener("click", () => $("#settings").close());
 
 // ---- updates (GitHub releases; the packaged exe downloads, checks and swaps in the new kn5port.exe itself)
@@ -699,6 +710,7 @@ $("#s_save").addEventListener("click", async () => {
     const r = await api("/api/settings", { tracks: $("#s_tracks").value, beamng: $("#s_beamng").value, mods: $("#s_mods").value });
     state.settings = r.settings; state.tracks = r.tracks; state.inspect = {};
     chips(); renderGrid(); renderDetail(); $("#settings").close();
+    if (!$("#s_need").hidden) { $("#fhProblems").innerHTML = ""; fhRefresh(); }     // opened by an FH1 build check
   } catch (e) { alert(e.message); }
 });
 $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port.ack", "1"); } catch (_) {} $("#notice").close(); });
@@ -902,6 +914,7 @@ $("#fh").addEventListener("click", async (e) => {
         const p = await api("/api/fh1/check", body);
         if (p.problems.length) {
           $("#fhProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${p.problems.map(esc).join("<br>")}</div>`;
+          if (p.folders?.length) openFolders(p.folders);
           return;
         }
       }

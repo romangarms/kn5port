@@ -70,9 +70,12 @@ BACKDROP = os.environ.get('FH1_BACKDROP', '1' if LVL in ('fh1_colorado', 'fh1_co
 HALF = N * SQ / 2; X0, X1, Z0, Z1 = CX - HALF, CX + HALF, CZ - HALF, CZ + HALF
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(beamng.find_mods()) / 'unpacked' / LVL
 level = root / 'levels' / LVL; rel = f'/levels/{LVL}'
+inst = beamng.find_install()        # the stock levels are the vegetation donor. Checked before the wipe, so a failed build keeps the old level
+if inst is None:
+    raise SystemExit('BeamNG.drive install folder not found: Steam detection found nothing and BEAMNG_PATH is unset. '
+                     'Set it under Folders in kn5port (the folder holding content\\levels).')
 shutil.rmtree(level, ignore_errors=True)        # everything here is generated, and a stale shape would still load
 beamng.write_notice(root, f'Forza Horizon (2012), {LVL}', 'Microsoft, Playground Games and Turn 10 Studios', LVL)
-inst = beamng.find_install()
 F = pickle.load(open('../cat2.pkl', 'rb')); MT = pickle.load(open('../meshtab.pkl', 'rb'))
 IDX, SHADERS = pickle.load(open('../texshader.pkl', 'rb')); DRAW = np.load('../mt.npy')
 

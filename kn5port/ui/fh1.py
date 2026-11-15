@@ -157,6 +157,14 @@ class FH1:
     def mods(self):
         return Path(self.settings.get("mods") or beamng.find_mods() or "")
 
+    def beamng(self):
+        """the BeamNG install (its stock levels donate vegetation): the Folders setting, BEAMNG_PATH, or Steam"""
+        return beamng.find_install(self.settings.get("beamng") or None)
+
+    def missing_folders(self):
+        """Folders-dialog fields the build needs that aren't set or found, for the page to ask for"""
+        return [k for k, ok in (("beamng", self.beamng()), ("mods", str(self.mods()) not in ("", "."))) if not ok]
+
     def update(self, body):
         for k in ("fh1_game", "fh1_work"):
             if k in body:
@@ -225,6 +233,8 @@ class FH1:
             out.append("Pick your copy of Forza Horizon.")
         if not s["mods"]:
             out.append("Set your BeamNG mods folder under Folders.")
+        if not self.beamng():
+            out.append("BeamNG.drive wasn't found. Set its install folder under Folders: the folder that holds content\\levels.")
         if opts.get("chunk") not in CHUNK:
             out.append("Pick which part of the map to build.")
         if beamng_running():
@@ -411,7 +421,7 @@ class Job:
         ff = find_ffmpeg()
         path = os.pathsep.join([str(Path(ff).parent)] * bool(ff) + [os.environ.get("PATH", "")])
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONSTARTUP")}
-        env.update(PATH=path, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), PYTHONIOENCODING="utf8",
+        env.update(PATH=path, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), BEAMNG_PATH=str(f.beamng() or ""), PYTHONIOENCODING="utf8",
                    PYTHONUNBUFFERED="1", NUMBA_CACHE_DIR=str(work / "numbacache"),
                    PYTHONPATH=os.pathsep.join([pkg_root] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
         if runtime.needed():
