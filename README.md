@@ -2,162 +2,76 @@
 
 # kn5port
 
-Convert Assetto Corsa tracks **that you own** into BeamNG.drive levels, on your own computer.
+Turn the Assetto Corsa tracks you already have into BeamNG.drive levels with one click. It can also convert
+Forza Horizon 1's Colorado map from your own copy of the game.
 
-kn5port contains no game content. It reads the track files already installed on your machine, reuses trees,
-grass and terrain materials from your own BeamNG.drive install, and writes the converted level into your local
-BeamNG mods folder. Like game recompilation projects, the repository is only the tool; you bring the data.
+![Your track library, with what kn5port found in the selected track](docs/screenshots/track.png)
 
-> **Personal use only.** Converted levels are derivative works of someone else's track. Never upload, share or
-> sell them, or post them in issues. Check the track's license first: some mods explicitly forbid conversions
-> to other games, and that applies to you even if you never share the result. kn5port only reads unprotected
-> `.kn5` files and does not attempt to get around encryption or other protection.
+## What you get
 
-## What it does
+- **Every track in one place.** kn5port finds Assetto Corsa and BeamNG through Steam, lists your tracks with
+  their previews, and marks each one as ready, partly readable or protected. It also shows which ones you've
+  already converted.
+- **A drivable BeamNG level.** Roads, kerbs and gravel keep their grip, so asphalt drives like asphalt and grass
+  like grass. Buildings and props come across, and every pit and start position becomes a spawn point.
+- **BeamNG scenery.** The ground becomes a real BeamNG terrain with 3D grass, and AC's flat tree cards become
+  BeamNG trees, sized to match the track's own. You pick which stock map the trees and ground come from:
+  West Coast USA, Italy, Utah, Jungle Rock Island and more.
+- **Checked before you drive.** After converting, kn5port checks the level, including that every AI racing line
+  has road under it.
 
-| AC | BeamNG |
-|---|---|
-| Road, kerb, gravel, wall meshes (physics surfaces) | Collision meshes with matching ground models (asphalt, gravel, grass, ...) |
-| Visual meshes (buildings, props, decals) | Static meshes, merged per material and split into 500 m cells |
-| Multilayer / grass / sand ground and distant terrain | A `TerrainBlock` (up to 4096²), fitted under the road, with stock terrain materials and GroundCover grass |
-| Card / mesh trees, bushes, grass cards | BeamNG forest items (redwoods, pines, oaks, shrubs, grass clumps) from a stock level, scaled to the AC heights |
-| Layouts, pit / start positions, previews, descriptions | Spawn points with previews and descriptions in the level picker |
+![Options: scenery style, ground and trees, each with its pros and cons](docs/screenshots/options.png)
 
-It also generates dirt skirts along road edges where the terrain can't follow them, keeps grass and trees off
-the road, and checks the result (including that every AC AI racing line has road under it).
+![A finished conversion, ready to load in BeamNG](docs/screenshots/converted.png)
 
-## Install
-
-**Windows app:** download `kn5port.exe` from the [releases](../../releases) page and run it. No install needed;
-it opens in its own window (uses the WebView2 runtime that ships with Windows 10/11).
-
-**From source** (Python 3.9+):
-
-```
-git clone https://github.com/romangarms/kn5port
-cd kn5port
-pip install .[app]
-```
-
-## Use
-
-### App
-
-![Picking a track: previews, convertibility status and what kn5port finds in it](docs/screenshots/track.png)
-
-![Conversion options, each with its benefits and trade-offs](docs/screenshots/options.png)
-
-![A finished conversion with the validation results](docs/screenshots/converted.png)
-
-<sub>The tracks in these screenshots are made-up demo data (`python packaging/screenshots.py` regenerates them).</sub>
-
-Run `kn5port.exe` (or `kn5port-app` from source). It:
-
-- finds Assetto Corsa and BeamNG through Steam, on any drive (Steam's location comes from the registry, then
-  every library in `libraryfolders.vdf`), and your BeamNG mods folder in `%LOCALAPPDATA%\BeamNG`; anything it
-  can't find, you pick once with a folder browser
-- lists your tracks with their previews and checks every model file in the background (structure, texture
-  signatures and sampled mesh data): **✓ ready**, **! partial** (unreadable files are skipped) or **🔒 protected**
-  (can't be converted). Results are cached, so later launches are instant
-- right-click a track to open its Assetto Corsa folder, or the converted BeamNG level / mod folder
-- marks tracks already converted into your mods folder
-- converts with one button, with options for the scenery style (which BeamNG map to borrow trees, ground and
-  grass from), ground (BeamNG terrain or AC's own), trees (BeamNG vegetation, AC's trees or none), tree density,
-  terrain shading and road fixes, each listing its benefits and trade-offs; then shows live progress, the validation results and a button to open the level folder
-
-`kn5port ui` serves the same interface in your browser instead (only on `127.0.0.1`, with a per-session
-access token).
-
-### Command line
-
-```
-kn5port inspect  "D:\Steam\steamapps\common\assettocorsa\content\tracks\<track>"
-kn5port convert  "D:\Steam\steamapps\common\assettocorsa\content\tracks\<track>"
-```
-
-`convert` finds your BeamNG install (via Steam) and mods folder automatically and writes
-`mods\unpacked\<track>`. **Fully restart BeamNG** before loading a converted level (it caches materials).
-
-Useful options:
-
-| option | |
-|---|---|
-| `--terrain off` | keep AC's ground as meshes instead of building a terrain (faster, no GroundCover) |
-| `--palette italy` | borrow trees, terrain materials and grass from another stock BeamNG map (see below) |
-| `--tree-density 0.5` | thin trees and shrubs for performance |
-| `--ao 0.2`, `--near-gain 1.3` | lighter terrain shading / brighter near-road ground |
-| `--no-forest` / `--keep-ac-trees` | skip tree replacement / keep AC's own tree meshes |
-| `--no-edge-fill` | don't raise the terrain to the road edges or hang curtains under them (if they show as walls/ramps) |
-| `--show-hidden` | also draw meshes AC hides; off by default because physics-only road copies on ripped (e.g. Forza) tracks flicker against the visual road |
-| `--layer-lift 0.02` | metres to raise each road layer (patch, line, dirt decal) that lies exactly on an earlier-drawn surface, so stacked layers don't flicker; `0` turns it off |
-| `--no-ground-layers` | give AC's blended (multilayer) ground one detail texture per material instead of the grass/dirt/rock texture of whichever layer dominates under each triangle |
-| `--profile my.json` | per-track overrides (see below) |
-| `--beamng`, `--mods`, `--out` | paths, if auto-detection fails |
-
-`kn5port validate <level folder> --ac-track <track>` re-checks a converted level.
+Magione (above) converts in under a minute; long roads take longer. **Fully restart BeamNG** afterwards (it caches materials), then
+pick the track from the level list.
 
 ## Forza Horizon 1
 
-The app's **Forza Horizon 1** tab converts Colorado from your own copy of Forza Horizon (2012, Xbox 360) into
-BeamNG levels: terrain, roads, buildings, plants, water, animated objects, lights, FH1's races as time trials,
-ambient sound, and FH1's radio as a separate mod. It works in `kn5port.exe`: the first time, **Set up** downloads
-a private Python 3.12 from python.org and numpy, scipy, numba and Pillow from PyPI (107 MB, every file pinned to
-a version and checked against a fixed SHA-256) into `%LOCALAPPDATA%\kn5port\runtime`, isolated from any other
-Python on your PC. From source, `pip install .[app,fh1]` and `kn5port-app` use your own Python instead.
+The **Forza Horizon 1** tab turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG
+level. You get the terrain, roads, buildings, plants, water, lights and ambient sound, with FH1's races as time
+trials. FH1's three radio stations, DJs included, come as a separate mod that works on any map.
 
-1. **Your copy**: pick a Games on Demand package (the `4D5309C9` title folder copied off an Xbox 360 drive,
-   from `Content\0000000000000000\4D5309C9`), a disc image (`.iso`), or extracted files (a folder holding
-   `default.xex` and `media\`). kn5port reads GOD packages and ISOs itself and copies out only what it needs,
-   about 4 GB. "How do I get these files?" in the app explains each.
-2. **What to build**: the whole map (16 km square, 3.3 GB, about 6 GB of RAM while building), or a 4 km
-   chunk around Red Rock or Clear Springs. Optionally the radio mod.
-3. **Checks** before it starts: Python (one-click setup), ffmpeg (for sound; one-click install through winget,
-   or from ffmpeg.org), disk space, memory, and that BeamNG is closed.
-4. **Build**: the first build reads the map's tables once (about 3 minutes); later builds skip that.
+![The Forza Horizon 1 tab](docs/screenshots/fh1.png)
 
-The work folder (`%LOCALAPPDATA%\kn5port\fh1`, about 7 GB) keeps the copied game files and tables between
-builds. The pipeline itself lives in [`fh1/`](fh1/README.md), with notes on every FH1 file format it reads.
-The same rules apply as for AC tracks: kn5port includes no game files, and converted levels are for you only.
+Point it at a Games on Demand folder, a disc image (`.iso`) or extracted files. Then build the whole 16 km
+map (about 10 minutes, 3.3 GB) or a quick 4 km chunk around Red Rock or Clear Springs. The first time, the app
+offers to download what it needs, about 100 MB. See [`fh1/`](fh1/README.md) for how it works.
 
-## Building the exe
+## Install
 
-On Windows: `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `dist\kn5port.exe`.
-Pushing a tag like `v0.2.0` makes GitHub Actions run the tests, build the exe and attach it to a release
-([`.github/workflows/release.yml`](.github/workflows/release.yml)). The exe contains only kn5port and its
-Python libraries, never game content.
+Download `kn5port.exe` from [releases](../../releases) and run it. There's nothing to install.
 
-## Palettes
+From source (Python 3.9+): `pip install .[app]` (or `.[app,fh1]` for Forza Horizon), then run `kn5port-app`.
 
-Trees, terrain materials and grass come from a stock BeamNG map of your choice (West Coast USA by default).
-kn5port analyses the map from your own install: its forest items are sorted into conifers, broadleaf trees,
-palms, shrubs and grass by name, measured, and weighted by how often the map uses them; its terrain materials
-are matched to roles (forest floor, grass, dry grass, dirt, gravel, rock, sand). Each AC tree then gets the
-item closest to its own height. So Italy gives cypresses, pines, oaks and olives; East Coast USA Douglas firs
-and aspens; Jungle Rock Island palms and tropical trees; Utah junipers. West Coast USA uses a hand-tuned mapping.
+## Command line
 
-## Track profiles
+```
+kn5port inspect  <AC track folder>     # what kn5port sees in a track
+kn5port convert  <AC track folder>     # writes mods\unpacked\<track>
+kn5port ui                             # the app, in your browser
+```
 
-Everything track-specific (surface → ground model mapping, which meshes are terrain, which materials are
-vegetation and what species, which donor items replace them, terrain size and shading) lives in
-[`kn5port/profile.py`](kn5port/profile.py). The defaults work on most tracks; when one needs tweaks, put a JSON
-file with just the fields to change next to the track as `kn5port.json`, or pass `--profile`. See
-[`profiles/skyline_boulevard.json`](profiles/skyline_boulevard.json) for the format. Run `kn5port inspect` to
-see how a track is being interpreted before converting.
+`kn5port convert --help` lists every option: scenery style (`--palette italy`), tree density, keeping AC's ground
+or trees, and more. If a track needs tweaks, put a `kn5port.json` next to it
+([example](profiles/skyline_boulevard.json)).
 
 ## Known limits
 
-- Terrain is at most 4096² samples, so large maps get coarser terrain (e.g. 5 m for a 20 km road); road edges
-  are covered by generated skirts but may look slightly raised in places.
-- AC shaders (CSP GrassFX, multilayer detail, reflections) don't exist in BeamNG; materials are simplified.
-- Trees, terrain materials and grass come from a stock BeamNG level (West Coast USA by default), so the look is
-  BeamNG's, placed where the AC track had vegetation.
-- No AI paths, race timing or night lighting yet.
+- Big maps get coarser terrain, since BeamNG terrain tops out at 4096².
+- AC's special shaders (CSP grass, reflections) don't exist in BeamNG, so materials are simpler.
+- Trees and grass are BeamNG's own, so the species won't always match.
+- No AI paths, race timing or night lighting for AC tracks yet.
 
-## How it works
+## Personal use only
 
-See [docs/how-it-works.md](docs/how-it-works.md), and [docs/learnings.md](docs/learnings.md) for what broke
-along the way, how it was fixed and what's still open.
+kn5port contains no game content. It reads files you already have and writes the level into your own mods
+folder. Converted levels are derivative works, so don't share them, and check each track's license first.
+Protected or encrypted tracks are skipped.
 
-## License
+## More
 
-MIT for the code in this repository. It does not grant any rights to tracks you convert or to BeamNG content.
+- [How it works](docs/how-it-works.md) and [what broke along the way](docs/learnings.md)
+- Build the exe: `packaging\build.ps1`. Tagging `v*` publishes a release through GitHub Actions.
+- License: MIT for the code. It grants no rights to the tracks you convert or to BeamNG content.
