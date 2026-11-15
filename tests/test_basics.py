@@ -231,18 +231,7 @@ def test_overlay_level_is_per_triangle():
     assert np.allclose(line[0][far, 2], 0.02) and np.isclose(line[0][:, 2].max(), 0.06)
 
 
-def test_overlay_layouts_dont_stack():
-    # two layouts' markings at the same spot are never drawn together: each sits on the road, not on the other
-    from kn5port.overlay import OverlayLifter
-    lf = OverlayLifter(step=0.02)
-    road, gp, moto = _grid(0, 10, 0, 10), _grid(2, 8, 2, 8, n=3), _grid(2, 8, 2, 8, n=3)
-    lf.add(*road, layers=0b11); lf.resolve()
-    lf.add(*gp, layers=0b01); lf.resolve()
-    lf.add(*moto, layers=0b10); lf.resolve()
-    assert np.allclose(gp[0][:, 2], 0.02) and np.allclose(moto[0][:, 2], 0.02)
-
-
-def test_layout_models_and_script():
+def test_layout_models():
     from kn5port import level
     with tempfile.TemporaryDirectory() as d:
         t = Path(d) / "trk"
@@ -252,15 +241,13 @@ def test_layout_models_and_script():
         (t / "models_layout_gp.ini").write_text("[MODEL_0]\nFILE=trk.kn5\n[MODEL_1]\nFILE=6.kn5\n")
         (t / "models_layout_moto.ini").write_text("[MODEL_0]\nFILE=trk.kn5\n[MODEL_1]\nFILE=7.kn5\n")
         assert level.layout_models(t) == {"layout_gp": ["trk", "6"], "layout_moto": ["trk", "7"]}
-        assert level.group_name("7") == "kn5_7" and level.group_name("trk") == "trk"
-        mod = Path(d) / "mod"
-        level.write_layout_script(mod, "ks_trk", {"spawn_layout_gp": ["kn5_7"], "spawn_layout_moto": ["kn5_6"]},
-                                  "spawn_layout_gp")
-        lua = (mod / "lua" / "ge" / "extensions" / "kn5portLayoutskstrk.lua").read_text()
-        assert '["spawn_layout_moto"] = {"kn5_6"},' in lua and 'local LEVEL = "ks_trk"' in lua
-        assert 'load("kn5portLayoutskstrk")' in (mod / "scripts" / "kn5portLayoutskstrk" / "modScript.lua").read_text()
-        level.write_layout_script(mod, "ks_trk", {"spawn_default": []}, "spawn_default")     # single layout: removed
-        assert not (mod / "scripts" / "kn5portLayoutskstrk" / "modScript.lua").exists()
+        mod = Path(d) / "mod"           # a rebuild removes the old layout-switching extension
+        lua = mod / "lua" / "ge" / "extensions" / "kn5portLayoutskstrk.lua"
+        ms = mod / "scripts" / "kn5portLayoutskstrk" / "modScript.lua"
+        for f in (lua, ms):
+            f.parent.mkdir(parents=True); f.write_text("x")
+        level.remove_layout_script(mod, "ks_trk")
+        assert not lua.exists() and not ms.parent.exists()
 
 
 def test_overlay_off():

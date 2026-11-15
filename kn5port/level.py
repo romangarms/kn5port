@@ -99,63 +99,14 @@ def layout_models(track_dir):
     return out
 
 
-def group_name(stem):
-    """Scene group for a kn5's statics. Torque reads a name starting with a digit as an object id, so "7" -> kn5_7."""
-    return stem if re.match(r"[A-Za-z_]", stem) else f"kn5_{safe(stem)}"
-
-
-LAYOUT_LUA = """-- Made by kn5port: shows only the Assetto Corsa layout of the chosen spawn point on this level.
--- Layouts swap some kn5s (line markings, barriers, kerb collision); each lives in its own scene group, and the
--- groups of the other layouts are removed once the level has loaded. Changing layout means reloading the level.
-local M = {}
-local LEVEL = %(level)s
-local DEFAULT = %(default)s
-local DROP = {
-%(drop)s
-}
-
-local function onClientPostStartMission(levelPath)
-  local lp = string.lower(tostring(levelPath or ''))
-  if not string.find(lp, '/levels/' .. LEVEL .. '/', 1, true) then return end
-  local sp = setSpawnpoint and setSpawnpoint.loadDefaultSpawnpoint(LEVEL) or ''
-  local drop = DROP[sp] or DROP[DEFAULT] or {}
-  local n = 0
-  for _, name in ipairs(drop) do
-    local o = scenetree.findObject(name)
-    if o then o:delete(); n = n + 1 end
-  end
-  if n > 0 then be:reloadCollision() end
-  log('I', 'kn5port', 'layout of ' .. tostring(sp) .. ': removed ' .. n .. ' groups of other layouts')
-end
-
-M.onClientPostStartMission = onClientPostStartMission
-return M
-"""
-
-
-def layout_ext_name(level):
-    """BeamNG maps underscores in an extension name to folders, so the name keeps letters and digits only. One per
-    level: mods that ship the same extension path shadow each other."""
-    return "kn5portLayouts" + re.sub(r"[^a-z0-9]", "", level.lower())
-
-
-def write_layout_script(mod_root, level, drop_by_spawn, default):
-    """Write (or remove, for single-layout tracks) the extension that keeps only the chosen layout's kn5s."""
-    ext = layout_ext_name(level)
-    lua = Path(mod_root) / "lua" / "ge" / "extensions" / f"{ext}.lua"
-    mod_script = Path(mod_root) / "scripts" / ext / "modScript.lua"
-    if not any(drop_by_spawn.values()):
-        for f in (lua, mod_script):
-            if f.exists():
-                f.unlink()
-        return
-    q = json.dumps
-    lua.parent.mkdir(parents=True, exist_ok=True)
-    lua.write_text(LAYOUT_LUA % {
-        "level": q(level), "default": q(default),
-        "drop": "\n".join(f"  [{q(sp)}] = {{{', '.join(q(g) for g in gs)}}}," for sp, gs in sorted(drop_by_spawn.items()))})
-    mod_script.parent.mkdir(parents=True, exist_ok=True)
-    mod_script.write_text(f'load("{ext}")\nsetExtensionUnloadMode("{ext}", "manual")\n')
+def remove_layout_script(mod_root, level):
+    """Builds of 2026-11-15 shipped an extension that switched layouts by spawn point; a rebuild removes it."""
+    ext = "kn5portLayouts" + re.sub(r"[^a-z0-9]", "", level.lower())
+    for f in (Path(mod_root) / "lua" / "ge" / "extensions" / f"{ext}.lua", Path(mod_root) / "scripts" / ext / "modScript.lua"):
+        if f.exists():
+            f.unlink()
+            if not any(f.parent.iterdir()):
+                f.parent.rmdir()
 
 
 def models_from_ini(track_dir):
@@ -633,18 +584,15 @@ def main(argv=None):
         todo = [s for s in stems if s not in layout_kn5 and not (args.terrain != "0" and is_horizon_kn5(s))] + \
                [s for s in args.include if s not in stems]
     print(f"converting: {', '.join(todo)}")
-    # which layouts draw each kn5: bit i = i-th layout. Shared kn5s (in every layout, or not in any ini) get all bits
+    # Layouts: one free-roam level, no per-layout props. kn5s in every layout are converted whole; of the kn5s only
+    # some layouts load (markings, barriers, cones, kerb variants) only the collision of one base layout is kept,
+    # since it can be the only road surface there (Barcelona's turn 10/12 kerbs). Users add their own props.
     lay_models = layout_models(track) or {}
-    lay_names = sorted(lay_models)
-    all_bits = (1 << len(lay_names)) - 1 if lay_names else 1
-    stem_bits = {}
-    for s_ in todo:
-        b = sum(1 << i for i, lay in enumerate(lay_names) if s_ in lay_models[lay])
-        stem_bits[s_] = b if b else all_bits
-    per_layout = [s_ for s_ in todo if stem_bits[s_] != all_bits]
+    per_layout = [s_ for s_ in todo if lay_models and any(s_ in v for v in lay_models.values())
+                  and not all(s_ in v for v in lay_models.values())]
+    base_layout = next((l for l in sorted(lay_models) if "free" in l.lower()), min(lay_models, default=""))
     if per_layout:
-        print("per-layout kn5s: " + ", ".join(
-            f"{s_} ({'/'.join(l for i, l in enumerate(lay_names) if stem_bits[s_] >> i & 1)})" for s_ in per_layout))
+        print(f"per-layout kn5s: {', '.join(per_layout)}; keeping only {base_layout}'s collision from them")
 
     # -- origin from road bounds
     lo = np.full(3, np.inf); hi = np.full(3, -np.inf)
@@ -702,6 +650,8 @@ def main(argv=None):
         path = track / f"{stem}.kn5"
         if not path.exists():
             print(f"  ! {path.name} not found, skipping"); continue
+        if stem in per_layout and stem not in lay_models[base_layout]:
+            print(f"  {stem}: only in other layouts, skipped"); continue
         ts = time.time()
         k = KN5(str(path))
         tex_by_name = {t.name: t for t in k.textures}
@@ -711,7 +661,7 @@ def main(argv=None):
         mat_surfaces = defaultdict(set)
         uv_density = defaultdict(lambda: np.zeros(2))   # material -> (3D area, UV area): metres per UV unit
         ground_mats = set()
-        kept = dropped_lod = dropped_crop = dropped_veg = dropped_ground = dropped_hidden = 0
+        kept = dropped_lod = dropped_crop = dropped_veg = dropped_ground = dropped_hidden = dropped_layout = 0
 
         for m in k.meshes():
             if not len(m.indices) or m.name.startswith("AC_"):
@@ -745,6 +695,10 @@ def main(argv=None):
             # meshes AC never draws: physics-only copies of the road (common on Forza/other game rips, where
             # they sit exactly on the visual road and would z-fight with it) collide invisibly; others go
             hidden = m.hidden and not args.show_hidden
+            if stem in per_layout:           # one layout's road surface only, kept invisible: no layout props
+                if not surf:
+                    dropped_layout += 1; continue
+                hidden = True
             if hidden and not surf:
                 dropped_hidden += 1; continue
             kind = "col" if surf else "vis"
@@ -754,7 +708,7 @@ def main(argv=None):
             cell = (int(math.floor(c[0] / args.cell)), int(math.floor(c[1] / args.cell)), kind)
             pos32, idx32 = pos.astype(np.float32), idx.astype(np.uint32)
             if not hidden:     # drawn: may be a layer on top of an earlier surface (lifted in place below)
-                lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1, layers=stem_bits[stem])
+                lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1)
             uvs = m.uvs * m.material.uv_mult if m.material.uv_mult != 1.0 else m.uvs
             t3 = idx.reshape(-1, 3)
             a3 = np.linalg.norm(np.cross(pos[t3[:, 1]] - pos[t3[:, 0]], pos[t3[:, 2]] - pos[t3[:, 0]]), axis=1).sum()
@@ -831,19 +785,20 @@ def main(argv=None):
             fname = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
             dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"
             write_dae(dae, groups, origin)
-            st = {"class": "TSStatic", "name": f"{group_name(stem)}_{fname}", "__parent": group_name(stem),
+            st = {"class": "TSStatic", "name": f"{stem}_{fname}", "__parent": stem,
                   "shapeName": f"{lvl_rel}/art/shapes/{stem}/{fname}.dae",
                   "position": [round(float(v), 3) for v in origin]}
             if kind == "col":
                 st.update({"collisionType": "Visible Mesh Final", "decalType": "Visible Mesh Final"})
             else:
                 st.update({"collisionType": "None", "decalType": "None"})
-            statics[group_name(stem)].append(st)
+            statics[stem].append(st)
         stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop, layers_lifted=lifted,
                            shapes=len(cells), seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "
               f"(dropped {dropped_lod} LOD, {dropped_crop} outside crop, {dropped_veg} vegetation, "
-              f"{dropped_ground} terrain-replaced, {dropped_hidden} hidden; {lifted} layers lifted) "
+              f"{dropped_ground} terrain-replaced, {dropped_hidden} hidden, {dropped_layout} layout props; "
+              f"{lifted} layers lifted) "
               f"in {stats[stem]['seconds']}s")
         # copy textures for this kn5 now, then close
         tex_dir = out_level / "art" / "textures"
@@ -914,6 +869,8 @@ def main(argv=None):
         name = f"spawn_{safe(lay or level)}"
         if any(s_["name"] == name for s_ in spawns):
             continue
+        if any(np.linalg.norm(np.array(s_["position"][:2]) - pos[:2]) < 5 for s_ in spawns):
+            continue          # layouts sharing a start: one free-roam spawn there, not one per layout
         spawns.append({"class": "SpawnSphere", "name": name, "__parent": "MissionGroup",
                        "dataBlock": "SpawnSphereMarker",
                        "position": [round(float(v), 3) for v in pos + [0, 0, 0.5]],
@@ -928,7 +885,9 @@ def main(argv=None):
         title = ui.get("name", (lay or level).replace("_", " ").title())
         title = title.split(" - ", 1)[1] if " - " in title and not single else title
         spawn_info.append({"objectname": name, "translationId": title,
-                           "description": ui.get("description", ""), "preview": jpg, "ui": ui, "layout": lay})
+                           "description": ui.get("description", ""), "preview": jpg, "ui": ui})
+    if len(spawn_info) == 1 and len(layouts) > 1:     # layouts collapsed into one free-roam spawn: name the track
+        spawn_info[0]["translationId"] = spawn_info[0]["ui"].get("name", level).split(" - ")[0]
     if not spawns:
         spawns.append({"class": "SpawnSphere", "name": "spawn_default", "__parent": "MissionGroup",
                        "dataBlock": "SpawnSphereMarker", "position": [0, 0, 300], "radius": 1})
@@ -937,14 +896,7 @@ def main(argv=None):
     order = sorted(range(len(spawns)), key=lambda i: "free" not in spawns[i]["name"])
     spawns = [spawns[i] for i in order]; spawn_info = [spawn_info[i] for i in order]
 
-    # -- layouts: the chosen spawn point picks the layout; a level extension removes the other layouts' kn5s
-    drop_by_spawn = {}
-    for si in spawn_info:
-        lay = si.get("layout")
-        if per_layout and lay in lay_names:
-            bit = 1 << lay_names.index(lay)
-            drop_by_spawn[si["objectname"]] = sorted({group_name(s_) for s_ in per_layout if not stem_bits[s_] & bit})
-    write_layout_script(args.out_dir, level, drop_by_spawn, spawns[0]["name"])
+    remove_layout_script(args.out_dir, level)
 
     # -- scene files (newline-delimited JSON, like the stock levels)
     main_dir = out_level / "main"
