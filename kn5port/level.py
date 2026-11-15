@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import beamng
+from . import beamng, shape
 from .kn5 import KN5, KN5Error, Dummy, Mesh
 from .overlay import OverlayLifter, STEP as LAYER_STEP
 from .layers import LayerSplitter, pieces, layer_material
@@ -131,62 +131,27 @@ def models_from_ini(track_dir):
 
 # ---- Collada writer -------------------------------------------------------------------------------
 
-def _fmt(arr, fmt):
-    # fast-ish float formatting: one row per vertex
-    import io
-    buf = io.StringIO()
-    np.savetxt(buf, arr, fmt=fmt, delimiter=" ", newline=" ")
-    return buf.getvalue()
+_fmt = shape.fmt        # fh1/pipeline/daewrite.py imports it from here
 
 
-def write_dae(path, groups, origin):
-    """groups: list of (material_name, positions(N,3) BeamNG world, normals(N,3), uvs(N,2), idx(M,))."""
-    mats = sorted({g[0] for g in groups})
-    out = []
-    w = out.append
-    w('<?xml version="1.0" encoding="utf-8"?>\n')
-    w('<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n')
-    w('<asset><contributor><authoring_tool>kn5port convert</authoring_tool></contributor>'
-      '<unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>\n')
-    w('<library_effects>\n')
-    for m in mats:
-        w(f'<effect id="{m}-fx"><profile_COMMON><technique sid="common"><lambert><diffuse>'
-          f'<color>0.8 0.8 0.8 1</color></diffuse></lambert></technique></profile_COMMON></effect>\n')
-    w('</library_effects>\n<library_materials>\n')
-    for m in mats:
-        w(f'<material id="{m}" name="{m}"><instance_effect url="#{m}-fx"/></material>\n')
-    w('</library_materials>\n<library_geometries>\n')
-    nodes = []
-    for gi, (mat, pos, nrm, uv, idx) in enumerate(groups):
-        g = f"g{gi}"
-        n = len(pos)
-        local = pos - origin
-        uv2 = np.stack([uv[:, 0], 1.0 - uv[:, 1]], axis=1)   # DirectX (v down) -> Collada (v up)
-        w(f'<geometry id="{g}" name="{g}"><mesh>\n')
-        for sid, arr, fmt, params in ((f"{g}-p", local, "%.4f", "XYZ"),
-                                      (f"{g}-n", nrm, "%.3f", "XYZ"),
-                                      (f"{g}-t", uv2, "%.5f", "ST")):
-            w(f'<source id="{sid}"><float_array id="{sid}-a" count="{arr.size}">')
-            w(_fmt(arr, fmt))
-            w(f'</float_array><technique_common><accessor source="#{sid}-a" count="{n}" stride="{len(params)}">')
-            w("".join(f'<param name="{c}" type="float"/>' for c in params))
-            w('</accessor></technique_common></source>\n')
-        w(f'<vertices id="{g}-v"><input semantic="POSITION" source="#{g}-p"/></vertices>\n')
-        w(f'<triangles material="{mat}" count="{len(idx) // 3}">'
-          f'<input semantic="VERTEX" source="#{g}-v" offset="0"/>'
-          f'<input semantic="NORMAL" source="#{g}-n" offset="0"/>'
-          f'<input semantic="TEXCOORD" source="#{g}-t" offset="0" set="0"/><p>')
-        w(" ".join(map(str, idx.tolist())))
-        w('</p></triangles>\n</mesh></geometry>\n')
-        # Torque reads a trailing number in a node name as a detail size, so end names with letters.
-        nodes.append(f'<node id="n{gi}" name="{safe(mat)}_c{gi}_mesh"><instance_geometry url="#{g}">'
-                     f'<bind_material><technique_common><instance_material symbol="{mat}" target="#{mat}"/>'
-                     f'</technique_common></bind_material></instance_geometry></node>\n')
-    w('</library_geometries>\n<library_visual_scenes><visual_scene id="Scene" name="Scene">\n')
-    out.extend(nodes)
-    w('</visual_scene></library_visual_scenes>\n<scene><instance_visual_scene url="#Scene"/></scene>\n</COLLADA>\n')
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(out), encoding="utf-8")
+def write_dae(path, groups, origin, collide=False, hidden=()):
+    """groups: list of (material_name, positions(N,3) BeamNG world, normals(N,3), uvs(N,2), idx(M,)).
+    One detail level that draws until the shape is under a pixel (kn5port/shape.py). collide: every group also goes
+    into the shape's one collision mesh (TSStatic collisionType "Collision Mesh"); groups whose material is in
+    `hidden` only collide and aren't drawn at all. Returns whether the shape has a collision mesh."""
+    g2 = [((m, (1,) if m in hidden else (0,)), p, n, u, i) for m, p, n, u, i in groups]
+    return shape.write_lod(path, g2, origin, (1,), (0, 1) if collide else None, tool="kn5port convert")
+
+
+def collision_bins(groups, limit=shape.COLMESH_MAX_VERTS):
+    """split a collision cell's groups so each shape's one Colmesh stays under `limit` vertices (before welding,
+    so an upper bound). Groups are already under MAX_VERTS_PER_CHUNK."""
+    bins, cur, n = [], [], 0
+    for g in groups:
+        if cur and n + len(g[1]) > limit:
+            bins.append(cur); cur, n = [], 0
+        cur.append(g); n += len(g[1])
+    return bins + [cur] if cur else bins
 
 
 def merge_chunks(parts):
@@ -259,11 +224,26 @@ def is_vegetation(mesh):
 
 
 class TextureBaker:
-    def __init__(self, tex_dir, tex_rel):
+    """Textures the converter makes or re-encodes, written as mipped DDS (kn5port/dds.py) so BeamNG doesn't cook
+    them on first load, or as PNG when this Pillow can't encode DDS. Names keep BeamNG's colour-space suffix."""
+
+    BAKED_RE = re.compile(r".*\.(color|data|normal)\.(png|dds)$")
+
+    def __init__(self, tex_dir, tex_rel, use_dds=None):
+        from . import dds
         self.tex_dir, self.tex_rel = tex_dir, tex_rel
         self.done = {}
         self._mean_cache = {}
         self.ml_weights = {}
+        self.use_dds = dds.available() if use_dds is None else use_dds
+
+    def clean(self):
+        """remove an earlier conversion's baked textures (PNG-era ones too), which nothing would reference.
+        Textures copied from the kn5s keep their own names, which never carry these suffixes"""
+        if self.tex_dir.exists():
+            for f in self.tex_dir.iterdir():
+                if f.is_file() and self.BAKED_RE.match(f.name.lower()):
+                    f.unlink()
 
     def _img(self, k, name):
         from PIL import Image
@@ -284,13 +264,21 @@ class TextureBaker:
         """Nearest power of two (BeamNG imports only power-of-two textures, at least 16 px)."""
         return int(min(4096, max(16, 2 ** round(math.log2(max(v, 1))))))
 
-    def _save(self, im, name):
+    def _save(self, im, name, fourcc=None):
+        """name: '<stem>.<color|data|normal>.png'. As DDS it becomes 'd_<stem>.<kind>.dds': BeamNG keeps its cooked
+        copy of '<stem>.<kind>.png' in temp/ as '<stem>.<kind>.dds', and a new name can't be mistaken for it."""
         self.tex_dir.mkdir(parents=True, exist_ok=True)
         size = (self.pow2(im.size[0]), self.pow2(im.size[1]))
         if size != im.size:
             from PIL import Image
             im = im.resize(size, Image.LANCZOS)
-        im.save(self.tex_dir / name, optimize=False)
+        if self.use_dds:
+            from . import dds
+            stem, kind, _ = name.rsplit(".", 2)
+            name = f"d_{stem}.{kind}.dds"
+            dds.save_texture(self.tex_dir / name, im, kind, fourcc)
+        else:
+            im.save(self.tex_dir / name, optimize=False)
         return f"{self.tex_rel}/{name}"
 
     def opaque(self, k, name):
@@ -345,14 +333,15 @@ class TextureBaker:
         key = ("invisible",)
         if key not in self.done:
             from PIL import Image
-            self.done[key] = self._save(Image.new("RGB", (16, 16), (0, 0, 0)), "kn5port_invisible_opacity.data.png")
+            self.done[key] = self._save(Image.new("RGB", (16, 16), (0, 0, 0)), "kn5port_invisible_opacity.data.png", b"BC5U")
         return self.done[key]
 
     def opacity(self, k, name):
         key = ("opacity", name)
         if key not in self.done:
             im = self._img(k, name)
-            self.done[key] = self._save(im.getchannel("A").convert("RGB"), Path(name).stem + "_opacity.data.png") if im else None
+            self.done[key] = self._save(im.getchannel("A").convert("RGB"), Path(name).stem + "_opacity.data.png",
+                                        b"BC5U") if im else None
         return self.done[key]
 
     def layer_mean(self, k, name):
@@ -573,6 +562,7 @@ def main(argv=None):
     PROFILE = Profile.load(args.profile, track)
     SURFACES = read_surfaces(track)
     baker = TextureBaker(out_level / "art" / "textures", tex_rel)
+    baker.clean()
     t0 = time.time()
 
     all_models = models_from_ini(track)
@@ -660,6 +650,11 @@ def main(argv=None):
         if stem in per_layout and stem not in lay_models[base_layout]:
             print(f"  {stem}: only in other layouts, skipped"); continue
         ts = time.time()
+        sdir = out_level / "art" / "shapes" / stem      # an earlier build's cells (and bins) may not be rewritten
+        if sdir.exists():
+            for f in sdir.iterdir():
+                if f.is_file() and f.suffix.lower() in (".dae", ".cdae"):
+                    f.unlink()
         k = KN5(str(path))
         tex_by_name = {t.name: t for t in k.textures}
         global USES
@@ -743,12 +738,14 @@ def main(argv=None):
 
         for (cx, cy, kind), bymat in cells.items():
             groups = []
+            hidden_mats = set()      # collide only: not drawn at all
             for (acname, surf, hidden), parts in bymat.items():
                 name = bng_name(acname, surf)
                 acmat = next(mm for mm in k.materials if mm.name == acname) if acname != "__missing__" else None
                 if hidden:
                     gt = ("GRASS" if surf == "_EXTRA" else ground_type_of(surf)) if surf else None
                     name = f"{level}_kn5_hidden_{safe(gt or 'none').lower()}"
+                    hidden_mats.add(name)
                     if name not in materials:
                         materials[name] = hidden_material(name, gt, baker.invisible())
                 elif acmat is not None and name not in materials:
@@ -789,17 +786,17 @@ def main(argv=None):
                     for chunk in merge_chunks(items):
                         groups.append((lname, *chunk))
             origin = np.array([(cx + 0.5) * args.cell, (cy + 0.5) * args.cell, 0.0])
-            fname = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
-            dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"
-            write_dae(dae, groups, origin)
-            st = {"class": "TSStatic", "name": f"{group_name(stem)}_{fname}", "__parent": group_name(stem),
-                  "shapeName": f"{lvl_rel}/art/shapes/{stem}/{fname}.dae",
-                  "position": [round(float(v), 3) for v in origin]}
-            if kind == "col":
-                st.update({"collisionType": "Visible Mesh Final", "decalType": "Visible Mesh Final"})
-            else:
-                st.update({"collisionType": "None", "decalType": "None"})
-            statics[group_name(stem)].append(st)
+            base = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
+            # a collision cell is as many shapes as keep each one's single Colmesh small enough
+            for b, bin_ in enumerate(collision_bins(groups) if kind == "col" else [groups]):
+                fname = base if b == 0 else f"{base}_{b + 1}"
+                dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"
+                col = write_dae(dae, bin_, origin, collide=kind == "col", hidden=hidden_mats)
+                ct = "Collision Mesh" if col else "None"
+                statics[group_name(stem)].append({
+                    "class": "TSStatic", "name": f"{group_name(stem)}_{fname}", "__parent": group_name(stem),
+                    "shapeName": f"{lvl_rel}/art/shapes/{stem}/{fname}.dae",
+                    "position": [round(float(v), 3) for v in origin], "collisionType": ct, "decalType": ct})
         stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop, layers_lifted=lifted,
                            shapes=len(cells), seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "

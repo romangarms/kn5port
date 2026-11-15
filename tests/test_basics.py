@@ -290,7 +290,7 @@ def test_detail_map_is_neutral_grey():
         noise = (np.random.default_rng(0).random((64, 64, 3)) * 120 + 40).astype(np.uint8)
         b._img = lambda k, name: Image.fromarray(noise).convert("RGBA")
         rel = b.detail(None, "asphalt_detail.dds")
-        assert rel.endswith("asphalt_detail_detail.data.png")
+        assert rel.endswith("d_asphalt_detail_detail.data.dds")
         out = np.asarray(Image.open(Path(d) / Path(rel).name).convert("L"), np.float32) / 255
         assert abs(out.mean() - 0.5) < 0.02 and out.std() > 0.05
         b._img = lambda k, name: Image.new("RGBA", (32, 32), (90, 90, 90, 255))
@@ -316,7 +316,9 @@ def test_hidden_material_is_transparent():
     from kn5port.level import hidden_material, TextureBaker
     with tempfile.TemporaryDirectory() as d:
         op = TextureBaker(Path(d), "/levels/x/art/textures").invisible()
-        assert (Path(d) / "kn5port_invisible_opacity.data.png").exists()
+        assert (Path(d) / "d_kn5port_invisible_opacity.data.dds").exists()
+        png = TextureBaker(Path(d), "/levels/x/art/textures", use_dds=False).invisible()     # Pillow without DDS
+        assert png.endswith("kn5port_invisible_opacity.data.png") and (Path(d) / Path(png).name).exists()
         m = hidden_material("x_hidden", "ASPHALT", op)
         st = m["Stages"][0]
         assert m["translucent"] and not m["translucentZWrite"] and m["alphaTest"] and not m["castShadows"]
@@ -374,15 +376,58 @@ def test_multilayer_ground_split_into_sharp_layers():
         mats = json.loads((out / "levels/hill/art/shapes/hill.materials.json").read_text())
         r, g = mats["hill_hillside_layerR"], mats["hill_hillside_layerG"]
         # colour from AC's macro map on the mesh's UVs, sharpness from the layer's own texture as a tiled detail map
-        assert r["Stages"][0]["baseColorMap"].endswith("macro_rgb.color.png") and r["groundType"] == "GRASS"
+        assert r["Stages"][0]["baseColorMap"].endswith("d_macro_rgb.color.dds") and r["groundType"] == "GRASS"
         assert "dirt_detail" in r["Stages"][0]["detailMap"] and "grass_detail" in g["Stages"][0]["detailMap"]
         assert abs(r["ac_tile_repeats_per_uv"] - 10) < 0.5 and abs(g["ac_tile_repeats_per_uv"] - 20) < 1   # 10 m / 5 m tiles
         assert abs(r["Stages"][0]["detailScale"][0] - 10) < 0.5
         dae = next((out / "levels/hill/art/shapes/hill").glob("*.dae")).read_text()
         assert "hill_hillside_layerR" in dae and "hill_hillside_layerG" in dae
+        # the ground collides through one Colmesh, a <triangles> per layer material so each keeps its groundType
+        assert dae.count('name="Colmesh_0-1"') == 1 and 'name="collision-1"' in dae
+        items = [json.loads(l) for f in (out / "levels/hill/main").rglob("items.level.json")
+                 for l in f.read_text().splitlines() if l.strip()]
+        assert {o["collisionType"] for o in items if o["class"] == "TSStatic"} == {"Collision Mesh"}
+        tex = out / "levels/hill/art/textures"
+        assert not list(tex.glob("*.png")) and all(f.read_bytes()[:4] == b"DDS " for f in tex.glob("d_*.dds"))
+        (tex / "old_rgb.color.png").write_bytes(b"x")          # an earlier PNG-era build's texture goes on rebuild
         level.main([str(trk), str(out), "--layer-lift", "0", "--no-ground-layers"])
         mats = json.loads((out / "levels/hill/art/shapes/hill.materials.json").read_text())
         assert not any("_layer" in k for k in mats)
+        assert not (tex / "old_rgb.color.png").exists()
+
+
+def test_dds_mips_and_formats():
+    import io, struct
+    from PIL import Image
+    from kn5port import dds
+    y, x = np.mgrid[0:64, 0:32]
+    img = Image.fromarray(np.dstack([x * 8, y * 4, (x + y) * 2]).astype(np.uint8))
+    b = dds.encode(img, b"DXT1")
+    h, w, _, _, mips = struct.unpack_from("<5I", b, 12)
+    assert (w, h, mips) == (32, 64, 7) and b[84:88] == b"DXT1"
+    assert len(b) == 128 + sum(max(1, (max(32 >> i, 1) + 3) // 4) * max(1, (max(64 >> i, 1) + 3) // 4) * 8 for i in range(7))
+    back = np.asarray(Image.open(io.BytesIO(b)).convert("RGB"), np.float32)
+    assert np.abs(back - np.asarray(img, np.float32)).mean() < 4
+    rgba = img.convert("RGBA"); rgba.putalpha(Image.new("L", img.size, 100))
+    assert dds.fourcc_for(rgba, "color") == b"DXT5" and dds.fourcc_for(img.convert("RGBA"), "color") == b"DXT1"
+    assert dds.fourcc_for(img, "normal") == b"BC5U" and dds.fourcc_for(rgba, "data") == b"DXT1"
+
+
+def test_shape_one_colmesh_hidden_collides_undrawn():
+    from kn5port import level, shape
+    tri = lambda z: (np.array([[0, 0, z], [10, 0, z], [0, 10, z]], float), np.tile([0, 0, 1.0], (3, 1)),
+                     np.zeros((3, 2)), np.array([0, 1, 2]))
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "c.dae"
+        assert level.write_dae(p, [("road", *tri(0)), ("grass", *tri(1)), ("hid", *tri(2))], np.zeros(3),
+                               collide=True, hidden={"hid"})
+        t = p.read_text()
+        assert t.count("Colmesh_0-1") == 2 and t.count("<node id=\"o") == 2     # id + name; road and grass drawn
+        col = shape.collision_tris(p)
+        assert sorted(m for m, _ in col) == ["grass", "hid", "road"]            # all three collide
+        assert not level.write_dae(Path(d) / "v.dae", [("road", *tri(0))], np.zeros(3))
+        big = [("m", np.zeros((40000, 3)), None, None, None)] * 3
+        assert [len(b) for b in level.collision_bins(big)] == [1, 1, 1]
 
 
 def test_inspect_material_table():

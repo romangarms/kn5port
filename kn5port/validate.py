@@ -235,18 +235,25 @@ def main(argv=None):
                 if len(vals) != int(fa.get("count")):
                     errors.append(f"{dae.name}/{geom.get('id')}: float_array count mismatch")
                 arrays[src.get("id").rsplit("-", 1)[-1]] = vals
-            tri = geom.find(".//c:triangles", NS)
-            if "p" not in arrays or tri is None:      # a shape from another writer, with its own source ids
+            tri_ = geom.findall(".//c:triangles", NS)     # a collision mesh has one per material
+            if "p" not in arrays or not tri_:      # a shape from another writer, with its own source ids
                 continue
-            idx = np.array(tri.find("c:p", NS).text.split(), dtype=np.int64)
             nv = len(arrays["p"]) // 3
-            if len(idx) != 3 * int(tri.get("count")) or (len(idx) and idx.max() >= nv):
-                errors.append(f"{dae.name}/{geom.get('id')}: bad index buffer")
-            if tri.get("material") not in mats:
-                errors.append(f"{dae.name}: material {tri.get('material')} not in materials file")
+            for tri in tri_:
+                idx = np.array(tri.find("c:p", NS).text.split(), dtype=np.int64)
+                if len(idx) != 3 * int(tri.get("count")) or (len(idx) and idx.max() >= nv):
+                    errors.append(f"{dae.name}/{geom.get('id')}: bad index buffer")
+                if tri.get("material") not in mats:
+                    errors.append(f"{dae.name}: material {tri.get('material')} not in materials file")
+                tris += int(tri.get("count"))
             p = arrays["p"].reshape(-1, 3)[:, :2] + origin[:2]
             pts[kind].append(p[:: max(1, len(p) // 4000)])
-            tris += int(tri.get("count")); verts += nv
+            verts += nv
+        # "Collision Mesh" collides only with a Colmesh node, and BeamNG drops some when a shape has several
+        if st.get("collisionType") == "Collision Mesh":
+            ncol = sum(1 for n in root.iterfind(".//c:node", NS) if n.get("name", "").lower().startswith("colmesh"))
+            if ncol != 1:
+                errors.append(f"{dae.name}: collides as Collision Mesh but has {ncol} Colmesh nodes (needs exactly 1)")
 
     allp = np.concatenate(pts["col"] + pts["vis"])
     lo, hi = allp.min(0), allp.max(0)

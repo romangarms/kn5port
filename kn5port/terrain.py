@@ -30,6 +30,7 @@ from PIL import Image
 
 from .kn5 import KN5, KN5Error
 from .profile import Profile, read_surfaces, mostly_flat, phys_key, material_uses, is_natural_ground
+from .shape import collision_tris
 
 DONOR = "west_coast_usa"
 # terrain layers in .ter order; AC mask channel -> layer
@@ -251,14 +252,9 @@ def load_col_tris(level):
             o = json.loads(line) if line.strip() else {}
             if o.get("class") != "TSStatic" or o.get("collisionType", "None") == "None":
                 continue
-            r = ET.parse(level / o["shapeName"][len(rel):]).getroot()
-            for g in r.iterfind(".//c:geometry", NS):
-                if is_ground(g.find(".//c:triangles", NS).get("material")):
-                    continue
-                fa = g.find(f".//c:source[@id='{g.get('id')}-p']/c:float_array", NS)
-                p = np.array(fa.text.split(), np.float64).reshape(-1, 3) + o["position"]
-                idx = np.array(g.find(".//c:triangles/c:p", NS).text.split(), np.int64).reshape(-1, 3)
-                tris.append(p[idx])
+            for mat, t_ in collision_tris(level / o["shapeName"][len(rel):]):
+                if not is_ground(mat):
+                    tris.append(t_ + o["position"])
     t = np.concatenate(tris)
     nz = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
     up = np.abs(nz[:, 2]) / np.maximum(np.linalg.norm(nz, axis=1), 1e-9)

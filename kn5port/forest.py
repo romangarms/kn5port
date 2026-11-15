@@ -29,6 +29,7 @@ import numpy as np
 
 from .kn5 import KN5, KN5Error
 from .profile import Profile
+from .shape import collision_tris
 
 # BeamNG item -> reference height (m), measured from West Coast USA's models
 PROFILE = Profile()      # replaced in main()
@@ -143,20 +144,14 @@ def load_ground(level):
             o = json.loads(line) if line.strip() else {}
             if o.get("class") != "TSStatic" or o.get("collisionType", "None") == "None":
                 continue
-            r = ET.parse(level / o["shapeName"][len(rel):]).getroot()
-            for g in r.iterfind(".//c:geometry", NS):
-                tri = g.find(".//c:triangles", NS)
-                fa = g.find(f".//c:source[@id='{g.get('id')}-p']/c:float_array", NS)
-                p = np.array(fa.text.split(), np.float64).reshape(-1, 3) + o["position"]
-                gt = mats.get(tri.get("material"), {}).get("groundType")
-                if gt in PAVED:
+            for mat, t_ in collision_tris(level / o["shapeName"][len(rel):]):
+                t_ = t_ + o["position"]
+                if mats.get(mat, {}).get("groundType") in PAVED:
                     # never plant on roads, shoulders or lots: sample the triangles densely (vertices, edges
                     # every metre, interior on a ~1 m lattice) so their whole area is covered
-                    idx = np.array(tri.find("c:p", NS).text.split(), np.int64).reshape(-1, 3)
-                    asphalt.append(sample_tris(p[idx]))
+                    asphalt.append(sample_tris(t_))
                     continue
-                idx = np.array(tri.find("c:p", NS).text.split(), np.int64).reshape(-1, 3)
-                tris.append(p[idx])
+                tris.append(t_)
     return (np.concatenate(tris) if tris else np.zeros((0, 3, 3)),
             np.concatenate(asphalt) if asphalt else np.zeros((0, 2)))
 
