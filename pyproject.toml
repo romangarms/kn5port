@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kn5port"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Convert Assetto Corsa tracks you own into BeamNG.drive levels, locally, for personal use"
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,6 +21,9 @@ kn5port-app = "kn5port.app:main"
 [project.optional-dependencies]
 app = ["pywebview>=5"]
 fh1 = ["scipy>=1.8", "numba>=0.57"]
+
+[tool.setuptools.dynamic]
+version = { attr = "kn5port.__version__" }   # bumped by packaging/release.py
 
 [tool.setuptools]
 packages = ["kn5port", "kn5port.ui", "kn5port.fh1_pipeline"]

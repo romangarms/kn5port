@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Tag matches kn5port.__version__
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(python -c "import re;print(re.search(r'__version__ = \"(.+)\"', open('kn5port/__init__.py').read())[1])")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but __version__ is $v; cut releases with packaging/release.py"; exit 1; }
       - name: Test
         run: |
           python -m pip install . pytest
@@ -30,3 +36,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/kn5port.exe
+          generate_release_notes: true
+          body: |
+            Download `kn5port.exe` below and run it; there's nothing to install. Fully restart BeamNG after converting a track.
