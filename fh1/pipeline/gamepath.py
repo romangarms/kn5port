@@ -57,6 +57,9 @@ else:
 RIBBON = TRACKDIR + 'Ribbon_00/'
 PVS = RIBBON + f'{NAME}_00.pvs'
 HEX = RIBBON + f'{NAME}_00.hex'
+if os.path.exists(WORK + '/merged_00.hex'):       # merge_base.py: the DLC's hexes plus base Colorado's in the hexes it leaves empty
+    HEX = os.path.join(WORK, 'merged_00.hex').replace(os.sep, '/')
+MERGE = json.load(open(WORK + '/merge.json')) if os.path.exists(WORK + '/merge.json') else {}     # merge_base.py's offsets, {} when unmerged
 NAV = TRACKDIR + f'{NAME}.nav'
 
 

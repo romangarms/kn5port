@@ -1079,7 +1079,7 @@ RECORDED = {int(DRAW['t'][did]) for did, _ in ZREC}
 def unrecorded_world(c):
     """a mesh no zone record places, modelled in world space: ground by name, or a box that keeps clear of the origin, where origin-local props sit"""
     no = int(c['f'].split('.')[1])
-    return no not in RECORDED and (bool(TERR.search(c['name']) or FAR.search(c['name'])) or not (c['mn'][0] < 1 and c['mx'][0] > -1 and c['mn'][2] < 1 and c['mx'][2] > -1))
+    return no not in RECORDED and no < gamepath.MERGE.get('base_mesh', 1 << 30) and (bool(TERR.search(c['name']) or FAR.search(c['name'])) or not (c['mn'][0] < 1 and c['mx'][0] > -1 and c['mn'][2] < 1 and c['mx'][2] > -1))
 
 
 def world_mesh(c):
@@ -1855,6 +1855,9 @@ def entry_start(b):
     return None if m_ is None else (b.index(b'\0', 0x50 + m_.start()) + 16) & ~15
 
 
+DOFF = 0
+
+
 def model_ids(b, h_, M):
     """-> ([mesh number per model, -1 for a model named by a .max path], offset after the id and path lists), or None.
     Models carry up to three LOD ids, as words 1, 3 and 5 of their header entry say. An entry whose word 8 isn't 0 has no
@@ -1864,7 +1867,7 @@ def model_ids(b, h_, M):
         if e_[0]:
             meshes.append(-1)
             continue
-        v_ = struct.unpack_from('>I', b, q_)[0]
+        v_ = struct.unpack_from('>I', b, q_)[0] + DOFF
         if v_ >= len(DRAW):
             return None
         meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
@@ -1877,6 +1880,8 @@ def model_ids(b, h_, M):
 
 
 def read_pgeo(n):
+    global DOFF
+    DOFF = gamepath.MERGE.get('draw_offset', 0) if n in gamepath.MERGE.get('pgeo', ()) else 0      # a base Colorado set: its ids are Colorado's draws
     b = open('../x/' + n, 'rb').read()
     nm_ = re.search(rb'(models_proc|Models_Ungrouped|AModels_Ungrouped)[A-Za-z0-9_]*', b[0x50:0xc0])
     if nm_:

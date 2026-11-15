@@ -57,3 +57,5 @@ if __name__ == '__main__':
     shutil.rmtree(snap, ignore_errors=True); shutil.copytree(HERE, snap, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'fh1radio_app'))
     env = dict(os.environ); env.pop('FH1_TRACK', None)
     subprocess.check_call([sys.executable, 'prepare.py'], cwd=snap, env=env)
+    if (HERE.parent / 'cat2.pkl').exists():      # base Colorado fills the hexes the DLC leaves empty; needs Colorado prepared in fh1/
+        subprocess.check_call([sys.executable, str(HERE / 'merge_base.py'), str(HERE.parent), str(work)], cwd=HERE)

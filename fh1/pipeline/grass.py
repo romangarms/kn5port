@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage as ni
 from scipy.spatial import cKDTree
-import dds, frame, pgrass, tex
+import dds, frame, gamepath, pgrass, tex
 from daewrite import write_lod
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -195,7 +195,7 @@ for n in names:
     P = g['P']; Pb = np.stack([P[:, 0] - CX, P[:, 2] + CZ, P[:, 1] + LIFT], 1)       # .pgeo z is minus mesh z, so g2b's -(z - CZ) is z + CZ here
     if Pb[:, 0].max() < -HALF or Pb[:, 0].min() > HALF or Pb[:, 1].max() < -HALF or Pb[:, 1].min() > HALF:
         continue
-    tb = pgrass.tables(g); tids = [IDX[i][0] for i in g['tex']]
+    tb = pgrass.tables(g); tids = [IDX[i + (gamepath.MERGE.get('key_offset', 0) if n in gamepath.MERGE.get('pgeo', ()) else 0)][0] for i in g['tex']]
     if CROWD in tids:
         STATS['crowd sets'] += 1; crowd(g, tb, tids, Pb); continue
     STATS['sets'] += 1; T = g['T']

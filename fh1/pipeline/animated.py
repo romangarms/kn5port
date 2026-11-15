@@ -647,7 +647,7 @@ for kind, model in {**RIDES, **STANDALONE}.items():
     if kind in STANDALONE:
         b = animcopy.standalone(model); tl = animcopy.texture_names(b)
     else:
-        b = animcopy.find(model); tl = animcopy.textures(b)
+        b = animcopy.find(model); tl = [i + animcopy.KEYS[model] for i in animcopy.textures(b)]
     ms = animcopy.meshes(b, flags=kind in RIGS); animcopy.bind(b, ms)
     # triangles of each bone, by material, from the most detailed meshes. A skinned triangle goes with its first vertex's bone
     parts = {}; lit_ = False

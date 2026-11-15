@@ -1,24 +1,28 @@
 """The track's own copies of ANIM models (__R00G000xx.pgeo, named Anim_<model><n> at 0x60): their meshes, the textures each draw uses, the bone each
 vertex follows, and those bones' animation, from the Granny file inside (granny2.py). Used for the festival rides, balloons and inflatables, which exist
 only here. Layout is in docs/formats.md (track copies)."""
-import functools, glob, itertools, re, struct
+import functools, glob, itertools, os, re, struct
 import numpy as np
 from scipy.interpolate import BSpline
-import granny2
+import gamepath, granny2
 
-COPIES = '../x/__R00G000[0-9][0-9].pgeo'
+COPIES = ('../x/__R00G000[0-9][0-9].pgeo', '../x/__R00G200[0-9][0-9].pgeo')       # the second: base Colorado's, added by merge_base.py
 # a draw node ends in two floats, a switch distance and a fraction, such as 10.0 and 0.1
 NODE_FAR = (1, 1000); NODE_FRACTION = (.001, 1)
 # V from the s16 at its offset, as granny.uvs
 V0, VSTEP = .4977, 1.5395e-5
 
 
+KEYS = {}       # model -> what to add to its texture-list indices: in a merged DLC track, base Colorado's keys are offset (merge.json)
+
+
 @functools.cache
 def find(model):
     """the bytes of the track's copy of one model, e.g. ANIM_FRGND_Ferris. Copies are named Anim_<model><index>"""
-    for f in sorted(glob.glob(COPIES)):
+    for f in sorted(f for p in COPIES for f in glob.glob(p)):
         b = open(f, 'rb').read()
         if b[:4] == b'OEGP' and re.fullmatch(rb'Anim_' + re.escape(model.encode()) + rb'_?\d+', b[0x60:0xa0].split(b'\0')[0]):
+            KEYS[model] = gamepath.MERGE.get('key_offset', 0) if os.path.basename(f) in gamepath.MERGE.get('pgeo', ()) else 0
             return b
     raise FileNotFoundError(model)
 
