@@ -7,10 +7,10 @@ Turn maps from other racing games you already own into BeamNG.drive levels, with
 ## What it ports
 
 - **[Assetto Corsa tracks](#assetto-corsa)**: the tracks in your AC install, Kunos and community alike, with
-  roads that keep their grip, BeamNG terrain and trees, and a spawn point at every pit.
+  roads that keep their grip, a spawn point at every pit, and either AC's own scenery or BeamNG terrain and trees.
 - **[Forza Horizon 1's Colorado](#forza-horizon-1)**: the whole 16 km open world from your own copy of the
-  Xbox 360 game, with its towns, roads, lights, ambient sound and moving scenery, its races as time trials, and
-  its radio as a separate mod.
+  Xbox 360 game, with its towns, roads, water, night lights, ambient sound and moving scenery, its races as time
+  trials, and its radio as a separate mod.
 
 <table>
 <tr>
@@ -28,9 +28,11 @@ Pick a track in the app and convert it. kn5port writes the BeamNG level into you
   already converted.
 - **A drivable BeamNG level.** Roads, kerbs and gravel keep their grip, so asphalt drives like asphalt and grass
   like grass. Buildings and props come across, and every pit and start position becomes a spawn point.
-- **BeamNG scenery.** The ground becomes a real BeamNG terrain with 3D grass, and AC's flat tree cards become
-  BeamNG trees, sized to match the track's own. You pick which stock map the trees and ground come from:
-  West Coast USA, Italy, Utah, Jungle Rock Island and more.
+- **AC accurate or BeamNG look.** Keep the track's own ground and trees as AC built them, or turn the ground
+  into a real BeamNG terrain with 3D grass and AC's flat tree cards into BeamNG trees, sized to match the
+  track's own. For the BeamNG look you pick which stock map the trees and ground come from: West Coast USA,
+  Italy, Utah, Jungle Rock Island and more. Kunos tracks start on the BeamNG look, community tracks on AC
+  accurate, and you can mix the two.
 - **Checked before you drive.** After converting, kn5port checks the level, including that every AI racing line
   has road under it.
 
@@ -44,8 +46,10 @@ pick the track from the level list.
 ## Forza Horizon 1
 
 The **Forza Horizon 1** tab turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG
-level. You get the terrain, roads, buildings, plants, water, lights and ambient sound, with FH1's races as time
-trials. FH1's three radio stations, DJs included, come as a separate mod that works on any map.
+level. You get FH1's own terrain, roads, buildings, plants and textures, its rivers and lakes, street lamps
+and lit windows at night, ambient sound, the festival's crowds, and its moving scenery. FH1's 118 races become
+time trials, and you spawn at the festival or any of its ten outposts. FH1's three radio stations, DJs
+included, come as a separate mod that works on any map.
 
 ![The Forza Horizon 1 tab](docs/screenshots/fh1.png)
 
@@ -106,15 +110,15 @@ kn5port convert  <AC track folder>     # writes mods\unpacked\<track>
 kn5port ui                             # the app, in your browser
 ```
 
-`kn5port convert --help` lists every option: scenery style (`--palette italy`), tree density, keeping AC's ground
-or trees, and more. If a track needs tweaks, put a `kn5port.json` next to it
+`kn5port convert --help` lists every option: the look (`--preset ac` or `--preset beamng`), scenery style
+(`--palette italy`), tree density, keeping AC's ground or trees, and more. If a track needs tweaks, put a `kn5port.json` next to it
 ([example](profiles/skyline_boulevard.json)).
 
 ## Known limits
 
 - Big maps get coarser terrain, since BeamNG terrain tops out at 4096².
 - AC's special shaders (CSP grass, reflections) don't exist in BeamNG, so materials are simpler.
-- Trees and grass are BeamNG's own, so the species won't always match.
+- With the BeamNG look, trees and grass are BeamNG's own, so the species won't always match.
 - No AI paths, race timing or night lighting for AC tracks yet.
 
 ## Personal use only

@@ -121,7 +121,9 @@ Fog and bloom follow FH1's post-processing zones and time of day. `PostProcessin
 
 ## Performance
 
-Tested on a 2070 Super at 1440p, at Red Rock:
+The whole map, on a 2070 Super at 1440p: around 90 fps in towns with sounds and particles on (Carson, reported by the user in early November 2026), and the user reports no real frame drops while driving. RAM settles at about 7.3 GB private working set for the game process (2026-11-03, build d729cb0), plus BeamNG's UI child process; see the RAM notes above for how to measure.
+
+Early Red Rock builds, before most content went in (history, not current):
 
 | Build | fps |
 |---|---|
@@ -137,7 +139,7 @@ Estimates from the outpost:
 | Red Rock, LODs | 602k | 138k |
 | Whole map, LODs | 2.48M, of which 2.1M is LOD2 | 282k |
 
-The whole map has no in-game number yet. If it's slow, first shorten far distance: `visibleDistance`, or drop `col` LOD2 past a limit, because that's where the triangles are. The estimate code ends in the `static tris` and `plant tris` lines.
+If the whole map gets slow, first shorten far distance: `visibleDistance`, or drop `col` LOD2 past a limit, because that's where the triangles are. The estimate code ends in the `static tris` and `plant tris` lines.
 
 ## Rotation lists
 
