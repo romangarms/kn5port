@@ -39,6 +39,38 @@ Point it at a Games on Demand folder, a disc image (`.iso`) or extracted files. 
 map (about 10 minutes, 3.3 GB) or a quick 4 km chunk around Red Rock or Clear Springs. The first time, the app
 offers to download what it needs, about 100 MB. See [`fh1/`](fh1/README.md) for how it works.
 
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/fh1/daycycle/red_rock.webp" alt="A day at the Red Rock outpost, morning to night"><br><sub>Red Rock, morning to night</sub></td>
+<td width="50%"><img src="docs/screenshots/fh1/daycycle/carson.webp" alt="A day in Carson, morning to night"><br><sub>Carson, morning to night</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/fh1/car_red_rock.jpg" alt="A BeamNG car on a Red Rock canyon road"><br><sub>Red Rock canyon road</sub></td>
+<td><img src="docs/screenshots/fh1/zone_montano_plains.jpg" alt="A car crossing a bridge on the Montano Plains at sunset"><br><sub>Montano Plains</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/fh1/zone_rockies.jpg" alt="A river gorge in the Rockies"><br><sub>The Rockies</sub></td>
+<td><img src="docs/screenshots/fh1/zone_south_beaumont.jpg" alt="South Beaumont in its mountain valley"><br><sub>South Beaumont</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/fh1/zone_clear_springs.jpg" alt="The Clear Springs reservoir"><br><sub>Clear Springs</sub></td>
+<td><img src="docs/screenshots/fh1/zone_gladstone_estate.jpg" alt="Forest and river at Gladstone Estate"><br><sub>Gladstone Estate</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/fh1/zone_kettle_hills.jpg" alt="The Kettle Hills outpost among pines"><br><sub>Kettle Hills</sub></td>
+<td><img src="docs/screenshots/fh1/zone_route_4.jpg" alt="Wind farm along Route 4"><br><sub>Route 4</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/fh1/zone_steelworks.jpg" alt="The road to the steelworks at sunset"><br><sub>Steelworks</sub></td>
+<td><img src="docs/screenshots/fh1/evening_festival.jpg" alt="The Horizon Festival's Ferris wheel at sunset"><br><sub>Horizon Festival</sub></td>
+</tr>
+</table>
+
+FH1's moving scenery comes across too: wind turbines, windmills, the festival's rides, farm machines, balloons and
+the blimp.
+
+<p align="center"><img src="docs/screenshots/fh1/turbines.webp" alt="Wind turbines turning near Route 4" width="540"></p>
+
 ## Install
 
 Download `kn5port.exe` from [releases](../../releases) and run it. There's nothing to install.
