@@ -129,6 +129,7 @@ for kind, key in PLACES.items():
                     'songs': [{'file': c[0], 'len': c[1]} for a in tags(section(stations[key], 'Playlist'), 'MusicTrack') for c in [clip(fmod(a), 'place')] if c]}
 
 mod = Path(beamng.find_mods()) / 'unpacked' / 'fh1_radio'
+beamng.write_notice(mod, 'Forza Horizon (2012) soundtrack and radio', 'Microsoft, Playground Games, Turn 10 Studios and the artists and labels of each song')
 sound = mod / 'art' / 'sound' / 'fh1radio'
 for sub in ('music', 'place', 'dj'):
     (sound / sub).mkdir(parents=True, exist_ok=True)

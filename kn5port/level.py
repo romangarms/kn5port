@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import beamng
 from .kn5 import KN5, KN5Error, Dummy, Mesh
 from .overlay import OverlayLifter, STEP as LAYER_STEP
 from .layers import LayerSplitter, pieces, layer_material
@@ -878,6 +879,7 @@ def main(argv=None):
         "defaultSpawnPointName": spawns[0]["name"],
     }
     (out_level / "info.json").write_text(json.dumps(info, indent=2))
+    beamng.write_notice(args.out_dir, f"Assetto Corsa track {track.name}", author, level)
     (out_level / "kn5_port.json").write_text(json.dumps(
         {"source": str(track), "offset_bng": offset.tolist(), "level": level, "crop_margin": args.crop_margin,
          "road_lo": road_lo.tolist(), "road_hi": road_hi.tolist(),

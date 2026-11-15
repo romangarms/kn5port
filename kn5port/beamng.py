@@ -8,6 +8,9 @@ import re
 import sys
 from pathlib import Path
 
+REPO = "https://github.com/romangarms/kn5port"
+NOTICE_FILE = "README_kn5port.txt"
+
 AC_APPID = "244210"
 BEAMNG_APPID = "284160"
 
@@ -98,3 +101,26 @@ def find_mods(explicit=None):
     if found is None and local and (Path(local) / "BeamNG" / "BeamNG.drive" / "current").exists():
         found = Path(local) / "BeamNG" / "BeamNG.drive" / "current" / "mods"     # game run, folder not yet made
     return found
+
+
+def write_notice(mod_root, source, owner, level=None):
+    """Drop README_kn5port.txt in a mod's root folder: what made it, from what, and that it is not to be shared.
+    It sits next to levels/ and art/, so it goes along when someone zips the folder up."""
+    import time
+    from . import __version__
+    lines = [
+        f"This mod was made on this computer with kn5port {__version__} ({REPO}).",
+        "",
+        "It is a personal conversion for the person who made it. It is NOT to be distributed:",
+        "do not upload it, share it, repack it or sell it, in whole or in part.",
+        "",
+        f"Source: {source}",
+        f"The original content belongs to {owner}. kn5port only converts files the user already has.",
+    ]
+    if level:
+        lines.append(f"Level: {level}")
+    lines += [f"Converted: {time.strftime('%Y-%m-%d')}", "",
+              "If you got this mod from someone else, delete it, and convert your own copy with kn5port instead.", ""]
+    mod_root = Path(mod_root)
+    mod_root.mkdir(parents=True, exist_ok=True)
+    (mod_root / NOTICE_FILE).write_text("\n".join(lines), encoding="utf8")
