@@ -69,6 +69,95 @@ def _unused_read_surface_keys(track_dir):
     return keys
 
 
+def ini_models(ini):
+    """kn5 files one models*.ini lists, in order."""
+    out = []
+    for line in Path(ini).read_text(errors="replace").splitlines():
+        m = re.match(r"\s*FILE\s*=\s*(.+\.kn5)", line, re.I)
+        if m and m.group(1).strip() not in out:
+            out.append(m.group(1).strip())
+    return out
+
+
+def layout_models(track_dir):
+    """AC layout (ui/ subfolder name, "" for a single-layout track) -> stems of the kn5s it loads, from
+    models_<layout>.ini (models.ini when a layout has none). None when the layouts can't be told apart, so every
+    kn5 counts as shared. Layouts swap kn5s: Barcelona's GP and moto layouts each have their own markings,
+    chicane barriers and kerb collision."""
+    track_dir = Path(track_dir)
+    ui = track_dir / "ui"
+    lays = sorted(p.parent.name for p in ui.glob("*/ui_track.json")) if ui.exists() else []
+    default = track_dir / "models.ini"
+    out = {}
+    for lay in lays or [""]:
+        ini = track_dir / f"models_{lay}.ini" if lay else default
+        if not ini.exists():
+            ini = default
+        if not ini.exists():
+            return None
+        out[lay] = [Path(f).stem for f in ini_models(ini)]
+    return out
+
+
+def group_name(stem):
+    """Scene group for a kn5's statics. Torque reads a name starting with a digit as an object id, so "7" -> kn5_7."""
+    return stem if re.match(r"[A-Za-z_]", stem) else f"kn5_{safe(stem)}"
+
+
+LAYOUT_LUA = """-- Made by kn5port: shows only the Assetto Corsa layout of the chosen spawn point on this level.
+-- Layouts swap some kn5s (line markings, barriers, kerb collision); each lives in its own scene group, and the
+-- groups of the other layouts are removed once the level has loaded. Changing layout means reloading the level.
+local M = {}
+local LEVEL = %(level)s
+local DEFAULT = %(default)s
+local DROP = {
+%(drop)s
+}
+
+local function onClientPostStartMission(levelPath)
+  local lp = string.lower(tostring(levelPath or ''))
+  if not string.find(lp, '/levels/' .. LEVEL .. '/', 1, true) then return end
+  local sp = setSpawnpoint and setSpawnpoint.loadDefaultSpawnpoint(LEVEL) or ''
+  local drop = DROP[sp] or DROP[DEFAULT] or {}
+  local n = 0
+  for _, name in ipairs(drop) do
+    local o = scenetree.findObject(name)
+    if o then o:delete(); n = n + 1 end
+  end
+  if n > 0 then be:reloadCollision() end
+  log('I', 'kn5port', 'layout of ' .. tostring(sp) .. ': removed ' .. n .. ' groups of other layouts')
+end
+
+M.onClientPostStartMission = onClientPostStartMission
+return M
+"""
+
+
+def layout_ext_name(level):
+    """BeamNG maps underscores in an extension name to folders, so the name keeps letters and digits only. One per
+    level: mods that ship the same extension path shadow each other."""
+    return "kn5portLayouts" + re.sub(r"[^a-z0-9]", "", level.lower())
+
+
+def write_layout_script(mod_root, level, drop_by_spawn, default):
+    """Write (or remove, for single-layout tracks) the extension that keeps only the chosen layout's kn5s."""
+    ext = layout_ext_name(level)
+    lua = Path(mod_root) / "lua" / "ge" / "extensions" / f"{ext}.lua"
+    mod_script = Path(mod_root) / "scripts" / ext / "modScript.lua"
+    if not any(drop_by_spawn.values()):
+        for f in (lua, mod_script):
+            if f.exists():
+                f.unlink()
+        return
+    q = json.dumps
+    lua.parent.mkdir(parents=True, exist_ok=True)
+    lua.write_text(LAYOUT_LUA % {
+        "level": q(level), "default": q(default),
+        "drop": "\n".join(f"  [{q(sp)}] = {{{', '.join(q(g) for g in gs)}}}," for sp, gs in sorted(drop_by_spawn.items()))})
+    mod_script.parent.mkdir(parents=True, exist_ok=True)
+    mod_script.write_text(f'load("{ext}")\nsetExtensionUnloadMode("{ext}", "manual")\n')
+
+
 def models_from_ini(track_dir):
     """kn5 files listed by the layouts' models_*.ini (union), else every kn5 in the folder."""
     names = []
@@ -544,6 +633,18 @@ def main(argv=None):
         todo = [s for s in stems if s not in layout_kn5 and not (args.terrain != "0" and is_horizon_kn5(s))] + \
                [s for s in args.include if s not in stems]
     print(f"converting: {', '.join(todo)}")
+    # which layouts draw each kn5: bit i = i-th layout. Shared kn5s (in every layout, or not in any ini) get all bits
+    lay_models = layout_models(track) or {}
+    lay_names = sorted(lay_models)
+    all_bits = (1 << len(lay_names)) - 1 if lay_names else 1
+    stem_bits = {}
+    for s_ in todo:
+        b = sum(1 << i for i, lay in enumerate(lay_names) if s_ in lay_models[lay])
+        stem_bits[s_] = b if b else all_bits
+    per_layout = [s_ for s_ in todo if stem_bits[s_] != all_bits]
+    if per_layout:
+        print("per-layout kn5s: " + ", ".join(
+            f"{s_} ({'/'.join(l for i, l in enumerate(lay_names) if stem_bits[s_] >> i & 1)})" for s_ in per_layout))
 
     # -- origin from road bounds
     lo = np.full(3, np.inf); hi = np.full(3, -np.inf)
@@ -653,7 +754,7 @@ def main(argv=None):
             cell = (int(math.floor(c[0] / args.cell)), int(math.floor(c[1] / args.cell)), kind)
             pos32, idx32 = pos.astype(np.float32), idx.astype(np.uint32)
             if not hidden:     # drawn: may be a layer on top of an earlier surface (lifted in place below)
-                lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1)
+                lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1, layers=stem_bits[stem])
             uvs = m.uvs * m.material.uv_mult if m.material.uv_mult != 1.0 else m.uvs
             t3 = idx.reshape(-1, 3)
             a3 = np.linalg.norm(np.cross(pos[t3[:, 1]] - pos[t3[:, 0]], pos[t3[:, 2]] - pos[t3[:, 0]]), axis=1).sum()
@@ -730,14 +831,14 @@ def main(argv=None):
             fname = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
             dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"
             write_dae(dae, groups, origin)
-            st = {"class": "TSStatic", "name": f"{stem}_{fname}", "__parent": stem,
+            st = {"class": "TSStatic", "name": f"{group_name(stem)}_{fname}", "__parent": group_name(stem),
                   "shapeName": f"{lvl_rel}/art/shapes/{stem}/{fname}.dae",
                   "position": [round(float(v), 3) for v in origin]}
             if kind == "col":
                 st.update({"collisionType": "Visible Mesh Final", "decalType": "Visible Mesh Final"})
             else:
                 st.update({"collisionType": "None", "decalType": "None"})
-            statics[stem].append(st)
+            statics[group_name(stem)].append(st)
         stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop, layers_lifted=lifted,
                            shapes=len(cells), seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "
@@ -787,6 +888,8 @@ def main(argv=None):
             d_by = dummies_of([args.spawn_kn5])
         elif lay and lay in layout_kn5:
             d_by = dummies_of([lay])
+        elif lay in lay_models:       # this layout's own kn5s: another layout's start or pits may differ
+            d_by = dummies_of(lay_models[lay])
         else:
             if main_dummies is None:
                 main_dummies = dummies_of(todo + layout_kn5)
@@ -825,7 +928,7 @@ def main(argv=None):
         title = ui.get("name", (lay or level).replace("_", " ").title())
         title = title.split(" - ", 1)[1] if " - " in title and not single else title
         spawn_info.append({"objectname": name, "translationId": title,
-                           "description": ui.get("description", ""), "preview": jpg, "ui": ui})
+                           "description": ui.get("description", ""), "preview": jpg, "ui": ui, "layout": lay})
     if not spawns:
         spawns.append({"class": "SpawnSphere", "name": "spawn_default", "__parent": "MissionGroup",
                        "dataBlock": "SpawnSphereMarker", "position": [0, 0, 300], "radius": 1})
@@ -833,6 +936,15 @@ def main(argv=None):
     # free roam first: it is the natural default
     order = sorted(range(len(spawns)), key=lambda i: "free" not in spawns[i]["name"])
     spawns = [spawns[i] for i in order]; spawn_info = [spawn_info[i] for i in order]
+
+    # -- layouts: the chosen spawn point picks the layout; a level extension removes the other layouts' kn5s
+    drop_by_spawn = {}
+    for si in spawn_info:
+        lay = si.get("layout")
+        if per_layout and lay in lay_names:
+            bit = 1 << lay_names.index(lay)
+            drop_by_spawn[si["objectname"]] = sorted({group_name(s_) for s_ in per_layout if not stem_bits[s_] & bit})
+    write_layout_script(args.out_dir, level, drop_by_spawn, spawns[0]["name"])
 
     # -- scene files (newline-delimited JSON, like the stock levels)
     main_dir = out_level / "main"

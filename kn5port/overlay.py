@@ -11,6 +11,10 @@ triangle, within a few cm of its height), the mesh is a layer on top of that sur
 than the highest level under it, and the vertices of those triangles are raised by `level * step`. Meshes that
 only touch along a seam (road split into segments, shoulder next to road) never overlap and are left alone.
 
+Tracks with several layouts swap some kn5s (Barcelona: GP and moto each have their own line markings at the same
+places). Each mesh carries a bit mask of the layouts that draw it, and it only stacks on surfaces that share one: two
+layouts' markings are never on screen together, so lifting one set over the other would only make it float.
+
 Hidden physics copies are not part of this: they are invisible, so nothing can fight with them.
 """
 import numpy as np
@@ -36,15 +40,17 @@ def _tri_geom(pos, idx):
 class OverlayLifter:
     def __init__(self, step=STEP, tol_below=TOL_BELOW):
         self.step, self.tol_below = step, tol_below
-        self.records = []                     # (pos, idx, transparent) of the kn5 being converted
+        self.records = []                     # (pos, idx, transparent, layers) of the kn5 being converted
         self.prior_t = np.zeros((0, 3, 3), np.float32)   # surfaces of kn5s already written (unlifted heights)
         self.prior_level = np.zeros(0, np.int16)
+        self.prior_layers = np.zeros(0, np.int64)
         self.stats = {"meshes": 0, "triangles": 0, "max_level": 0}
 
-    def add(self, pos, idx, transparent=False):
-        """Register a drawn mesh (in AC file order). `pos` is modified in place by `resolve`."""
+    def add(self, pos, idx, transparent=False, layers=-1):
+        """Register a drawn mesh (in AC file order). `pos` is modified in place by `resolve`. `layers` is a bit mask
+        of the track layouts that draw it (-1: all)."""
         if self.step > 0 and len(idx):
-            self.records.append((pos, idx, bool(transparent)))
+            self.records.append((pos, idx, bool(transparent), int(layers)))
 
     def resolve(self):
         """Lift the layers of the meshes added since the last call, then index them for the next kn5."""
@@ -59,7 +65,8 @@ class OverlayLifter:
 
         # triangles of every record: geometry, owner (rank), local index
         T, own, loc = [], [], []
-        for r, (pos, idx, _) in enumerate(recs):
+        rec_layers = np.array([r[3] for r in recs], np.int64)
+        for r, (pos, idx, _, _) in enumerate(recs):
             t, up, ln = _tri_geom(pos, idx)
             keep = (up > MIN_UP) & (ln > 1e-8)
             T.append(t[keep]); own.append(np.full(keep.sum(), r, np.int32)); loc.append(np.nonzero(keep)[0])
@@ -69,6 +76,7 @@ class OverlayLifter:
         n_prior = len(self.prior_t)
         allT = np.concatenate([self.prior_t.astype(np.float64), T]) if n_prior else T
         all_own = np.concatenate([np.full(n_prior, -1, np.int32), own])
+        all_layers = np.concatenate([self.prior_layers, rec_layers[own]])
 
         # Candidate pairs (centroid of one of this kn5's triangles, earlier triangle) from a multi-resolution
         # spatial hash: each triangle goes into the finest grid where its bbox covers at most a few cells, so dense
@@ -107,8 +115,8 @@ class OverlayLifter:
                 q = np.repeat(qs, c)
                 t = stid[np.repeat(a[qs], c) + (np.arange(len(q)) - np.repeat(np.cumsum(c) - c, c))]
                 Pz = C[q, 2]
-                m = (all_own[t] < own[q]) & (Pz > tzlo[t] - self.tol_below) & (Pz < tzhi[t] + self.step)
-                q, t = q[m], t[m]                   # only surfaces AC draws earlier (prior kn5s: -1), near in z
+                m = (all_own[t] < own[q]) & (Pz > tzlo[t] - self.tol_below) & (Pz < tzhi[t] + self.step) &                     ((all_layers[t] & rec_layers[own[q]]) != 0)
+                q, t = q[m], t[m]   # only surfaces AC draws earlier (prior kn5s: -1) in a shared layout, near in z
                 P = C[q]; tri = allT[t]
                 v0 = tri[:, 1, :2] - tri[:, 0, :2]; v1 = tri[:, 2, :2] - tri[:, 0, :2]; v2 = P[:, :2] - tri[:, 0, :2]
                 den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
@@ -150,7 +158,7 @@ class OverlayLifter:
                 sink = np.zeros(len(tris))                  # how far the triangle dips below what it covers
                 np.maximum.at(sink, inv, -dz)
                 tri_level[n_prior + tris] = lvl
-                pos, idx, _ = recs[r]
+                pos, idx, _, _ = recs[r]
                 tv = idx.reshape(-1, 3)[loc[tris]]
                 lift = np.zeros(len(pos))
                 np.maximum.at(lift, tv.ravel(), np.repeat(lvl * self.step + np.maximum(sink, 0.0), 3))
@@ -165,3 +173,4 @@ class OverlayLifter:
         # the same frame the triangles of the current kn5 are compared in
         self.prior_t = np.concatenate([self.prior_t, T.astype(np.float32)])
         self.prior_level = np.concatenate([self.prior_level, tri_level[n_prior:].astype(np.int16)])
+        self.prior_layers = all_layers
