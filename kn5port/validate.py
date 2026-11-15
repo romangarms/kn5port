@@ -199,6 +199,10 @@ def main(argv=None):
         if o.get("class") == "SimGroup" and o.get("__parent") == "MissionGroup":
             if not (level / "main" / "MissionGroup" / o["name"] / "items.level.json").exists():
                 errors.append(f"scene group '{o['name']}' is declared but its items.level.json is missing")
+    # BeamNG refuses names starting with a digit and drops everything parented to such a group
+    bad = sorted({o["name"] for o in read_items(level) if str(o.get("name", ""))[:1].isdigit()})
+    if bad:
+        errors.append(f"{len(bad)} object names start with a digit (BeamNG won't load them): {', '.join(bad[:5])}")
     tnames = {m.get("internalName") for m in mats.values() if isinstance(m, dict) and m.get("class") == "TerrainMaterial"}
     for o in read_items(level):
         if o.get("class") == "GroundCover":

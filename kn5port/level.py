@@ -99,6 +99,13 @@ def layout_models(track_dir):
     return out
 
 
+def group_name(stem):
+    """Scene group (and object name prefix) for a kn5's statics. BeamNG refuses object names that start with a digit
+    ("Object name cannot start with a digit") and then drops everything parented to them, so 1.kn5's whole group
+    never loaded: "1" -> "kn5_1"."""
+    return stem if re.match(r"[A-Za-z_]", stem) else f"kn5_{safe(stem)}"
+
+
 def remove_layout_script(mod_root, level):
     """Builds of 2026-11-15 shipped an extension that switched layouts by spawn point; a rebuild removes it."""
     ext = "kn5portLayouts" + re.sub(r"[^a-z0-9]", "", level.lower())
@@ -785,14 +792,14 @@ def main(argv=None):
             fname = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
             dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"
             write_dae(dae, groups, origin)
-            st = {"class": "TSStatic", "name": f"{stem}_{fname}", "__parent": stem,
+            st = {"class": "TSStatic", "name": f"{group_name(stem)}_{fname}", "__parent": group_name(stem),
                   "shapeName": f"{lvl_rel}/art/shapes/{stem}/{fname}.dae",
                   "position": [round(float(v), 3) for v in origin]}
             if kind == "col":
                 st.update({"collisionType": "Visible Mesh Final", "decalType": "Visible Mesh Final"})
             else:
                 st.update({"collisionType": "None", "decalType": "None"})
-            statics[stem].append(st)
+            statics[group_name(stem)].append(st)
         stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop, layers_lifted=lifted,
                            shapes=len(cells), seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "
@@ -901,6 +908,11 @@ def main(argv=None):
     # -- scene files (newline-delimited JSON, like the stock levels)
     main_dir = out_level / "main"
     mg_dir = main_dir / "MissionGroup"
+    if mg_dir.exists():     # groups of an earlier build (renamed kn5 groups; terrain and forest steps rewrite theirs)
+        import shutil
+        for d in mg_dir.iterdir():
+            if d.is_dir():
+                shutil.rmtree(d)
     mg_dir.mkdir(parents=True, exist_ok=True)
     (main_dir / "items.level.json").write_text(json.dumps(
         {"name": "MissionGroup", "class": "SimGroup", "enabled": "1"}) + "\n")
