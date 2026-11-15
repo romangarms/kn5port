@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .. import __version__, beamng, xbox
+from .. import __version__, beamng, update, xbox
 from ..cli import is_kunos
 from .fh1 import FH1, pick_tk
 
@@ -317,6 +317,14 @@ class App:
         self.palettes = {}            # level -> summary dict
         self.palettes_running = False
         self.start_palettes()
+        self.updater = update.Updater()
+        if update.can_self_update():
+            threading.Thread(target=update.cleanup, daemon=True).start()     # the exe an update replaced
+        if self.settings.get("update_check", True):
+            self.updater.check()
+
+    def busy(self):
+        return any(j.thread.is_alive() for j in self.jobs.values()) or self.fh1.busy()
 
     def start_palettes(self):
         inst = self.settings.get("beamng")
@@ -423,6 +431,8 @@ def make_handler(app, port_ref):
                         app.inspect_cache[key] = inspect_track(d, None, app.settings.get("beamng"),
                                                                app.settings.get("mods"))
                     return self._send(200, app.inspect_cache[key])
+                if u.path == "/api/update":
+                    return self._send(200, app.updater.view())
                 if u.path == "/api/fh1/state":
                     return self._send(200, app.fh1.state())
                 if u.path == "/api/fh1/job":
@@ -450,6 +460,8 @@ def make_handler(app, port_ref):
                     for k in ("tracks", "beamng", "mods"):
                         if k in body:
                             app.settings[k] = str(body[k]).strip()
+                    if isinstance(body.get("update_check"), bool):
+                        app.settings["update_check"] = body["update_check"]
                     save_settings(app.settings)
                     if app.settings.get("tracks"):
                         app.scanner.start(app.settings["tracks"])
@@ -469,6 +481,23 @@ def make_handler(app, port_ref):
                     start = str(body.get("start") or "")
                     path = app.pick_file(start) if app.pick_file else pick_tk(start, file=True)
                     return self._send(200, {"path": path or ""})
+                if u.path == "/api/update/check":
+                    app.updater.check()
+                    return self._send(200, app.updater.view())
+                if u.path == "/api/update/install":
+                    if app.busy():
+                        return self._send(409, {"error": "Wait for the running conversion or build to finish first."})
+                    try:
+                        app.updater.install()
+                    except RuntimeError as e:
+                        return self._send(409, {"error": str(e)})
+                    return self._send(200, app.updater.view())
+                if u.path == "/api/update/page":
+                    page = app.updater.view()["page"]                 # only ever kn5port's own releases page
+                    if not page.startswith(f"https://github.com/{update.REPO}/releases/"):
+                        page = update.RELEASES_PAGE
+                    webbrowser.open(page)
+                    return self._send(200, {"ok": True})
                 if u.path == "/api/fh1/detect":
                     return self._send(200, xbox.detect(body.get("path", "")))
                 if u.path == "/api/fh1/settings":

@@ -193,6 +193,12 @@ a.lnk:hover, button.lnk:hover { text-decoration: underline; }
 .howto h3 { color: var(--text); font-size: 14px; margin: 10px 0 2px; }
 .howto ol, .howto ul { margin: 4px 0; padding-left: 20px; }
 .howto strong { color: var(--text); }
+.updbtn { background: rgba(255,122,26,.12); border: 1px solid rgba(255,122,26,.5); border-radius: 8px; padding: 6px 11px; color: var(--accent); font-weight: 600; }
+.updbtn:hover { background: rgba(255,122,26,.2); }
+.updbtn[hidden] { display: none; }
+.notes { font-family: var(--mono); font-size: 12px; background: #0b0c0e; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; color: #c7ccd6; margin: 0; }
+.updrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 12px; }
+.err { color: var(--bad); font-size: 13px; }
 dialog.wide { width: min(760px, 94vw); }
 dialog.wide .db { max-height: 70vh; overflow: auto; }
 @media (max-width: 900px) { .tabs button { padding: 5px 8px; } main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .subopts { grid-template-columns: 1fr; } }
@@ -204,6 +210,7 @@ dialog.wide .db { max-height: 70vh; overflow: auto; }
   <nav class="tabs" id="tabs"><button data-tab="ac" class="on">Assetto Corsa</button><button data-tab="fh1">Forza Horizon 1</button></nav>
   <div class="chips" id="chips"></div>
   <div class="spacer"></div>
+  <button class="updbtn" id="updBtn" hidden></button>
   <button class="iconbtn" id="settingsBtn" title="Folders">⚙ Folders</button>
 </header>
 <main id="acView">
@@ -243,8 +250,16 @@ dialog.wide .db { max-height: 70vh; overflow: auto; }
     <div><label>BeamNG.drive install folder</label><div class="field"><input type="text" id="s_beamng" placeholder="…\steamapps\common\BeamNG.drive"><button class="secondary" data-browse="beamng">Browse…</button></div></div>
     <div><label>BeamNG mods folder (converted levels go into mods\unpacked)</label><div class="field"><input type="text" id="s_mods" placeholder="%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods"><button class="secondary" data-browse="mods">Browse…</button></div></div>
     <div class="muted">Found automatically through Steam (any drive) and your BeamNG user folder. <a href="#" id="s_detect" style="color:var(--accent)">Detect again</a></div>
+    <div class="updrow"><label class="check"><input type="checkbox" id="s_updcheck"> Check for kn5port updates when it starts</label>
+      <span class="spacer"></span><span class="muted" id="s_updstatus"></span><button class="lnk" id="s_updnow">Check now</button></div>
   </div>
   <div class="df"><button class="secondary" id="s_cancel">Cancel</button><button class="primary" id="s_save">Save</button></div>
+</dialog>
+
+<dialog id="update">
+  <div class="dh" id="u_title">Update kn5port</div>
+  <div class="db" id="u_body"></div>
+  <div class="df"><button class="secondary" id="u_later">Later</button><button class="secondary" id="u_page">Release page</button><button class="primary" id="u_go">Update and restart</button></div>
 </dialog>
 
 <dialog id="notice">
@@ -635,9 +650,50 @@ $("#s_detect").addEventListener("click", async (e) => {
 });
 $("#settingsBtn").addEventListener("click", () => {
   for (const k of ["tracks", "beamng", "mods"]) $("#s_" + k).value = state.settings[k] || "";
+  $("#s_updcheck").checked = state.settings.update_check !== false; updRender();
   $("#settings").showModal();
 });
 $("#s_cancel").addEventListener("click", () => $("#settings").close());
+
+// ---- updates (GitHub releases; the packaged exe downloads, checks and swaps in the new kn5port.exe itself)
+let upd = {};
+async function updRefresh() {
+  upd = await api("/api/update"); updRender();
+  if (["checking", "downloading", "restarting"].includes(upd.state))
+    setTimeout(() => updRefresh().catch(() => {}), upd.state === "checking" ? 1000 : 400);
+}
+function updRender() {
+  const avail = upd.latest && ["available", "downloading", "restarting"].includes(upd.state);
+  const b = $("#updBtn"); b.hidden = !avail;
+  b.textContent = upd.state === "downloading" ? `Updating… ${Math.round(upd.progress * 100)}%` : `⬆ Update to ${upd.latest}`;
+  $("#s_updstatus").textContent = { checking: "Checking…", current: `kn5port ${upd.current} is the latest version.`,
+    available: `kn5port ${upd.latest} is available.`, downloading: "Downloading the update…", restarting: "Restarting…",
+    error: upd.error, idle: `kn5port ${upd.current || ""}` }[upd.state] || "";
+  $("#u_title").textContent = `kn5port ${upd.latest || ""} is available`;
+  const busy = ["downloading", "restarting"].includes(upd.state);
+  $("#u_body").innerHTML = `<div>You have ${esc(upd.current)}. ${upd.can_install
+      ? "kn5port downloads the new version from GitHub, checks it, replaces this kn5port.exe and restarts. Your folders and settings stay as they are."
+      : "Running from source: update with <code>git pull</code> or <code>pip install -U</code>, or get the new kn5port.exe from the release page."}</div>
+    ${upd.notes ? `<pre class="notes">${esc(upd.notes)}</pre>` : ""}
+    ${upd.error && upd.state !== "error" ? `<div class="err">Update failed: ${esc(upd.error)}</div>` : ""}
+    ${busy ? `<div class="muted">${upd.state === "restarting" ? "Restarting into the new version…" : `Downloading… ${Math.round(upd.progress * 100)}%`}</div>
+      <div class="bar"><i style="width:${Math.round((upd.state === "restarting" ? 1 : upd.progress) * 100)}%"></i></div>` : ""}`;
+  $("#u_go").hidden = !upd.can_install; $("#u_go").disabled = busy; $("#u_later").disabled = upd.state === "restarting";
+}
+$("#updBtn").addEventListener("click", () => { updRender(); $("#update").showModal(); });
+$("#u_later").addEventListener("click", () => $("#update").close());
+$("#u_page").addEventListener("click", () => api("/api/update/page", {}).catch((e) => alert(e.message)));
+$("#u_go").addEventListener("click", async () => {
+  try { upd = await api("/api/update/install", {}); updRender(); updRefresh().catch(() => {}); }
+  catch (e) { alert(e.message); }
+});
+$("#s_updnow").addEventListener("click", async () => {
+  try { upd = await api("/api/update/check", {}); updRender(); updRefresh().catch(() => {}); } catch (e) { alert(e.message); }
+});
+$("#s_updcheck").addEventListener("change", async (e) => {
+  try { const r = await api("/api/settings", { update_check: e.target.checked }); state.settings = r.settings; }
+  catch (err) { alert(err.message); }
+});
 $("#s_save").addEventListener("click", async () => {
   try {
     const r = await api("/api/settings", { tracks: $("#s_tracks").value, beamng: $("#s_beamng").value, mods: $("#s_mods").value });
@@ -870,6 +926,7 @@ $("#howtoOk").addEventListener("click", () => $("#howto").close());
   if (location.hash === "#fh1" || location.hash === "#ac") tab = location.hash.slice(1);
   if (tab === "fh1") setTab("fh1");
   if (!TOKEN) { $("#grid").innerHTML = '<div class="muted">Open kn5port through <code>kn5port ui</code> (the link it prints includes an access token).</div>'; return; }
+  updRefresh().catch(() => {});
   try {
     await refresh();
     const s = state.settings;

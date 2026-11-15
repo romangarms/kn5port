@@ -93,6 +93,10 @@ the blimp.
 
 Download `kn5port.exe` from [releases](../../releases) and run it. There's nothing to install.
 
+kn5port checks GitHub for a new release when it starts. When there is one, an **Update** button appears at the
+top; click it and kn5port downloads the new `kn5port.exe`, checks it against the SHA-256 GitHub lists for it,
+replaces itself and restarts. Your settings stay. Turn the check off under **⚙ Folders**.
+
 ##### From source (Python 3.9+):
 
 ```

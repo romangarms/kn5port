@@ -1,5 +1,6 @@
 # Builds kn5port.exe on Windows for every tag like v0.2.0 and attaches it to a GitHub release.
 # The exe contains only kn5port's own code (and Python/numpy/Pillow/pywebview): no game content.
+# Keep the asset named kn5port.exe: the app's self-update (kn5port/update.py) downloads that name from the latest release.
 name: release
 on:
   push:
@@ -38,4 +39,4 @@ jobs:
           files: dist/kn5port.exe
           generate_release_notes: true
           body: |
-            Download `kn5port.exe` below and run it; there's nothing to install. Fully restart BeamNG after converting a track.
+            Download `kn5port.exe` below and run it; there's nothing to install. If you already have kn5port, it offers this update itself. Fully restart BeamNG after converting a track.

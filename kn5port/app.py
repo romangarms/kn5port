@@ -64,6 +64,7 @@ def main():
 
     app.pick_folder = pick_folder
     app.pick_file = pick_file
+    app.updater.quit = window.destroy          # after an update: close, so this process exits and the new exe runs
     try:
         webview.start()
     finally:
