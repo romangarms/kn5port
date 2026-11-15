@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .. import __version__, beamng, xbox
+from ..cli import is_kunos
 from .fh1 import FH1, pick_tk
 
 STATIC = Path(__file__).parent / "static"
@@ -159,7 +160,7 @@ def scan_tracks(settings, scanner=None):
             "city": ui.get("city", ""), "length": ui.get("length", ""), "description": ui.get("description", ""),
             "tags": ui.get("tags", [])[:6] if isinstance(ui.get("tags"), list) else [],
             "layouts": [u.parent.name for u in uis] or ["(single)"],
-            "preview": bool(prev), "converted": bool(converted), "level": level,
+            "preview": bool(prev), "converted": bool(converted), "level": level, "kunos": is_kunos(d),
             "check": (scanner.status.get(d.name) if scanner else None) or {"state": "checking"},
         })
     # Sort by the name shown in the app, not the folder name (folders are often prefixed, e.g. "ks_", "rt_").

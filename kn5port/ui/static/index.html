@@ -321,11 +321,22 @@ function paletteLevel() {
   if (p && (!state.palettes.length || state.palettes.some((x) => x.level === p))) return p;
   return state.palettes.some((x) => x.level === "west_coast_usa") || !state.palettes.length ? "west_coast_usa" : state.palettes[0].level;
 }
-const treesMode = () => state.opts.trees || "beamng";        // beamng | ac | none
+// Presets set the ground and trees together. Each track gets one suggested by default: Kunos' own tracks are
+// simple, grassy and suit the BeamNG look; mods and ports usually have hand-built terrain and props that only
+// look right kept as they are. Picking a ground or tree option by hand makes it "Custom".
+const PRESETS = {
+  ac: { terrain: "off", trees: "ac" },
+  beamng: { terrain: "auto", trees: "beamng" },
+};
+const curTrack = () => state.tracks.find((x) => x.id === state.sel);
+const suggestedPreset = (t = curTrack()) => (t && t.kunos ? "beamng" : "ac");
+const terrainMode = () => state.opts.terrain || PRESETS[suggestedPreset()].terrain;    // auto | off
+const treesMode = () => state.opts.trees || PRESETS[suggestedPreset()].trees;           // beamng | ac | none
+const presetMode = () => Object.keys(PRESETS).find((k) => PRESETS[k].terrain === terrainMode() && PRESETS[k].trees === treesMode()) || "custom";
 const pc = (pros, cons) => `<span class="pc">${pros.map((x) => `<span class="p">${x}</span>`).join("")}${cons.map((x) => `<span class="c">${x}</span>`).join("")}</span>`;
 const choice = (group, v, on, title, rec, pros, cons) => `
   <button class="choice ${on ? "on" : ""}" data-g="${group}" data-v="${v}">
-    <span class="ct"><i>${title}</i>${rec ? '<span class="rec">Recommended</span>' : ""}</span>${pc(pros, cons)}</button>`;
+    <span class="ct"><i>${title}</i>${rec ? `<span class="rec">${rec === true ? "Recommended" : rec}</span>` : ""}</span>${pc(pros, cons)}</button>`;
 const toggle = (id, on, title, desc, pros, cons) => `
   <div class="setting"><label class="check"><input type="checkbox" id="${id}" ${on ? "checked" : ""}> ${title}</label>
     <div class="st-d">${desc}</div>${pc(pros, cons)}</div>`;
@@ -336,7 +347,8 @@ const slider = (id, label, val, min, max, lo, hi, desc) => `
     <div class="st-d">${desc}</div></div>`;
 
 function optionsHtml(t) {
-  const o = state.opts, terrain = o.terrain !== "off", trees = treesMode();
+  const o = state.opts, terrain = terrainMode() !== "off", trees = treesMode(), preset = presetMode();
+  const sugg = suggestedPreset(t), sl = (k) => (sugg === k ? "Suggested for this track" : false);
   const map = `<b class="palname">${esc(pretty(paletteLevel()))}</b>`;
   const ins = state.inspect[t.id];
   const uses = [trees === "beamng" && "trees", trees === "beamng" && "shrubs", terrain && "ground materials",
@@ -344,6 +356,18 @@ function optionsHtml(t) {
   const noGround = ins && !ins.error && !ins.terrain;
   return `
   <div class="opts">
+    <div class="og">
+      <div><div class="og-t">Preset</div><div class="og-s">Sets the ground and trees below in one go. ${t.kunos ? "This is one of Assetto Corsa's own tracks." : "This is a community track."}${preset === "custom" ? " You've changed the ground or trees by hand, so neither preset applies." : ""}</div></div>
+      <div class="choices">
+        ${choice("preset", "ac", preset === "ac", "Assetto Corsa accurate", sl("ac"),
+          ["Keeps AC's ground and trees exactly as the author built them", "Best for modded and ported tracks with detailed terrain and props"],
+          ["Flat AC textures and 2D tree cards can look dated in BeamNG"])}
+        ${choice("preset", "beamng", preset === "beamng", "BeamNG look", sl("beamng"),
+          ["BeamNG terrain, 3D grass and trees: looks like an official map", "Best for simpler tracks with big grassy areas, like the Kunos ones"],
+          ["Detailed ground shapes soften and trees won't exactly match"])}
+      </div>
+    </div>
+
     <div class="og">
       <div><div class="og-t">Scenery style</div>
         <div class="og-s">${uses.length ? `The ${uses.slice(0, -1).join(", ")} and ${uses[uses.length - 1]} come from a BeamNG map. Pick the one whose look best matches this track.`
@@ -354,7 +378,7 @@ function optionsHtml(t) {
     <div class="og">
       <div><div class="og-t">Ground</div><div class="og-s">How the grass, dirt and hills around the road are built.</div></div>
       <div class="choices">
-        ${choice("terrain", "auto", terrain, "BeamNG terrain", true,
+        ${choice("terrain", "auto", terrain, "BeamNG terrain", false,
           [`3D grass and ground materials from ${map}`, "Lighting and shading that match BeamNG"],
           ["Off-road ground shape is resampled to a grid, so small bumps soften", "Slower to convert"])}
         ${choice("terrain", "off", !terrain, "Keep AC ground", false,
@@ -374,7 +398,7 @@ function optionsHtml(t) {
     <div class="og">
       <div><div class="og-t">Trees &amp; grass</div><div class="og-s">What happens to the track's trees, bushes and grass cards.</div></div>
       <div class="choices">
-        ${choice("trees", "beamng", trees === "beamng", "BeamNG vegetation", true,
+        ${choice("trees", "beamng", trees === "beamng", "BeamNG vegetation", false,
           [`Proper 3D trees, shrubs and grass from ${map}`, "Placed and sized where the track had them"],
           ["Species won't exactly match the original", "Dense forests cost frame rate"])}
         ${choice("trees", "ac", trees === "ac", "Keep AC trees", false,
@@ -489,7 +513,8 @@ function renderDetail() {
 
 function wireDetail(t) {
   document.querySelectorAll(".choice").forEach((b) => b.addEventListener("click", () => {
-    state.opts[b.dataset.g] = b.dataset.v;
+    if (b.dataset.g === "preset") Object.assign(state.opts, PRESETS[b.dataset.v]);
+    else state.opts[b.dataset.g] = b.dataset.v;
     const top = $("#detail").scrollTop; renderDetail(); $("#detail").scrollTop = top;
   }));
   $("#o_density")?.addEventListener("input", (e) => { state.opts.tree_density = +e.target.value; $("#v_density").textContent = (+e.target.value).toFixed(2); });
@@ -513,6 +538,7 @@ function wireDetail(t) {
 async function select(id) {
   if (state.sel === id) return;
   state.sel = id;
+  delete state.opts.terrain; delete state.opts.trees;      // each track starts on its suggested preset
   document.querySelectorAll("#grid .card").forEach((c) => c.classList.toggle("sel", c.dataset.id === id));
   renderDetail();
   $("#detail").scrollTop = 0;
@@ -527,7 +553,7 @@ async function convert(id) {
   const o = state.opts;
   try {
     state.job = await api("/api/convert", { track: id, options: {
-      terrain: o.terrain || "auto", forest: treesMode() === "beamng", keep_ac_trees: treesMode() === "ac",
+      terrain: terrainMode(), forest: treesMode() === "beamng", keep_ac_trees: treesMode() === "ac",
       tree_density: o.tree_density ?? 1, ao: o.ao ?? 0.35, palette: paletteLevel(),
       edge_fill: o.edge_fill !== false, hide_hidden: o.hide_hidden !== false,
       separate_layers: o.separate_layers !== false, ground_layers: o.ground_layers !== false } });

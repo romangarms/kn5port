@@ -1,7 +1,7 @@
 """kn5port command line.
 
     kn5port inspect  <AC track folder>
-    kn5port convert  <AC track folder> [--mods <BeamNG mods folder>] [--terrain auto|off|SIZE] ...
+    kn5port convert  <AC track folder> [--preset ac|beamng] [--mods <BeamNG mods folder>] [--terrain auto|off|SIZE] ...
     kn5port validate <level folder>
 
 Everything runs locally on files you already have. Levels converted from community tracks (mods) are
@@ -144,6 +144,11 @@ def cmd_convert(a):
     track = Path(a.track)
     if not track.exists():
         sys.exit(f"no such folder: {track}")
+    # presets set the ground and trees together; an explicit --terrain still wins
+    if a.preset == "ac":
+        a.terrain = a.terrain or "off"
+        a.keep_ac_trees = True
+    a.terrain = a.terrain or "auto"
     if not is_kunos(track):
         print(NOTICE)
     name = re.sub(r"[^A-Za-z0-9_]", "_", a.level or track.name).lower()
@@ -226,7 +231,10 @@ def main(argv=None):
     p.add_argument("--level", help="level name (default: track folder name)")
     p.add_argument("--beamng", help="BeamNG.drive install folder (default: auto-detected via Steam)")
     p.add_argument("--profile", help="track profile JSON (see kn5port/profile.py)")
-    p.add_argument("--terrain", default="auto", help="auto (default), off, or a size such as 4096")
+    p.add_argument("--preset", choices=("ac", "beamng"), help="ac: keep AC's ground and trees as built (best for "
+                   "mods and ports with detailed terrain and props); beamng (default): BeamNG terrain, grass and trees "
+                   "(best for simpler, grassy tracks)")
+    p.add_argument("--terrain", default=None, help="auto (default), off, or a size such as 4096")
     p.add_argument("--square", type=float, default=0, help="metres per terrain sample (default: auto)")
     p.add_argument("--ao", type=float, default=None, help="terrain ambient-occlusion strength (default 0.35)")
     p.add_argument("--near-gain", type=float, default=0, help="brighten near-road ground (default: auto)")
