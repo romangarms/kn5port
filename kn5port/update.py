@@ -48,6 +48,22 @@ def fetch_latest(timeout=10):
         return json.loads(r.read().decode("utf-8"))
 
 
+def clean_notes(body):
+    """a release body as plain text for the update dialog: the changes as bullets, without the download line, the
+    compare link, headings, markdown emphasis or GitHub's 'by @user in <pull request>' suffixes"""
+    out = []
+    for line in (body or "").replace("\r", "").split("\n"):
+        s = line.strip()
+        if s.startswith(("Download `kn5port.exe`", "**Full Changelog**", "#")) or "made their first contribution" in s:
+            continue
+        s = re.sub(r" by @[\w\[\]-]+ in https://\S+$", "", s)
+        s = re.sub(r"^[-*+]\s+", "• ", s)
+        s = s.replace("**", "").replace("`", "")
+        if s or (out and out[-1]):
+            out.append(s)
+    return "\n".join(out).strip()
+
+
 def describe(release, current=__version__):
     """the parts of a GitHub release JSON the app uses, and whether it's newer than `current`"""
     tag = release.get("tag_name") or ""
@@ -57,7 +73,7 @@ def describe(release, current=__version__):
         and parse_version(tag) > parse_version(current)
     return {
         "version": tag.lstrip("v"), "newer": newer, "page": release.get("html_url") or RELEASES_PAGE,
-        "notes": (release.get("body") or "").strip()[:4000],
+        "notes": clean_notes(release.get("body"))[:4000],
         "asset": {"url": asset["browser_download_url"], "size": int(asset.get("size") or 0),
                   "sha256": digest.split(":", 1)[1].lower() if digest.startswith("sha256:") else None}
         if asset and asset.get("browser_download_url") else None,

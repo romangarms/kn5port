@@ -13,6 +13,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the whole history and tags, for the list of changes since the last release
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -32,11 +34,24 @@ jobs:
         with:
           name: kn5port-exe
           path: dist/kn5port.exe
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        # commits go straight to main, so GitHub's generated notes would be just a compare link: list the commits.
+        # The app's update dialog shows these bullets (kn5port/update.py clean_notes drops the first line and links).
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            echo 'Download `kn5port.exe` below and run it. If you already have kn5port, it offers this update itself. Fully restart BeamNG after converting a track.'
+            echo
+            echo '## Changes'
+            git log --no-merges --format='- %s' "${prev:+$prev..}$GITHUB_REF_NAME" | grep -vE '^- (Release v[0-9]|Update [A-Za-z_./-]+$)' || true
+          } > notes.md
+          cat notes.md
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/kn5port.exe
-          generate_release_notes: true
-          body: |
-            Download `kn5port.exe` below and run it; there's nothing to install. If you already have kn5port, it offers this update itself. Fully restart BeamNG after converting a track.
+          generate_release_notes: true          # appends the "Full Changelog" compare link
+          body_path: notes.md

@@ -12,6 +12,16 @@ def release(tag="v9.0.0", data=b"MZ" + b"\0" * 100, name="kn5port.exe", url="htt
                         "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]}
 
 
+def test_clean_notes():
+    body = ("Download `kn5port.exe` below and run it. Fully restart BeamNG.\r\n\r\n"
+            "## Changes\n- Per-layout **kn5s**: only `the` chosen layout\n- Road layer lift\n\n"
+            "## What's Changed\n* Fix a thing by @someone in https://github.com/romangarms/kn5port/pull/3\n\n"
+            "## New Contributors\n* @someone made their first contribution in https://github.com/x/pull/3\n\n"
+            "**Full Changelog**: https://github.com/romangarms/kn5port/compare/v1.0.0...v1.0.1")
+    assert update.clean_notes(body) == "• Per-layout kn5s: only the chosen layout\n• Road layer lift\n\n• Fix a thing"
+    assert update.clean_notes(None) == ""
+
+
 def test_parse_version():
     assert update.parse_version("v1.2.3") == (1, 2, 3)
     assert update.parse_version("1.10.0") > update.parse_version("1.9.9")
