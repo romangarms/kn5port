@@ -217,6 +217,20 @@ def test_overlay_layers_lifted_in_draw_order():
     assert lf.stats["max_level"] == 2
 
 
+def test_overlay_level_is_per_triangle():
+    # a long line crossing a stacked patch at one end is only raised that high where it crosses it
+    from kn5port.overlay import OverlayLifter
+    lf = OverlayLifter(step=0.02)
+    road, patch, grime = _grid(0, 100, 0, 10, n=50), _grid(0, 10, 0, 10, n=5), _grid(0, 10, 0, 10, n=5)
+    line = _grid(0, 100, 4, 6, n=50)
+    for p, i in (road, patch, grime, line):
+        lf.add(p, i)
+    lf.resolve()
+    assert np.allclose(grime[0][:, 2], 0.04)
+    far = line[0][:, 0] > 15
+    assert np.allclose(line[0][far, 2], 0.02) and np.isclose(line[0][:, 2].max(), 0.06)
+
+
 def test_overlay_off():
     from kn5port.overlay import OverlayLifter
     lf = OverlayLifter(step=0)

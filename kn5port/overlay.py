@@ -128,10 +128,12 @@ class OverlayLifter:
         ht = np.concatenate(hit_t) if hit_t else np.zeros(0, np.int64)
         hdz = np.concatenate(hit_dz) if hit_dz else np.zeros(0)
 
-        level = np.zeros(R, np.int32)
+        # Levels are per triangle: one more than the highest triangle directly under it. A per-mesh level would
+        # carry the deepest stack anywhere under a mesh to all of it (a line running the whole straight that
+        # crosses the grid boxes once floated 25 cm along its full length).
         tri_level = np.zeros(len(allT), np.int32)
         tri_level[:n_prior] = self.prior_level
-        lifted_tris = 0
+        lifted_meshes = lifted_tris = 0
         if len(hq):
             qo = own[hq]
             srt = np.argsort(qo, kind="stable")
@@ -141,19 +143,25 @@ class OverlayLifter:
                 s, e = bounds[r], bounds[r + 1]
                 if s == e:
                     continue
-                to = all_own[ht[s:e]]
-                under = np.where(to >= 0, level[np.maximum(to, 0)], tri_level[ht[s:e]])
-                level[r] = int(under.max()) + 1
+                q, under, dz = hq[s:e], tri_level[ht[s:e]], hdz[s:e]
+                tris, inv = np.unique(q, return_inverse=True)
+                lvl = np.zeros(len(tris), np.int32)
+                np.maximum.at(lvl, inv, under + 1)
+                sink = np.zeros(len(tris))                  # how far the triangle dips below what it covers
+                np.maximum.at(sink, inv, -dz)
+                tri_level[n_prior + tris] = lvl
                 pos, idx, _ = recs[r]
-                tris = np.unique(loc[hq[s:e]])
-                verts = np.unique(idx.reshape(-1, 3)[tris].ravel())
-                pos[verts, 2] += level[r] * self.step + max(0.0, -float(hdz[s:e].min()))
+                tv = idx.reshape(-1, 3)[loc[tris]]
+                lift = np.zeros(len(pos))
+                np.maximum.at(lift, tv.ravel(), np.repeat(lvl * self.step + np.maximum(sink, 0.0), 3))
+                pos[:, 2] += lift.astype(pos.dtype)
+                lifted_meshes += 1
                 lifted_tris += len(tris)
-            self.stats["meshes"] += int((level > 0).sum())
+            self.stats["meshes"] += lifted_meshes
             self.stats["triangles"] += lifted_tris
-            self.stats["max_level"] = max(self.stats["max_level"], int(level.max()))
+            self.stats["max_level"] = max(self.stats["max_level"], int(tri_level[n_prior:].max()))
 
         # index this kn5's surfaces for the kn5s that follow, at their original heights plus their level, which is
         # the same frame the triangles of the current kn5 are compared in
         self.prior_t = np.concatenate([self.prior_t, T.astype(np.float32)])
-        self.prior_level = np.concatenate([self.prior_level, level[own].astype(np.int16)])
+        self.prior_level = np.concatenate([self.prior_level, tri_level[n_prior:].astype(np.int16)])
