@@ -19,7 +19,7 @@ Extracted files, captures and generated levels live in `fh1/` and stay local. Co
 
 ## Running it
 
-The easy way is the kn5port app's **Forza Horizon 1** tab (`kn5port-app`, needs `pip install .[app,fh1]`): it takes a GOD package, an ISO or extracted files, runs the steps below into a work folder, and checks ffmpeg, disk space and that BeamNG is closed first. See [the main README](../README.md#forza-horizon-1).
+The easy way is the kn5port app's **Forza Horizon 1** tab (`kn5port-app` after `pip install .`): it takes a GOD package, an ISO or extracted files, runs the steps below into a work folder, and checks ffmpeg, disk space and that BeamNG is closed first. See [the main README](../README.md#forza-horizon-1).
 
 By hand:
 

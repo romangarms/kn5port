@@ -10,7 +10,7 @@ a = Analysis(
            ("../fh1/pipeline/fh1radio_app/*.js*", "fh1_pipeline/fh1radio_app"),
            ("../kn5port/*.py", "kn5port_src/kn5port"), ("../kn5port/ui/*.py", "kn5port_src/kn5port/ui")],
     hiddenimports=collect_submodules("kn5port") + collect_submodules("webview"),
-    excludes=["matplotlib", "scipy", "pandas", "IPython", "pytest"],
+    excludes=["matplotlib", "scipy", "numba", "llvmlite", "pandas", "IPython", "pytest"],   # FH1 gets these from its own runtime
 )
 pyz = PYZ(a.pure)
 exe = EXE(

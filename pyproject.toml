@@ -9,7 +9,7 @@ description = "Convert Assetto Corsa tracks you own into BeamNG.drive levels, lo
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.22", "Pillow>=9.0"]
+dependencies = ["numpy>=1.22", "Pillow>=9.0", "pywebview>=5", "scipy>=1.8", "numba>=0.57"]
 
 [project.scripts]
 kn5port = "kn5port.cli:main"
@@ -17,10 +17,6 @@ kn5port-ui = "kn5port.cli:gui_main"
 
 [project.gui-scripts]
 kn5port-app = "kn5port.app:main"
-
-[project.optional-dependencies]
-app = ["pywebview>=5"]
-fh1 = ["scipy>=1.8", "numba>=0.57"]
 
 [tool.setuptools.dynamic]
 version = { attr = "kn5port.__version__" }   # bumped by packaging/release.py

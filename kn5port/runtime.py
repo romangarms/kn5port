@@ -6,7 +6,7 @@ No pip, no build step: a wheel is a zip. A ._pth file keeps that Python from rea
 paths, and sitecustomize.py restores the two things the pipeline expects from a normal interpreter: the script's
 folder on sys.path, and PYTHONPATH (which ._pth mode ignores).
 
-Running from source (``pip install .[app,fh1]``) doesn't use any of this: the pipeline runs on sys.executable.
+Running from source (``pip install .``) doesn't use any of this: the pipeline runs on sys.executable.
 """
 import hashlib
 import json

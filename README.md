@@ -43,7 +43,14 @@ offers to download what it needs, about 100 MB. See [`fh1/`](fh1/README.md) for 
 
 Download `kn5port.exe` from [releases](../../releases) and run it. There's nothing to install.
 
-From source (Python 3.9+): `pip install .[app]` (or `.[app,fh1]` for Forza Horizon), then run `kn5port-app`.
+From source (Python 3.9+):
+
+```
+git clone https://github.com/romangarms/kn5port
+cd kn5port
+pip install .
+kn5port-app
+```
 
 ## Command line
 
