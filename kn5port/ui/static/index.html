@@ -767,15 +767,23 @@ function fhChecks(s) {
         `${s.winget ? `<button class="primary" data-setup="ffmpeg" ${dis}>Install</button> ` : ""}<button class="secondary" data-recheck>Check again</button>`));
   out.push(s.mods ? row("ok", "BeamNG mods folder", esc(s.mods))
     : row("bad", "BeamNG mods folder", "Not found. Set it under Folders.", `<button class="secondary" id="fhFolders">Folders</button>`));
-  const needWork = (s.extracted ? 0 : s.need.game) + (s.prepared ? 0 : s.need.prepared);
-  const needMods = c.gb + (fh.radio ? s.need.radio : 0);
-  const sameDrive = s.work.slice(0, 2).toLowerCase() === (s.mods || "").slice(0, 2).toLowerCase();
-  const need = sameDrive ? needWork + needMods : Math.max(needWork, needMods);
-  const free = s.free_gb == null ? null : Math.min(s.free_gb, s.mods_free_gb ?? s.free_gb);
-  out.push(row(free == null || free > needWork + needMods + 2 ? "ok" : free > need + 0.5 ? "warn" : "bad", "Disk space",
-    `${gb(needWork)} for the work folder${s.extracted ? "" : " (game files and map tables)"}, ${gb(needMods)} for the level${fh.radio ? " and radio" : ""}. Free: ${gb(s.free_gb)}${sameDrive ? "" : ` (work folder), ${gb(s.mods_free_gb)} (mods)`}.`));
-  if (s.ram_gb) out.push(row(s.ram_gb >= c.ram + 2 ? "ok" : s.ram_gb >= c.ram ? "warn" : "bad", "Memory",
-    `${c.name} needs about ${c.ram} GB while building; this PC has ${Math.round(s.ram_gb)} GB.${s.ram_gb < c.ram + 2 ? " Close other programs (and BeamNG) first." : ""}`));
+  // the same estimate the server checks before it starts a build (FH1.disk)
+  const d = s.disk[c.key][fh.radio ? "radio" : "plain"];
+  const workWhat = [!s.extracted && "game files", !s.prepared && "map tables", "build caches"].filter(Boolean).join(", ");
+  const parts = `${gb(d.work)} for the work folder (${workWhat}), ${gb(d.mods)} for the level${fh.radio && !s.radio ? " and radio" : ""}${d.freed ? ` (replacing the ${gb(d.freed)} copy already there)` : ""}`;
+  const fits = (need, free, slack) => free == null ? "ok" : free >= need + slack + 2 ? "ok" : free >= need + slack ? "warn" : "bad";
+  const worst = (...a) => a.includes("bad") ? "bad" : a.includes("warn") ? "warn" : "ok";
+  out.push(d.same_drive
+    ? row(fits(d.total, s.free_gb, 0.5), "Disk space", `${parts}: ${gb(d.total)} in all, on one drive. Free: ${gb(s.free_gb)}.`)
+    : row(worst(fits(d.work, s.free_gb, 0.5), fits(d.mods - d.freed, s.mods_free_gb, 0.3)), "Disk space",
+        `${parts}. Free: ${gb(s.free_gb)} (work folder), ${gb(s.mods_free_gb)} (mods).`));
+  if (s.ram_gb) {
+    const ram = Math.round(s.ram_gb), low = [];      // Windows reports a little under the installed amount
+    if (ram < c.ram + 2) low.push(`Building needs about ${c.ram} GB, so close other programs (and BeamNG) first.`);
+    if (ram < c.play_ram) low.push(`Playing ${c.key === "colorado" ? "the whole map" : c.name} in BeamNG takes about ${c.play_ram} GB; with less it may stutter or run out of memory. You can still build it.`);
+    out.push(row(ram < c.ram ? "bad" : low.length ? "warn" : "ok", "Memory",
+      `This PC has ${ram} GB. ${low.length ? low.join(" ") : `Enough to build (about ${c.ram} GB) and to play (about ${c.play_ram} GB).`}`));
+  }
   out.push(row("ok", "Work folder", `<code>${esc(s.work)}</code>. Holds the copied game files and the map tables, so later builds skip those steps.`,
     `<button class="secondary" data-fhopen="work">Open</button>`));
   return out.join("");

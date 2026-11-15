@@ -25,17 +25,19 @@ from .. import beamng, runtime, xbox
 
 REPO_FH1 = Path(__file__).resolve().parents[2] / "fh1"
 
-# key, level, name, what it is, level size on disk in GB, peak RAM in GB
+# key, level, name, what it is, level size on disk in GB, peak RAM in GB while building, RAM in GB to play it
+# (the whole map runs on 16 GB, just; less isn't stopped, only warned about)
 CHUNKS = [
-    ("colorado", "fh1_colorado", "Whole map", "All of Colorado, 16 km square on a 4 m grid. About 10 minutes.", 3.3, 6),
-    ("redrock", "fh1_redrock", "Red Rock", "4 km around Red Rock on a 2 m grid. A quick test, about 2 minutes.", 0.3, 3),
-    ("clearsprings", "fh1_clearsprings", "Clear Springs", "4 km around Clear Springs on a 2 m grid. About 4 minutes.", 0.5, 3),
+    ("colorado", "fh1_colorado", "Whole map", "All of Colorado, 16 km square on a 4 m grid. About 10 minutes.", 3.3, 6, 16),
+    ("redrock", "fh1_redrock", "Red Rock", "4 km around Red Rock on a 2 m grid. A quick test, about 2 minutes.", 0.3, 3, 8),
+    ("clearsprings", "fh1_clearsprings", "Clear Springs", "4 km around Clear Springs on a 2 m grid. About 4 minutes.", 0.5, 3, 8),
 ]
 CHUNK = {c[0]: c for c in CHUNKS}
 PACKAGES = [("numpy", "numpy"), ("scipy", "scipy"), ("numba", "numba"), ("PIL", "pillow")]
 GAME_GB = 4.2           # the part of media/ the pipeline reads
 PREPARED_GB = 2.8       # x/, tables, caches
 RADIO_GB = 0.35
+CACHE_GB = 0.6          # what a build adds to the work folder: ddscache (textures), impcache, logs, numbacache
 
 # what to copy out of an ISO or GOD package: everything the pipeline opens
 WANT = re.compile(r"^(default\.xex|media/[^/]+\.zip|media/tracks/colorado/.*|media/audio/radio/.*|"
@@ -81,6 +83,17 @@ def _free_gb(p):
         return shutil.disk_usage(p).free / 2 ** 30
     except OSError:
         return None
+
+
+def _drive(p):
+    """the volume a path is on (its nearest existing folder's), for telling whether two folders share free space"""
+    p = Path(p).resolve()
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    try:
+        return p.stat().st_dev
+    except OSError:
+        return str(p.anchor).lower()
 
 
 def _ram_gb():
@@ -203,7 +216,7 @@ class FH1:
             info = mods / "unpacked" / lvl / "levels" / lvl / "info.json"
             levels[key] = int(info.stat().st_mtime) if info.exists() else 0
         py = interpreter()
-        return {
+        s = {
             "game": self.settings.get("fh1_game", ""), "work": str(work), "work_default": str(default_work()),
             "source": det, "extracted": bool(game), "prepared": self.prepared(game),
             "pipeline": bool(pipeline_src()), "missing_packages": missing_packages(), "python": str(py or ""),
@@ -212,10 +225,25 @@ class FH1:
             "ffmpeg": find_ffmpeg(), "winget": bool(shutil.which("winget")), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
             "ram_gb": _ram_gb(), "mods": str(mods) if str(mods) not in ("", ".") else "",
             "levels": levels, "radio": (mods / "unpacked" / "fh1_radio").exists(),
-            "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5]} for c in CHUNKS],
-            "need": {"game": GAME_GB, "prepared": PREPARED_GB, "radio": RADIO_GB},
+            "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5], "play_ram": c[6]}
+                       for c in CHUNKS],
+            "need": {"game": GAME_GB, "prepared": PREPARED_GB, "radio": RADIO_GB, "cache": CACHE_GB},
             "job": self.job.view(len(self.job.lines)) if self.job else None,
         }
+        s["disk"] = {c[0]: {r: self.disk(s, c[0], r == "radio") for r in ("plain", "radio")} for c in CHUNKS}
+        return s
+
+    def disk(self, s, chunk, radio):
+        """free space a build of this chunk needs, in GB: in the work folder, in the mods folder, and in all when
+        both are on one drive. A level that's already there is wiped before the build writes, so its space counts."""
+        work = (0 if s["extracted"] else GAME_GB) + (0 if s["prepared"] else PREPARED_GB) + CACHE_GB
+        c = CHUNK.get(chunk)
+        level = c[4] if c else 0
+        mods = level + (RADIO_GB if radio and not s["radio"] else 0)
+        freed = level if c and s["levels"].get(chunk) else 0
+        same = _drive(self.work()) == _drive(self.mods())
+        return {"work": work, "mods": mods, "freed": freed, "same_drive": same,
+                "total": work + mods - freed if same else None}
 
     def problems(self, opts):
         """reasons a conversion can't start now"""
@@ -239,13 +267,17 @@ class FH1:
             out.append("Pick which part of the map to build.")
         if beamng_running():
             out.append("Close BeamNG first: building replaces the level's files, which BeamNG keeps open.")
-        need = (0 if s["extracted"] else GAME_GB) + (0 if s["prepared"] else PREPARED_GB)
-        if s["free_gb"] is not None and s["free_gb"] < need + 0.5:
-            out.append(f"Not enough free space for the work folder: {need:.1f} GB needed, {s['free_gb']:.1f} GB free.")
-        if opts.get("chunk") in CHUNK and s["mods_free_gb"] is not None:
-            lv = CHUNK[opts["chunk"]][4] + (RADIO_GB if opts.get("radio") else 0)
-            if s["mods_free_gb"] < lv + 0.3:
-                out.append(f"Not enough free space in the mods folder: {lv:.1f} GB needed, {s['mods_free_gb']:.1f} GB free.")
+        d = self.disk(s, opts.get("chunk"), opts.get("radio"))
+        if d["same_drive"]:
+            if s["free_gb"] is not None and s["free_gb"] < d["total"] + 0.5:
+                out.append(f"Not enough free space: the work folder and the level need {d['total']:.1f} GB on the same "
+                           f"drive, {s['free_gb']:.1f} GB free.")
+        else:
+            if s["free_gb"] is not None and s["free_gb"] < d["work"] + 0.5:
+                out.append(f"Not enough free space for the work folder: {d['work']:.1f} GB needed, {s['free_gb']:.1f} GB free.")
+            if s["mods_free_gb"] is not None and s["mods_free_gb"] < d["mods"] - d["freed"] + 0.3:
+                out.append(f"Not enough free space in the mods folder: {d['mods'] - d['freed']:.1f} GB needed, "
+                           f"{s['mods_free_gb']:.1f} GB free.")
         return out
 
     # -- jobs
