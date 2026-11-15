@@ -2,12 +2,26 @@
 
 # kn5port
 
-Turn the Assetto Corsa tracks you already have into BeamNG.drive levels with one click. It can also convert
-Forza Horizon 1's Colorado map from your own copy of the game.
+Turn maps from other racing games you already own into BeamNG.drive levels, with one click.
 
-![Your track library, with what kn5port found in the selected track](docs/screenshots/track.png)
+## What it ports
 
-## What you get
+- **[Assetto Corsa tracks](#assetto-corsa)**: the tracks in your AC install, Kunos and community alike, with
+  roads that keep their grip, BeamNG terrain and trees, and a spawn point at every pit.
+- **[Forza Horizon 1's Colorado](#forza-horizon-1)**: the whole 16 km open world from your own copy of the
+  Xbox 360 game, with its towns, roads, lights, ambient sound and moving scenery, its races as time trials, and
+  its radio as a separate mod.
+
+<table>
+<tr>
+<td width="50%"><a href="#assetto-corsa"><img src="docs/screenshots/track.png" alt="Your Assetto Corsa track library in kn5port"></a><br><sub>Assetto Corsa</sub></td>
+<td width="50%"><a href="#forza-horizon-1"><img src="docs/screenshots/fh1/daycycle/red_rock.webp" alt="Forza Horizon 1's Red Rock in BeamNG, morning to night"></a><br><sub>Forza Horizon 1</sub></td>
+</tr>
+</table>
+
+## Assetto Corsa
+
+Pick a track in the app and convert it. kn5port writes the BeamNG level into your mods folder.
 
 - **Every track in one place.** kn5port finds Assetto Corsa and BeamNG through Steam, lists your tracks with
   their previews, and marks each one as ready, partly readable or protected. It also shows which ones you've
@@ -75,7 +89,7 @@ the blimp.
 
 Download `kn5port.exe` from [releases](../../releases) and run it. There's nothing to install.
 
-##### From source (Python 3.9+):
+From source (Python 3.9+):
 
 ```
 git clone https://github.com/romangarms/kn5port
