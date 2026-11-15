@@ -45,9 +45,9 @@ def races():
 def dlc_races():
     """A DLC track's races. The Rally Expansion has no Events or Races rows: each route is a Tracks row of its database patch, a one-lap stage"""
     T = strtab.read('Tracks.str', dlc=True)
-    rows = gamepath.db().execute('select id, DevName, DisplayName, RouteId, Length from patch.Tracks where MediaName = ? and RouteId > 0 order by RouteId', (gamepath.NAME,))
-    return [dict(id=i, name=strtab.lookup(T, d) or dev.replace('_', ' ').title(), kind='Rally', track=strtab.lookup(T, d) or dev, route=r, laps=1, length=length)
-            for i, dev, d, r, length in rows]
+    rows = gamepath.db().execute('select id, DevName, DisplayName, RouteId, Length from patch.Tracks where MediaName = ? and RouteId > 0 and DevName not like "%TEST%" order by RouteId', (gamepath.NAME,))
+    return [dict(id=dev, name=strtab.lookup(T, d) or dev.replace('_', ' ').title(), kind='Rally', track=strtab.lookup(T, d) or dev, route=r, laps=1, length=length)
+            for _, dev, d, r, length in rows]
 
 
 def race_routes():

@@ -20,7 +20,8 @@ MIN_AREA = 150.0    # m2: smaller pieces of water are dropped
 SPACING = 40.0      # most metres between River nodes
 MARGIN = 8.0        # metres added to the width, so the ribbon reaches under the banks. At 4, neighbouring ribbons left slivers of lakebed between
                     # them, 9 more than 6 m from Clear Springs' shores; at 8, 2 of 9 m2
-LAKE_NORMALS = (0x1295, 0x1296)
+import pvs
+LAKE_NORMALS = pvs.lake_normals()      # 0x1295, 0x1296 in Colorado
 COLOUR = (18, 41, 51)       # build3.py's water colour, 0.07, 0.16, 0.2
 
 

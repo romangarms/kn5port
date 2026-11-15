@@ -24,3 +24,14 @@ def tables(b=None, R=None):
     nd = struct.unpack_from('>I', b, o)[0]; out['draw'] = (o + 4, nd); o += 4 + 18 * nd
     out['mesh'] = (o + 4, struct.unpack_from('>I', b, o)[0])
     return out
+
+
+def lake_normals():
+    """the lake shader's two ripple normal maps, slots 2 and 3 of the texture list most of its meshes share: 0x1295 and 0x1296 in Colorado,
+    0x22F2 and 0x22F3 in Colorado Dirt, which numbers its textures differently"""
+    import collections, pickle
+    T = pickle.load(open('../meshtab.pkl', 'rb')); IDX, S = pickle.load(open('../texshader.pkl', 'rb'))
+    lake = {i for i, s in enumerate(S) if s.lower().startswith('lake_anim_norm_opac_refl')}
+    c = collections.Counter(tuple(ids[:4]) for ids, sh, _ in T if lake & set(sh) and len(ids) >= 4)
+    ids = c.most_common(1)[0][0]
+    return IDX[ids[2]][0], IDX[ids[3]][0]

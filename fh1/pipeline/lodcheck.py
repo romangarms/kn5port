@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 L = sys.argv[1]
 items = [json.loads(l) for l in open(L + '/main/MissionGroup/fh1/items.level.json')]
 print('statics', len(items), collections.Counter(o['collisionType'] for o in items))
-bad = 0; col = det = 0; sizes = collections.Counter(); noshape = 0
+bad = 0; col = det = 0; sizes = collections.Counter(); noshape = 0; empty = []
 for o in items:
     p = L + '/' + o['shapeName'].split('/', 3)[3]
     if not os.path.exists(p):
@@ -21,13 +21,15 @@ for o in items:
             c += geo[g]
         else:
             d[int(n.get('name').rsplit('_a', 1)[1])] += geo[g]
+    if not d:
+        empty.append(os.path.basename(p)); continue
     top = max(d); col += c
     if o['collisionType'] != 'None' and c != d[top]:
         bad += 1
     if (o['collisionType'] != 'None') != (base.find(f'{ns}node[@name="collision-1"]') is not None):
         bad += 1
     det += len(d); sizes[len(d)] += 1
-print('missing', noshape, 'mismatch', bad, 'collision tris', col, 'details per shape', sizes)
+print('missing', noshape, 'empty', len(empty), empty[:5], 'mismatch', bad, 'collision tris', col, 'details per shape', sizes)
 print('sample details', sorted(d.items(), reverse=True))
 f = glob.glob(L + '/art/forest/models/*.dae'); print(len(f))
 for p in f[:3]:

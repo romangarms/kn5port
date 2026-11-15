@@ -153,6 +153,8 @@ else:               # a chunk keeps build3.py's spawn, and the outposts that fal
     spawn_preview(red[0] + CX, CZ - red[1], level / 'spawn_redrock_preview.jpg')
 gameplay = events.nodes()
 for n, name in OUTPOSTS.items():
+    if f'OUTPOST_{n:03d}_NODE' not in gameplay:       # the Rally Expansion has no outposts
+        continue
     row, point, where = outpost(n, name, gameplay)
     if max(abs(v) for v in row['position'][:2]) < HALF:
         spawns.append(row); points.append(point); spawn_preview(*where, level / point['preview'])

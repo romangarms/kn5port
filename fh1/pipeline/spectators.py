@@ -96,6 +96,8 @@ def main():
     for nm, p, a, c in sets:
         if SITE.search(nm):
             P.append(p); A.append(a); C.append(c); stats['festival sets'] = stats.get('festival sets', 0) + 1
+    if not P:           # no festival site in this track (the Rally Expansion)
+        print('done: no festival crowd sets', stats); return
     P = np.concatenate(P); A = np.concatenate(A); C = np.concatenate(C)
     order = np.where((np.abs(P[:, :2]) < HALF - 1).all(1))[0]
     pairs = cKDTree(P[order]).query_pairs(SAME, output_type='ndarray'); dup = np.zeros(len(order), bool); dup[pairs.max(1)] = True

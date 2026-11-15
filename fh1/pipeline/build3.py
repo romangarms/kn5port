@@ -106,7 +106,7 @@ NODRAW = {t_ for t_, v in _fl.items() if all(f_ & 0x180 for f_ in v)}
 GBITS = collections.defaultdict(list)
 for t_, g_ in zip(DRAW['t'].astype(int), DRAW['g'].astype(int)):
     GBITS[t_].append(g_)
-PLACEHOLDER = 0x2CA9     # neon yellow, on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
+PLACEHOLDER = {'colorado': 0x2CA9, 'coloradodirt': 0x2E4}[gamepath.TRACK]     # neon yellow (the same texture, renumbered in the DLC), on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
 NOMESH = {6664} if gamepath.TRACK == 'colorado' else set()      # Colorado's Plane001 (not the other one, 8254): a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
 TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD|^Mountains_Area\d+_NOLOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
@@ -829,7 +829,8 @@ def rgmask(t):
     return i is None or (i['rgb'][2] < 24 and max(i['rgb'][:2]) > 64)
 
 
-LAKE_NORMALS = (0x1295, 0x1296)      # the lake shader's two ripple normal maps. Its first slot, 0xD9D, isn't in the dump
+import pvs
+LAKE_NORMALS = pvs.lake_normals()      # the lake shader's two ripple normal maps. Its first slot (Colorado's 0xD9D) isn't in the dump
 
 
 def water():
@@ -1840,7 +1841,7 @@ def model_ids(b, h_, M):
         meshes.append(int(DRAW['t'][v_])); q_ += 4 * max(sum(e_[f_] for f_ in (1, 3, 5) if e_[f_] < 8), 1)
     for e_ in E:
         if e_[0]:
-            if b[q_ + e_[0] - 1] != 0:
+            if q_ + e_[0] > len(b) or b[q_ + e_[0] - 1] != 0:      # some of the Rally Expansion's sets run past their end
                 return None
             q_ += e_[0]
     return meshes, (q_ + 3) & ~3

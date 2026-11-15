@@ -253,28 +253,31 @@ def ground_triangles(lo, hi):
             for inputs, p in re.findall(r'<triangles[^>]*>(.*?)<p>([^<]*)</p>', geo, re.S):
                 step = max(map(int, re.findall(r'offset="(\d+)"', inputs))) + 1
                 out.append(V[np.array(p.split(), 'i8')[::step].reshape(-1, 3)])
-    T = np.concatenate(out); box = (T[:, :, :2].max(1) >= lo).all(1) & (T[:, :, :2].min(1) <= hi).all(1)
+    T = np.concatenate(out) if out else np.zeros((0, 3, 3)); box = (T[:, :, :2].max(1) >= lo).all(1) & (T[:, :, :2].min(1) <= hi).all(1)
     return T[box]
 
 
 def height(T, xy):
-    """Height of the highest triangle over each point."""
-    lo, hi = T[:, :, :2].min(1), T[:, :, :2].max(1); out = np.zeros(len(xy))
+    """Height of the highest triangle over each point, NaN where there's none (the Rally Expansion lacks much of Colorado's ground)."""
+    lo, hi = T[:, :, :2].min(1), T[:, :, :2].max(1); out = np.full(len(xy), np.nan)
     for k, q in enumerate(xy):
         A, B_, C = T[(lo <= q).all(1) & (hi >= q).all(1)].transpose(1, 0, 2)
         e, f = B_ - A, C - A; g = q - A[:, :2]; d = e[:, 0] * f[:, 1] - e[:, 1] * f[:, 0]
         u = (g[:, 0] * f[:, 1] - g[:, 1] * f[:, 0]) / d; v = (e[:, 0] * g[:, 1] - e[:, 1] * g[:, 0]) / d
         inside = (u >= -1e-3) & (v >= -1e-3) & (u + v <= 1.001)
-        out[k] = (A[:, 2] + u * e[:, 2] + v * f[:, 2])[inside].max()
+        if inside.any():
+            out[k] = (A[:, 2] + u * e[:, 2] + v * f[:, 2])[inside].max()
     return out
 
 
 def on_ground(T, xy, yaw):
     """Height, pitch and roll of a vehicle on one plane fitted to the ground under its route, so FH1's flat route keeps its shape and only tilts.
     Points far off the plane, such as objects on the ground, are dropped before the second fit."""
-    A = np.c_[xy, np.ones(len(xy))]; h = height(T, xy); keep = np.ones(len(xy), bool)
+    A = np.c_[xy, np.ones(len(xy))]; h = height(T, xy) if len(T) else np.full(len(xy), np.nan); keep = np.isfinite(h)
+    if keep.sum() < 3:
+        return None
     for _ in range(2):
-        coef = np.linalg.lstsq(A[keep], h[keep], rcond=None)[0]; keep = np.abs(h - A @ coef) < 1
+        coef = np.linalg.lstsq(A[keep], h[keep], rcond=None)[0]; keep = np.isfinite(h) & (np.abs(h - A @ coef) < 1)
     plane = lambda q: np.c_[q, np.ones(len(q))] @ coef
     a = np.radians(yaw)[:, None]; ahead = np.c_[-np.sin(a), np.cos(a)]; right = np.c_[np.cos(a), np.sin(a)]
     f, b_ = plane(xy + AXLES * ahead), plane(xy - AXLES * ahead); r, l = plane(xy + TRACK * right), plane(xy - TRACK * right)
@@ -597,7 +600,10 @@ for kind, w in VEHICLES.items():
             if not moving[k]:
                 yaw[k] = yaw[k - 1] if k else yaw[moving][0]
         yaw = np.degrees(np.unwrap(np.radians(yaw)))
-        T = ground_triangles(xy.min(0) - 8, xy.max(0) + 8); z, pitch, roll = on_ground(T, xy, yaw)
+        T = ground_triangles(xy.min(0) - 8, xy.max(0) + 8); g_ = on_ground(T, xy, yaw)
+        if g_ is None:          # no ground under its route in this track
+            print(kind, i, 'skipped: no ground under', [round(float(v)) for v in pos]); continue
+        z, pitch, roll = g_
         x, y = xy.T - pos[:2, None]; z = z - pos[2]
         # the route on Lua's even keys. The yaw is unwrapped, so it blends through the short way
         kp = np.c_[[np.interp(grid, times, v) for v in (x, y, z)]].T + pos; R = np.array([turn(*a) for a in zip(*(np.interp(grid, times, v) for v in (yaw, roll, pitch)))])
