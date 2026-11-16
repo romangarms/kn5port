@@ -111,7 +111,7 @@ GBITS = collections.defaultdict(list)
 for t_, g_ in zip(DRAW['t'].astype(int), DRAW['g'].astype(int)):
     GBITS[t_].append(g_)
 PLACEHOLDER = {'colorado': 0x2CA9, 'coloradodirt': 0x2E4}[gamepath.TRACK]     # neon yellow (the same texture, renumbered in the DLC), on blocked-out ground such as Area01 and Zone2_Area3_6_middistance_Area3
-NOMESH = {6664} if gamepath.TRACK == 'colorado' else set()      # Colorado's Plane001 (not the other one, 8254): a 1000 by 500 m upright panel placed near the festival. Many other meshes are also called Plane<n>
+NOMESH = {6664} if gamepath.TRACK == 'colorado' else {gamepath.MERGE['base_mesh'] + 6664} if gamepath.MERGE else set()      # Colorado's Plane001 (not the other one, 8254): a 1000 by 500 m upright panel placed near the festival, also in a DLC track's base merge. Many other meshes are also called Plane<n>
 TERR = re.compile(r'Terrain|^TERR_(CLRD|Moun_)|^Festival_Area\d+_\d+_LOD|PATCH|MIDDIST|_MID_|_CHUNK\d|_TERR_Close|UberLOD|Area\d+[AB]?_LOD|^Mountains_Area\d+_NOLOD', re.I)
 FAR = re.compile(r'TERR_CUBE|MIDDIST|_MID_|UberLOD|PATCH', re.I)      # coarser ground: only shown where nothing better covers it
 # TERR_CUBE (FH1's coarse filler, 80 to 130 m triangles, and box stand-ins for Carson's town blocks) stays out. As a last fill tier it
@@ -1298,6 +1298,9 @@ def hex_selection(cs):
     load = [{int(DRAW['t'][d]) for d in hexzones.drawn(z) if d < len(DRAW)} for z in zn]       # the ids a zone loads (bit 31)
     cj, ci = np.divmod(np.arange(HN[0] * HN[1]), HN[0]); cx_ = X0 + (ci + .5) * HG; cz_ = Z0 + (cj + .5) * HG
     dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_], k=HEX_K)
+    # a merged track (merge_base.py): a cell takes ground only from its own track's hexes. A hex's zone lists what is visible from it, so
+    # Colorado's hexes by a stage load Colorado ground over the DLC's own, which flickered through it
+    trk = np.array(zn) >= gamepath.MERGE.get('base_zones', 1 << 30); same = (trk[hK] == trk[hK[:, :1]]).astype(np.int64)
     ms_ = [set(mem[r_]) if r_ in mem else {r_[1]} for r_ in rings_]
     Lh = defaultdict(list); byfile = defaultdict(list)
     for a, m_ in enumerate(ms_):
@@ -1323,10 +1326,10 @@ def hex_selection(cs):
         o_ = np.flatnonzero(~decided)
         if not len(o_):
             break
-        key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64)], 1)
+        key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64), same[pc[o_], q]], 1)
         uk, inv = np.unique(key, axis=0, return_inverse=True); inv = inv.ravel()
-        ld_ = np.array([h in Ls.get(a, ()) for a, h, b in uk])
-        ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b), l in zip(uk, ld_)])
+        ld_ = np.array([m and h in Ls.get(a, ()) for a, h, b, m in uk])
+        ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b, m), l in zip(uk, ld_)])
         decided[o_[ld_[inv]]] = True; sel[o_[ok[inv]]] = True
     done = np.zeros(HN[0] * HN[1], bool); done[pc[sel]] = True
     global HEXDONE; HEXDONE = done.copy()           # cells a hex draws ground for, before the fallback below
