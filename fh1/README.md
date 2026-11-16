@@ -16,6 +16,7 @@ Extracted files, captures and generated levels live in `fh1/` and stay local. Co
 | [docs/pipeline.md](docs/pipeline.md) | Scripts, data files, `build3.py` layout, the build queue, other tracks, shell pitfalls |
 | [docs/beamng-output.md](docs/beamng-output.md) | Terrain, blending, LODs, collision, plants, sky, races, performance |
 | [docs/tools-and-re.md](docs/tools-and-re.md) | Live capture, recomp tools, how to test a format theory |
+| [docs/sky.md](docs/sky.md) | FH1's sky, cloud and tone-map shaders decoded from the xex, and what `sky.py` reproduces |
 
 ## Running it
 

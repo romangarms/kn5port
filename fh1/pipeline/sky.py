@@ -1,7 +1,7 @@
 """FH1 sky and lighting for a built level: bakes cubemaps at several times of day from realtimesky.zip and TimeOfDayA.xml, then patches the scene.
 fh1Extras.lua swaps the skybox, reflections and river cubemaps to follow BeamNG's clock, from the table in fh1_sky.json.
 Run after build3.py, which wipes the level: python sky.py [fh1_colorado|fh1_redrock]. Safe to run twice. Needs no rebuild."""
-import hashlib, json, os, shutil, struct, sys
+import hashlib, json, os, re, shutil, struct, sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import numpy as np
@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
-# BeamNG time 0 is noon and 1 a full day. The level starts at 10:00, which the user chose. MINUTE is FH1's 15:36, the time the measured gradient comes from
+# BeamNG time 0 is noon and 1 a full day. The level starts at 10:00, which the user chose. MINUTE is FH1's 15:36, the reference for fog and ground bounce
 TIME = (10 - 12) / 24 % 1; MINUTE = 936; FACE = 1024
 # Each bake: FH1 minute, name, and the BeamNG hour it takes over from. The first is the level's default and keeps the old names, which water.py's
 # rivers use. BeamNG's sun rises at 6:00 and sets at 18:00. FH1's never sets: its night runs 20:02 to 6:28, with dusk colours from 18:00.
@@ -19,12 +19,26 @@ TIME = (10 - 12) / 24 % 1; MINUTE = 936; FACE = 1024
 # the user found 9:00 held until noon far yellower than FH1, which is blue most of the day
 BAKES = [(936, 'afternoon', 14), (0, 'night', 20.5), (405, 'predawn', 5), (445, 'sunrise', 5.75), (600, 'morning', 6.75), (720, 'midday', 8.5),
          (1090, 'sunset', 16.75), (1160, 'golden', 17.5), (1195, 'dusk', 18), (1240, 'twilight', 19)]
-# Tuned by eye, not read from FH1's sky shader: how high the close cloud band reaches, far cloud tiling, density cutoff and strength,
-# and how far close clouds shade towards FH1's dense colour
-BAND_TOP = 60.0; FAR_TILE = .5; FAR_CUT = .5; FAR_ALPHA = .6; CLOSE_SHADE = .25
-# sRGB sky gradient measured from clear sky in FH1 screenshots (Red Rock, Beaumont), at minute 936. They show up to about 25 degrees; the top colour
-# is extrapolated. Other bakes scale it by FH1's atmosphere colours relative to minute 936
-SKY_HORIZON = (205, 243, 255); SKY_TOP = (70, 150, 225); SKY_CURVE = .45
+# FH1's sky as its own shaders draw it. They're compiled into default.xex (xshader.py disassembles them: Sky, CloseCloud, FarCloud) and the
+# constants were traced through the recompiled code (docs/sky.md). Everything here is FH1's except where marked. The sun: FH1's SunObjectPos is the
+# sun's disc from DAY[0] to DAY[1] (FH1 minutes) and the moon outside it; the sky's haze and the clouds' lighting both use it. Its SunPos, the light,
+# never drops below 17 degrees; BeamNG has one direction for both, so it follows the disc. Bakes outside DAY take the nearest end
+DAY = (389, 1201)
+# The dome: elevation -6 to 84 degrees, and a vertex value w = (elevation + 6) / 90 that drives the sky's gradient and the close clouds' V
+DOME_LOW, DOME_SPAN = -6.0, 90.0
+# Close clouds: UV scales and the front layer's starting U offset (it then turns CloseCloudFrontRevs times an hour, which a still bake can't)
+CLOSE_U0 = .5
+# Far clouds: a sphere of radius 10000 centred 9700 below the camera, out to where a ray 6 degrees below the horizon meets it, rings even in angle
+# (the evenness is inferred). Disc UV within +-0.5; the alpha map tiles FAR_ALPHA_UV times, the mask twice at FAR_MASK_UV and is averaged.
+# Coverage: cover = lerp(0.616, 0.43, FarCloudCoverage), alpha = 1 - 0.984 ** (255 * sat(mask - cover))
+FAR_R, FAR_DROP = 10000.0, 9700.0; FAR_ALPHA_UV = 5.0; FAR_MASK_UV = (1.01, 3.2); FAR_COVER = (.616, .43); FAR_SHARP = .984
+# FH1's post: scene colour (stored as sqrt, so blends happen on sqrt values) times 2^EV, then Hable's filmic curve with Colorado's filmicTone,
+# divided by its value at white, and written as sqrt. EV is the toneAdaptiveExposure table looked up by the scene's mean sqrt luminance, plus
+# filmicTone's exposure. A bake has no scene, so its key is the sky's own mean between the horizon and KEY_TOP degrees (an assumption).
+# The zone's colour grade LUT, brightness, contrast and desaturation come after this and aren't applied
+KEY_TOP = 30.0
+# fh1Extras.lua gets the sun's azimuth and elevation every SUN_STEP minutes of BeamNG's clock and interpolates between
+SUN_STEP = 10
 # Stars.bin is the Yale Bright Star Catalogue, brightest first: 9096 big-endian (x, y, z, w), y towards the celestial pole, RA = atan2(x, z),
 # w the magnitude / 7.8 with the four brighter than 0 clamped (checked on Vega, Rigel, Betelgeuse, Polaris). Placed for FH1's Colorado latitude, with Orion on the meridian.
 # Brightness falls off at half the true rate, so faint stars stay visible, chosen by eye. Stars were invisible in-game at 1.2 and 0.6 px: mips averaged
@@ -153,34 +167,127 @@ def moon_layer(d, C, rgba):
     return colour, alpha[..., None]
 
 
-def bake(d, C, R, band, density, cirrus, stars, moon):
-    """C: FH1's curves at this bake's minute, R: at minute 936, which the measured gradient matches."""
-    x, y, z = d[..., 0], d[..., 1], d[..., 2]; up = np.clip(z, 0, 1)[..., None]
-    gain = C['SkyGain'] / R['SkyGain']
-    low = linear(SKY_HORIZON) * gain * C['AtmosphereBottomColour'] / np.maximum(R['AtmosphereBottomColour'], 1e-3)
-    high = linear(SKY_TOP) * gain * C['AtmosphereTopColour'] / np.maximum(R['AtmosphereTopColour'], 1e-3)
-    col = low + (high - low) * up ** SKY_CURVE
+def sun_dir(minute):
+    """FH1's sun disc in BeamNG axes, unit, held at the ends of DAY outside it."""
+    s = B @ curves(min(max(minute, DAY[0]), DAY[1]))['SunObjectPos']
+    return s / np.linalg.norm(s)
+
+
+def post():
+    """Colorado's filmicTone and toneAdaptiveExposure from Ribbon_00/TimeOfDay.xml."""
+    # Read by pattern: the file isn't valid XML (its bloom tag repeats an attribute)
+    t = open(gamepath.RIBBON + 'TimeOfDay.xml', encoding='utf-8').read()
+    tag = lambda n: {k: float(v) for k, v in re.findall(r'(\w+)="([-\d.]+)"', re.search(rf'<{n}\b[^>]*>', t).group(0))}
+    f, a = tag('filmicTone'), tag('toneAdaptiveExposure')
+    keys = [a['key_' + k] / 255 for k in ('extraDark', 'dark', 'light', 'extraLight')]
+    evs = [a['exp_' + k] for k in ('extraDark', 'dark', 'light', 'extraLight')]
+    return f, keys, evs
+
+
+def hable(x, f):
+    A, Bs, Cs, D, E, F = f['shoulderStrength'], f['linearStrength'], f['linearAngle'], f['toeStrength'], f['toeNumerator'], f['toeDenominator']
+    return (x * (A * x + Cs * Bs) + D * E) / (x * (A * x + Bs) + D * F) - E / F
+
+
+def exposure(key, P):
+    """BloomTonemap's vertex shader: the segment of the key table the luminance falls in, lerped, plus filmicTone's exposure."""
+    f, k, e = P
+    i = 0 if key < k[1] else 2 if key >= k[2] else 1
+    return e[i] + (e[i + 1] - e[i]) * min(max((key - k[i]) / (k[i + 1] - k[i]), 0), 1) + f['exposure']
+
+
+def sky(d, C, sun):
+    """Sky_VS/Sky_PS: FH1's linear sky after Gain."""
+    sat = lambda v: np.clip(v, 0, 1)
+    w = sat((np.degrees(np.arcsin(np.clip(d[..., 2], -1, 1))) - DOME_LOW) / DOME_SPAN)
+    c, bc = C['AtmosphereClampPower'][0], C['AtmosphereBottomClampPower'][0]
+    t = sat((w - bc) / (c - bc)) ** max(C['AtmosphereColourPower'][0], .01)
+    col = C['AtmosphereBottomColour'] + (C['AtmosphereTopColour'] - C['AtmosphereBottomColour']) * t[..., None]
+    # The haze squashes by EllipticalScale on the side of the sun away from the ground: up, less its part along the sun
+    up = np.array([0, 0, 1.]); u = up - sun * sun[2]; u = u / max(np.linalg.norm(u), 1e-6)
+    h = (sat(d @ sun) * sat(1 + (C['AtmosphereHazeEllipticalScale'][0] - 1) * sat(d @ u))) ** C['AtmosphereHazePower'][0] * C['AtmosphereHazeAlpha'][0]
+    haze = C['AtmosphereHazeColour'] * C['AtmosphereHazeIntensity'][0]
+    return sat(col + (haze - col) * h[..., None]) * C['SkyGain'][0]
+
+
+def far_clouds(d, C, maps):
+    """FarCloud_VS/PS, front and back layers over each other: linear colour and alpha. No sun term: FH1 lights them only by its curves."""
+    z = d[..., 2]; b = FAR_R ** 2 - FAR_DROP ** 2
+    t = -FAR_DROP * z + np.sqrt((FAR_DROP * z) ** 2 + b)
+    ang = lambda zz, tt: np.arccos(np.clip((tt * zz + FAR_DROP) / FAR_R, -1, 1))
+    zr = np.sin(np.radians(DOME_LOW)); rim = ang(zr, -FAR_DROP * zr + np.sqrt((FAR_DROP * zr) ** 2 + b))
+    rho = np.clip(ang(z, t) / rim, 0, 1); az = np.arctan2(d[..., 0], -d[..., 1])
+    uv = .5 * rho[..., None] * np.stack([np.sin(az), np.cos(az)], -1)
+
+    def tap(img, scale):
+        n = img.shape[0]; q = uv * scale
+        return ni.map_coordinates(img, [(q[..., 1] % 1) * n, (q[..., 0] % 1) * n], order=1, mode='grid-wrap')
+    mask = (tap(maps['mask'], FAR_MASK_UV[0]) + tap(maps['mask'], FAR_MASK_UV[1])) / 2
+    tex_a = tap(maps['far'], FAR_ALPHA_UV)
+    cover = FAR_COVER[0] + (FAR_COVER[1] - FAR_COVER[0]) * C['FarCloudCoverage'][0]
+    dens = (1 - FAR_SHARP ** (255 * np.clip(mask - cover, 0, 1))) * tex_a
+    out_c, out_a = 0, 0
+    for side in ('', 'Back'):
+        thin = C[f'FarCloud{side}ThinColour'] * C['FarCloudThinIntensity'][0]; dense = C[f'FarCloud{side}DenseColour']
+        ca, ea = C[f'FarCloud{side}CentreAlpha'][0], C[f'FarCloud{side}EdgeAlpha'][0]
+        a = dens * (ca + (ea - ca) * rho ** C['FarCloudAlphaPower'][0])
+        col = thin + (dense - thin) * dens[..., None]
+        # back first, then front over it, as the shader composites them
+        out_c, out_a = (col * a[..., None], a) if side == 'Back' else (out_c, out_a)
+        if side == '':
+            front = (col, a)
+    col, a = front
+    tot = a + out_a * (1 - a)
+    rgb = (col * a[..., None] + out_c * (1 - a)[..., None]) / np.maximum(tot, 1e-6)[..., None]
+    return rgb, tot
+
+
+def close_clouds(d, C, maps, sun):
+    """CloseCloud_VS/PS, front layer (CloseCloudBackAlpha is 0 in Colorado): linear colour and alpha."""
+    z = d[..., 2]; w = np.clip((np.degrees(np.arcsin(np.clip(z, -1, 1))) - DOME_LOW) / DOME_SPAN, 0, 1)
+    # FH1's dome azimuth is atan2(z, x) in its axes, and its z is BeamNG's -y
+    u = (np.arctan2(-d[..., 1], d[..., 0]) / (2 * np.pi)) % 1
+    h, wd = maps['band'].shape
+    uv = [(1 - w) * (h - 1), ((1 - u + CLOSE_U0) % 1) * wd]
+    lf = C['CloseCloudFrontAlpha'][0]
+    a, dens, amb, top, bot = (ni.map_coordinates(maps[k], uv, order=1, mode='grid-wrap') * lf for k in ('band', 'density', 'amb', 'top', 'bot'))
+    s = .5 + .5 * np.clip(d @ sun, -1, 1)
+    light = lambda name, power: C[f'CloseCloud{name}Colour'] * C[f'CloseCloud{name}Intensity'][0] * (s ** C[f'CloseCloud{power}'][0])[..., None]
+    dense = C['CloseCloudDenseColour'] * C['CloseCloudDenseColourIntensity'][0]; thin = C['CloseCloudThinColour'] * C['CloseCloudThinColourIntensity'][0]
+    col = (dense + (thin - dense) * amb[..., None] + light('Back', 'BackPower') * (1 - dens)[..., None]
+           + light('Top', 'TopPower') * (top ** C['CloseCloudTopMaskPower'][0])[..., None]
+           + light('Bottom', 'BottomPower') * (bot ** C['CloseCloudBottomMaskPower'][0])[..., None])
+    ta, ba = C['CloseCloudTopAlpha'][0], C['CloseCloudBottomAlpha'][0]
+    return col, a * (ta + (ba - ta) * (1 - w) ** C['CloseCloudAlphaCurve'][0])
+
+
+def scene(d, C, maps, sun):
+    """What FH1 stores for the sky pass: sky, far clouds, close clouds, blended over each other on their sqrt values. Returns linear (squared)."""
+    v = np.sqrt(sky(d, C, sun))
+    for col, a in (far_clouds(d, C, maps), close_clouds(d, C, maps, sun)):
+        v = v * (1 - a[..., None]) + np.sqrt(np.maximum(col, 0)) * a[..., None]
+    return v ** 2
+
+
+def key_of(C, maps, sun):
+    """The bake's stand-in for FH1's scene luminance: mean sqrt luminance of the sky between the horizon and KEY_TOP degrees."""
+    az, el = np.meshgrid(np.linspace(0, 2 * np.pi, 180, endpoint=False), np.radians(np.linspace(.5, KEY_TOP, 30)))
+    d = np.stack([np.sin(az) * np.cos(el), np.cos(az) * np.cos(el), np.sin(el)], -1)
+    return float(np.sqrt(scene(d, C, maps, sun) @ [.2126, .7152, .0722]).mean())
+
+
+def bake(d, C, R, maps, sun, stars, moon, ev, P):
+    """One cube face: FH1's sky pass through its tone map, as sRGB bytes, plus the stars, moon and ground bounce baked over it."""
+    x = scene(d, C, maps, sun) * 2 ** ev
+    col = linear(np.sqrt(np.clip(hable(x, P[0]) / hable(P[0]['white'], P[0]), 0, 1)) * 255)
     col = col + stars[..., None] * C['StarFade'][0]
     if moon is not None:
         m = moon_layer(d, C, moon)
         if m is not None:
             col = col * (1 - m[1]) + m[0] * m[1]
-    thin = C['FarCloudThinColour'] * C['FarCloudThinIntensity'][0]; dense = C['FarCloudDenseColour'] * C['SkyGain'][0]
-    # Far cirrus on a plane overhead, fading out towards the horizon
-    s = 1 / (z + .15).clip(.05)
-    h, w = cirrus.shape
-    a = ni.map_coordinates(cirrus, [(y * s * FAR_TILE % 1) * h, (x * s * FAR_TILE % 1) * w], order=1, mode='grid-wrap')
-    a = (np.clip((a - FAR_CUT) / (1 - FAR_CUT), 0, 1) ** .7 * FAR_ALPHA * np.clip(z / .25, 0, 1))[..., None]
-    col = col * (1 - a) + thin * a
-    # Close clouds: a full-circle band whose bottom row is the horizon
-    h, w = band.shape; el = np.degrees(np.arcsin(np.clip(z, -1, 1)))
-    uv = [(1 - el / BAND_TOP) * (h - 1), (np.arctan2(y, x) / (2 * np.pi) % 1) * w]
-    a = ni.map_coordinates(band, uv, order=1, mode='constant')[..., None] * (el > 0)[..., None]
-    t = ni.map_coordinates(density, uv, order=1, mode='constant')[..., None]
-    col = col * (1 - a) + (thin * (1 - t * CLOSE_SHADE) + dense * t * CLOSE_SHADE) * a
     # Ground bounce below the horizon, which only reflections see. HLBottomColour barely changes at night, so it dims with FH1's horizon
-    g = np.clip(-z / .05, 0, 1)[..., None]
-    dim = min(1, float((C['AtmosphereBottomColour'] / np.maximum(R['AtmosphereBottomColour'], 1e-3)).mean() * gain[0]))
+    g = np.clip(-d[..., 2] / .05, 0, 1)[..., None]
+    dim = min(1, float((C['AtmosphereBottomColour'] / np.maximum(R['AtmosphereBottomColour'], 1e-3)).mean() * C['SkyGain'][0] / R['SkyGain'][0]))
     col = col * (1 - g) + C['HLBottomColour'] * 2 * dim * g
     return (srgb(col) * 255 + .5).astype('u1')
 
@@ -203,6 +310,25 @@ def table():
     return [int(i) + 1 for i in since.argmin(1)]
 
 
+def sun_path():
+    """FH1's sun for fh1Extras.lua: [azimuth clockwise from north, elevation] in degrees every SUN_STEP minutes of BeamNG's clock from midnight,
+    false where FH1's disc is the moon and BeamNG's own sun takes over. BeamNG hours map to FH1 minutes piecewise, each bake's minute in the
+    middle of the hours it's shown, so its glow stays nearest the sun across its span"""
+    hours = sorted(b[2] for b in BAKES)
+    mids = sorted(((h + ((hours + [hours[0] + 24])[hours.index(h) + 1] - h) / 2) % 24, m) for m, _, h in BAKES)
+    xs = [h for h, _ in mids]; ys = np.unwrap([m for _, m in mids], period=1440)
+    assert np.all(np.diff(ys) > 0), ys
+    xs = [xs[-1] - 24] + xs + [xs[0] + 24]; ys = [ys[-1] - 1440] + list(ys) + [ys[0] + 1440]
+    out = []
+    for h in np.arange(0, 24, SUN_STEP / 60):
+        m = float(np.interp(h, xs, ys)) % 1440
+        if not DAY[0] <= m <= DAY[1]:
+            out.append(False); continue
+        s = sun_dir(m)
+        out.append([round(float(np.degrees(np.arctan2(s[0], s[1]))) % 360, 2), round(float(np.degrees(np.arcsin(s[2]))), 2)])
+    return out
+
+
 level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL
 items = level / 'main' / 'MissionGroup' / 'items.level.json'
 if not items.exists():
@@ -212,17 +338,21 @@ out = level / 'art' / 'skies' / 'fh1_sky'; out.mkdir(parents=True, exist_ok=True
 # The faces don't depend on the level and FH1's files never change, so they're baked once per version of this code and copied after that
 CACHE = Path('../ddscache') / ('sky-' + hashlib.md5(b''.join(Path(f).read_bytes() for f in (__file__, dds.__file__, tex.__file__))).hexdigest()[:12])
 if not all((CACHE / f'{names(tag)[2]}_{i}.color.dds').exists() for _, tag, _ in BAKES for i in range(1, 7)):
-    band, density = xds('CloseCloudAlphaDensityFront0.xds'); cirrus = xds('FarCloudMapBack0.xds')[0]
+    band, density = xds('CloseCloudAlphaDensityFront0.xds'); top, bot = xds('CloseCloudTopBottomAmbientFront0.xds')
+    maps = {'band': band, 'density': density, 'amb': xds('CloseCloudAmbientFront0.xds')[1], 'top': top, 'bot': bot,
+            'far': xds('FarCloudMapFront0.xds')[0], 'mask': xds('FarCloudMask.xds')[0]}
     b = gamezip.read('realtimesky.zip', MOON); moon = tex.decode(b[52:], 256, 256, 0x54).astype('f4') / 255
     moon[..., :3] = linear(moon[..., :3] * 255)
     stars = star_faces(FACE); dirs = list(directions(FACE)); CACHE.mkdir(parents=True, exist_ok=True)
-materials = {}; bakes = []
+materials = {}; bakes = []; P = post()
 for minute, tag, _ in BAKES:
-    C = curves(minute); material, cubemap, stem = names(tag); faces = []
+    C = curves(minute); material, cubemap, stem = names(tag); faces = []; ev = None
     for i in range(1, 7):
         p = out / f'{stem}_{i}.color.dds'; c_ = CACHE / p.name
         if not c_.exists():
-            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, band, density, cirrus, stars[i - 1], moon), peak=C['StarFade'][0] > .1)
+            if ev is None:
+                ev = exposure(key_of(C, maps, sun_dir(minute)), P); print(tag, 'EV', round(ev, 2))
+            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, maps, sun_dir(minute), stars[i - 1], moon, ev, P), peak=C['StarFade'][0] > .1)
             os.replace(c_.with_suffix('.tmp'), c_)
         shutil.copyfile(c_, p); faces.append(f'/levels/{LVL}/art/skies/fh1_sky/{p.name}')
     materials[material] = {'name': material, 'mapTo': 'unmapped_mat', 'class': 'Material', 'Stages': [{}, {}, {}, {}], 'cubemap': cubemap, 'materialTag0': 'beamng'}
@@ -231,7 +361,7 @@ for minute, tag, _ in BAKES:
     bakes.append({'name': tag, 'material': material, 'cubemap': cubemap, 'hideBox': tag in BEAMNG_SKY, 'fog': round(float(C['FogDensity'][0] / R['FogDensity'][0]), 3)})
     print(tag, minute, 'stars', round(float(C['StarFade'][0]), 2), 'moon', round(float(C['SunObjectMoon'][0] * C['SunObjectAlpha'][0]), 2))
 (out / 'main.materials.json').write_text(json.dumps(materials, indent=2))
-(level / 'fh1_sky.json').write_text(json.dumps({'bakes': bakes, 'quarterHours': table(), 'fogDensity': SCENE['theLevelInfo']['fogDensity'], 'zones': zones()}))
+(level / 'fh1_sky.json').write_text(json.dumps({'bakes': bakes, 'quarterHours': table(), 'sunStep': SUN_STEP, 'sunPath': sun_path(), 'fogDensity': SCENE['theLevelInfo']['fogDensity'], 'zones': zones()}))
 with mission.edit(items) as rows:
     for o in rows:
         o.update(SCENE.get(o.get('name'), {}))

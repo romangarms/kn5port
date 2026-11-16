@@ -21,6 +21,10 @@ With `zones.py`, this is now only needed to check results.
 - `python x2.py sub_XXXX` prints a generated function as PowerPC with strings and calls annotated.
 - Useful functions: track load `sub_82E28DE0`, `UpdatePVS` `sub_82E2AC38`, game data load `sub_82662520`.
 
+## Shaders: `xshader.py`
+
+`python xshader.py` lists the 482 Xenos shaders compiled into `tu/default.xex`, and `python xshader.py <Name>` disassembles one, with its constant-table names and literal constants. Bit layouts are Xenia's `ucode.h`, which ships in the recomp's rexglue SDK. Shaders without a name (the post-process ones) are found by their constant tables. See `sky.md` for what was decoded.
+
 ## GPU traces: `xtr.py`
 
 Reads Xenia `.xtr` files. But F4 tracing on Canary Nov 2025 writes nothing, and the trace menu option didn't work either, so don't plan around getting new traces.

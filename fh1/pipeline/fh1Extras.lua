@@ -30,6 +30,7 @@ local awake = {} -- emitter name -> true
 local sinceParticles = 0
 local sky -- fh1_sky.json: the baked skies and which one each quarter hour shows
 local skyBake -- index of the bake on show
+local sunDriven -- true while updateSun holds BeamNG's sun on FH1's path
 local lookZone -- FH1 post-processing zone last under the camera. Between zones the last one holds, as FH1's have gaps
 local look -- fog density and bloom cutoff and scale factors on show, easing towards the zone's
 local lookBase -- the level's fog density and the engine's bloom threshold and intensity, which the factors scale. Bloom is restored on exit
@@ -402,6 +403,38 @@ local function updateSky()
   end
 end
 
+-- Puts BeamNG's sun on FH1's path (sky.py's sunPath), so it sits in the glow baked into the sky: FH1's sun rises ESE and sets SSW, where
+-- BeamNG's own rises ENE and sets WNW. TimeOfDay writes the sun only when the clock changes, so this checks every frame and writes when they differ.
+-- Where the path is false, FH1's disc is the moon: BeamNG's sun is handed back by nudging the clock, which makes TimeOfDay place it again
+local function updateSun()
+  local hour = hourNow()
+  local path = sky.sunPath
+  if not hour or not path then return end
+  local x = hour * 60 / sky.sunStep
+  local i = math.floor(x)
+  local a, b = path[i % #path + 1], path[(i + 1) % #path + 1]
+  local sunsky = scenetree.findObject('sunsky')
+  if not sunsky then return end
+  if type(a) ~= 'table' or type(b) ~= 'table' then
+    if sunDriven then
+      sunDriven = false
+      local tod = scenetree.findObject('tod')
+      if tod then tod.time = tod.time + 1e-6 end
+    end
+    return
+  end
+  local f = x - i
+  local az, el = a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f
+  local curAz = tonumber(sunsky:getField('azimuth', 0)) or 0
+  local curEl = tonumber(sunsky:getField('elevation', 0)) or 0
+  if not sunDriven or math.abs(curAz - az) > .01 or math.abs(curEl - el) > .01 then
+    sunsky:setField('azimuth', 0, tostring(az))
+    sunsky:setField('elevation', 0, tostring(el))
+    sunsky:postApply()
+  end
+  sunDriven = true
+end
+
 local function inTriangle(t, x, y)
   local d1 = (x - t[2][1]) * (t[1][2] - t[2][2]) - (t[1][1] - t[2][1]) * (y - t[2][2])
   local d2 = (x - t[3][1]) * (t[2][2] - t[3][2]) - (t[2][1] - t[3][1]) * (y - t[3][2])
@@ -549,6 +582,7 @@ local function start()
     end
   end
   skyBake = nil
+  sunDriven = nil
   restoreBloom()
   lookZone = nil
   nightShown = nil
@@ -572,6 +606,13 @@ local function onUpdate(dtReal, dtSim)
   sinceParticles = sinceParticles + dtReal
   sinceSky = sinceSky + dtReal
   sinceNight = sinceNight + dtReal
+  if sky and sky.sunPath then
+    local ok, err = pcall(updateSun)
+    if not ok then
+      log('E', logTag, tostring(err) .. ', FH1 sun path is off')
+      sky.sunPath = nil
+    end
+  end
   if sky and sinceSky >= SKY_SECONDS then
     sinceSky = 0
     local ok, err = pcall(updateSky)
