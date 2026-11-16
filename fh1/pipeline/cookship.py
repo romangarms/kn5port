@@ -38,8 +38,10 @@ for c in cooked.rglob('*.cdae'):
     shutil.copy2(c, d.with_suffix('.cdae')); n += 1; size += c.stat().st_size
 dae = sum(1 for _ in level.rglob('*.dae'))
 print('done', n, 'shapes', size >> 20, 'MB', stale, 'stale ->', level)
-if n < dae:
-    print(f'warning: {dae - n} of {dae} shapes have no fresh cooked copy, so players cook them on first load. Load the level once, close BeamNG, run again')
+# One load cooks about 95% of the shapes (6,840 of 7,229 on Colorado); BeamNG cooks the rest only when it first meets them. Much
+# less than that means the level wasn't loaded since its build
+if n < dae * .9:
+    print(f'warning: only {n} of {dae} shapes have a fresh cooked copy. Load the level once, close BeamNG, run again')
 
 def credits(title):
     """README_<level>.txt at the zip root: who made the original and who converted it. Named per level, as every mod's root shares one folder in game"""
