@@ -1221,9 +1221,6 @@ def is_ground(c):
     """ground for hex_selection: terrain by name, or meshes drawn only with ground and road shaders (lake sections allowed)"""
     no = int(c['f'].split('.')[1]); fx_ = [SHADERS[s_] for s_ in MT[no][1]] if no < len(MT) else []
     terr_ = TERR.search(c['name']) or FAR.search(c['name'])
-    if c['sd'] >= 20 and TERR.search(c['name']) and fx_ and all(GROUNDFX.match(s_) for s_ in fx_):
-        return True     # terrain by name and by every shader, whatever else the name says: the ground under bridges (MidBridgeTerrain,
-        # road_plains_05_*_BridgeTerrain, 7 meshes). Taken for a bridge deck, the hexes never counted it, so its cells took the Uber shell
     return c['sd'] >= 20 and not NOTGROUND.search(c['name']) and bool(terr_ or fx_ and all(GROUNDFX.match(s_) or s_.startswith('lake') for s_ in fx_) and any(GROUNDFX.match(s_) for s_ in fx_))
 
 
