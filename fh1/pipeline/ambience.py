@@ -1,6 +1,6 @@
 """FH1's regional ambient loops as .ogg files in a built level. Run after build3.py: python ambience.py [fh1_colorado|fh1_redrock].
 AMB_Quads_Stream.fsb is FSB4 holding XMA. Each region has front and rear stereo loops, and only the front ones are used: two regions' pairs differ in length."""
-import os, shutil, struct, subprocess, sys, tempfile
+import os, struct, subprocess, sys, tempfile
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, os.path.abspath('../..'))
@@ -25,9 +25,6 @@ def gain(src, target=TARGET_RMS):
     return min(target / np.sqrt((a ** 2).mean()), PEAK / np.abs(a).max())
 
 
-if not shutil.which('ffmpeg'):          # the app warns about this before the build; the level works without these sounds
-    print('ffmpeg not found: skipping the ambient sound. Install ffmpeg (the FH1 tab has a button for it) and build again to add it')
-    sys.exit(0)
 level = Path(beamng.find_mods()) / 'unpacked' / LVL / 'levels' / LVL
 if not level.exists():
     sys.exit(f'{level} is missing: run build3.py first')
