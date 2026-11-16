@@ -112,9 +112,9 @@ def _ram_gb():
 
 def find_ffmpeg():
     """ffmpeg on PATH, or on the PATH as it is now in the registry (installed after the app started), or winget's"""
-    hit = shutil.which("ffmpeg")
+    hit = shutil.which("ffmpeg")       # absolute: on Windows this also finds .fmpeg.exe, which the build, run from another folder, can't
     if hit or sys.platform != "win32":
-        return hit or ""
+        return os.path.abspath(hit) if hit else ""
     dirs = []
     try:
         import winreg
@@ -128,7 +128,8 @@ def find_ffmpeg():
     except ImportError:
         pass
     dirs.append(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links"))
-    return shutil.which("ffmpeg", path=os.pathsep.join(d for d in dirs if d)) or ""
+    hit = shutil.which("ffmpeg", path=os.pathsep.join(d for d in dirs if d))
+    return os.path.abspath(hit) if hit else ""
 
 
 def beamng_running():
@@ -367,6 +368,18 @@ class Job:
         if rc:
             raise RuntimeError(f"{Path(args[2] if len(args) > 2 else args[0]).name} failed (exit code {rc})")
 
+    def _check_ffmpeg(self, py, cwd, env):
+        """start ffmpeg the way the build's scripts do (their Python, folder and PATH), so a broken one stops here and not at the end of the build"""
+        test = "import subprocess; subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True)"
+        r = subprocess.run(py + ["-c", test], cwd=str(cwd), env=env, capture_output=True, encoding="utf-8", errors="replace",
+                           stdin=subprocess.DEVNULL, creationflags=0x08000000 if sys.platform == "win32" else 0)
+        if r.returncode:
+            why = ((r.stdout + r.stderr).strip().splitlines() or ["no output"])[-1]
+            raise RuntimeError(
+                f"ffmpeg was found at {find_ffmpeg() or '(nowhere)'}, but the converter can't run it ({why}). "
+                "To fix it: 1) click Install next to ffmpeg under Before you build, or install it from ffmpeg.org into a folder of its own "
+                "and add that folder's bin to your PATH; 2) restart kn5port; 3) build again. Nothing was built.")
+
     def _run(self):
         try:
             task = self.opts.get("task")
@@ -459,6 +472,7 @@ class Job:
         if runtime.needed():
             env["PYTHONNOUSERSITE"] = "1"      # the private Python sees only its own packages
         py = [str(py_exe), "-u"]
+        self._check_ffmpeg(py, snap, env)
 
         if "prepare" in self.stages:
             self.stage = "prepare"
