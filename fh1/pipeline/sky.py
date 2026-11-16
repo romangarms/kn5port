@@ -36,17 +36,23 @@ FAR_R, FAR_DROP = 10000.0, 9700.0; FAR_ALPHA_UV = 5.0; FAR_MASK_UV = (1.01, 3.2)
 # divided by its value at white, and written as sqrt. EV is the toneAdaptiveExposure table looked up by the scene's mean sqrt luminance, plus
 # filmicTone's exposure. The key is the plain mean linear luminance of the unexposed scene (centre-weighted); a bake has no scene, so it uses the
 # sky's own between the horizon and KEY_TOP degrees (an assumption). The zone's colour grade LUT, brightness, contrast and desaturation come
-# after the tone map and aren't applied
+# after the tone map: see GRADE
 KEY_TOP = 30.0
 # FH1's bloom, added to the scene before the tone map. Bright pass on the exposed scene x, L its luminance:
 #   e = x * max(lower L, upper L + (lower - upper) knee) / L - 1/255,  times scale
 # then four levels each blurred and halved from the last, and bloom = sum of weight * 0.2 * (e, level 0..3). The base values are the zone's
 # Bloom_Templates.xml entry; TimeOfDayA.xml's Bloom*Multiplier curves scale cutoff (the knee) and scale, and since the lower gradient's base is 0,
-# its curve is taken as the value and the upper's as a multiplier of 1 (both inferred). BLOOM_TEMPLATE is Red Rock's, Plains', Maintown's and
-# Redstone's. Persist (frame feedback, about 6%) is left out. The blur sizes are in FH1's screen texels: the bright pass is at a quarter of
+# its curve is taken as the value and the upper's as a multiplier of 1 (both inferred). The template is the level's zone's (see zone()). Persist (frame feedback, about 6%) is left out. The blur sizes are in FH1's screen texels: the bright pass is at a quarter of
 # 1280 px, and the blurs (FH1's 7-tap kernel, sigma 1.49 texels) compound down the levels; BLOOM_FOV, the horizontal field of view that turns
 # them into degrees, is an assumption
-BLOOM_TEMPLATE = 'Hot_hazy'; BLOOM_FOV = 90.0; BLOOM_PX = 1280; BLUR_SIGMA = 1.49; PANO = .25
+BLOOM_FOV = 90.0; BLOOM_PX = 1280; BLUR_SIGMA = 1.49; PANO = .25
+# FH1's colour grade, after the tone map on its linear output (BloomTonemap and sub_82552028 / sub_82432628):
+# - one 16^3 LUT the CPU blends each frame: identity + DayColorGradeAmount (day LUT - identity) + NightColorGradeAmount (night LUT - identity),
+#   clamped, looked up trilinearly at the tone-mapped colour (texel = colour * 15). DDS bytes are BGRA, red along x, blue along the slices
+# - then the zone's ColorSettings: contrast about 0.5 by (1 + Contrast), plus Brightness, then colour * DesatAmount + (1 - DesatAmount) *
+#   dot(DesatLuminosity, colour) (so 0.9 keeps 90%; the direction is inferred), times DesatPostMod (whose B the game reads from R), each scaled
+#   by its TimeOfDayA multiplier. ExposureBias adds to the tone map's exposure
+# A bake can follow only one zone, so each level takes the one at its centre (zone()). FH1 blends zones as you drive between them
 # Below the horizon FH1's dome goes on to -6 degrees in its pure bottom colour, a bright band its backdrop terrain always covers. Where a BeamNG
 # level lacks that backdrop the skybox shows, and that band read as a white or yellow wall, the flat ground colour before it as grey. So below the
 # horizon the bake shows the sky as it is at the horizon, fading to a ground colour between these elevations, which only reflections reach (chosen)
@@ -203,11 +209,11 @@ def hable(x, f):
     return (x * (A * x + Cs * Bs) + D * E) / (x * (A * x + Bs) + D * F) - E / F
 
 
-def exposure(key, P):
+def exposure(key, P, bias=0.0):
     """BloomTonemap's vertex shader: the segment of the key table the luminance falls in, lerped, plus filmicTone's exposure."""
     f, k, e = P
     i = 0 if key < k[1] else 2 if key >= k[2] else 1
-    return e[i] + (e[i + 1] - e[i]) * min(max((key - k[i]) / (k[i + 1] - k[i]), 0), 1) + f['exposure']
+    return e[i] + (e[i + 1] - e[i]) * min(max((key - k[i]) / (k[i + 1] - k[i]), 0), 1) + f['exposure'] + bias
 
 
 def sky(d, C, sun):
@@ -299,7 +305,7 @@ def sky_pass(d, C, maps, sun):
 
 def bloom_template():
     t = ET.fromstring(gamezip.read('dynamicpost.zip', 'Tracks/Colorado/Bloom_Templates.xml'))
-    a = {k.lower(): float(v) for k, v in next(e for e in t if e.get('Name') == BLOOM_TEMPLATE).attrib.items() if k != 'Name'}
+    a = {k.lower(): float(v) for k, v in next(e for e in t if e.get('Name') == zone()['BloomTemplate']).attrib.items() if k != 'Name'}
     return a['cutoff'], a['scale'], [a.get(f'weight{i}', 1.0) for i in range(5)]
 
 
@@ -334,10 +340,58 @@ def pano_at(pano, d):
     return np.stack([ni.map_coordinates(pano[..., i], [row, col], order=1, mode='grid-wrap') for i in range(3)], -1)
 
 
-def bake(d, C, R, maps, sun, stars, moon, ev, P, glow):
-    """One cube face: FH1's sky pass plus its bloom (glow, from bloom()) through its tone map, as sRGB bytes, then the stars, moon and ground bounce."""
+def zone():
+    """The FH1 post-processing zone at the level's centre: its attributes, or Inner_Festival's where no zone covers it."""
+    zs = ET.parse(gamepath.RIBBON + 'PostProcessingZones_Safe.xml').getroot(); x, y = CENTRE[0], -CENTRE[1]
+
+    def inside(t):
+        (x1, y1), (x2, y2), (x3, y3) = t; den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+        a = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / den; b = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / den
+        return a >= 0 and b >= 0 and a + b <= 1
+    hit = [z for z in zs for t in z if inside([(float(q.get('posX')), float(q.get('posZ'))) for q in t])]
+    return dict((hit or [z for z in zs if z.get('Name') == 'Inner_Festival'])[0].attrib)
+
+
+def lut(name):
+    """A 16^3 grading LUT from dynamicpost.zip as [blue][green][red] -> rgb, 0..1."""
+    a = np.frombuffer(gamezip.read('dynamicpost.zip', 'ColourGradingMaps/' + name), 'u1', offset=128).reshape(16, 16, 16, 4) / 255
+    return a[..., [2, 1, 0]]
+
+
+def grading(C, Z):
+    """This bake's blended LUT and its colour settings (template values times their TimeOfDayA multipliers)."""
+    ident = np.stack(np.meshgrid(*[np.arange(16) / 15] * 3, indexing='ij')[::-1], -1)  # [b][g][r] -> (r, g, b)
+    table = np.clip(ident + C['DayColorGradeAmount'][0] * (lut(Z['ColorGradingMap']) - ident)
+                    + C['NightColorGradeAmount'][0] * (lut(Z['ColorGradingMapNight']) - ident), 0, 1)
+    t = {e.get('Name'): {k: float(v) for k, v in e.attrib.items() if k != 'Name'}
+         for e in ET.fromstring(gamezip.read('dynamicpost.zip', 'Tracks/Colorado/ColorSettings_Templates.xml'))}[Z['ColorSettings']]
+    m = lambda k, n=1: C[k][:n] if k in C else np.ones(n)
+    return {'lut': table, 'contrast': t['Contrast'] * m('ContrastMultiplier')[0], 'brightness': t['Brightness'],
+            'desat': t['DesatAmount'] * m('DesatAmountMultiplier')[0],
+            'lum': np.array([t['DesatLuminosityR'], t['DesatLuminosityG'], t['DesatLuminosityB']]) * m('DesatLuminosityMultiplier', 3),
+            'post': np.array([t['DesatPostModR'], t['DesatPostModG'], t['DesatPostModR']]) * m('DesatPostModMultiplier', 3),
+            'bias': t['ExposureBias']}
+
+
+def grade(c, G):
+    """FH1's grade of linear tone-mapped colour c: LUT, then contrast, brightness, desaturation and post-mod, saturated."""
+    ix = np.clip(c, 0, 1) * 15; i0 = np.minimum(ix.astype(int), 14); f = ix - i0
+    out = 0
+    for db in (0, 1):
+        for dg in (0, 1):
+            for dr in (0, 1):
+                wgt = ((f[..., 0] if dr else 1 - f[..., 0]) * (f[..., 1] if dg else 1 - f[..., 1]) * (f[..., 2] if db else 1 - f[..., 2]))[..., None]
+                out = out + wgt * G['lut'][i0[..., 2] + db, i0[..., 1] + dg, i0[..., 0] + dr]
+    out = (out - .5) * (1 + G['contrast']) + .5 + G['brightness']
+    out = out * G['desat'] + (1 - G['desat']) * (out @ G['lum'])[..., None]
+    return np.clip(out * G['post'], 0, 1)
+
+
+def bake(d, C, R, maps, sun, stars, moon, ev, P, glow, G):
+    """One cube face: FH1's sky pass plus its bloom (glow, from bloom()) through its tone map and grade (G, from grading()), as sRGB bytes, then
+    the stars, moon and ground bounce."""
     x = (sky_pass(d, C, maps, sun) + pano_at(glow, d)) * 2 ** ev
-    col = linear(np.sqrt(np.clip(hable(x, P[0]) / hable(P[0]['white'], P[0]), 0, 1)) * 255)
+    col = linear(np.sqrt(grade(np.clip(hable(x, P[0]) / hable(P[0]['white'], P[0]), 0, 1), G)) * 255)
     col = col + stars[..., None] * C['StarFade'][0]
     if moon is not None:
         m = moon_layer(d, C, moon)
@@ -394,8 +448,8 @@ if not items.exists():
     sys.exit(f'{items} is missing: run build3.py first')
 R = curves(MINUTE)
 out = level / 'art' / 'skies' / 'fh1_sky'; out.mkdir(parents=True, exist_ok=True)
-# The faces don't depend on the level and FH1's files never change, so they're baked once per version of this code and copied after that
-CACHE = Path('../ddscache') / ('sky-' + hashlib.md5(b''.join(Path(f).read_bytes() for f in (__file__, dds.__file__, tex.__file__))).hexdigest()[:12])
+# Faces depend on this code and the level's FH1 zone (its grade and bloom), so they're cached per both
+CACHE = Path('../ddscache') / ('sky-' + hashlib.md5(b''.join(Path(f).read_bytes() for f in (__file__, dds.__file__, tex.__file__)) + zone()['Name'].encode()).hexdigest()[:12])
 if not all((CACHE / f'{names(tag)[2]}_{i}.color.dds').exists() for _, tag, _ in BAKES for i in range(1, 7)):
     band, density = xds('CloseCloudAlphaDensityFront0.xds'); top, bot = xds('CloseCloudTopBottomAmbientFront0.xds')
     maps = {'band': band, 'density': density, 'amb': xds('CloseCloudAmbientFront0.xds')[1], 'top': top, 'bot': bot,
@@ -403,15 +457,16 @@ if not all((CACHE / f'{names(tag)[2]}_{i}.color.dds').exists() for _, tag, _ in 
     b = gamezip.read('realtimesky.zip', MOON); moon = tex.decode(b[52:], 256, 256, 0x54).astype('f4') / 255
     moon[..., :3] = linear(moon[..., :3] * 255)
     stars = star_faces(FACE); dirs = list(directions(FACE)); CACHE.mkdir(parents=True, exist_ok=True)
-materials = {}; bakes = []; P = post()
+materials = {}; bakes = []; P = post(); Z = zone(); print('zone', Z['Name'], Z['ColorGradingMap'], Z['BloomTemplate'], Z['ColorSettings'])
 for minute, tag, _ in BAKES:
     C = curves(minute); material, cubemap, stem = names(tag); faces = []; ev = None
     for i in range(1, 7):
         p = out / f'{stem}_{i}.color.dds'; c_ = CACHE / p.name
         if not c_.exists():
             if ev is None:
-                ev = exposure(key_of(C, maps, sun_dir(minute)), P); glow = bloom(C, maps, sun_dir(minute), ev); print(tag, 'EV', round(ev, 2))
-            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, maps, sun_dir(minute), stars[i - 1], moon, ev, P, glow), peak=C['StarFade'][0] > .1)
+                G = grading(C, Z); ev = exposure(key_of(C, maps, sun_dir(minute)), P, G['bias'])
+                glow = bloom(C, maps, sun_dir(minute), ev); print(tag, 'EV', round(ev, 2))
+            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, maps, sun_dir(minute), stars[i - 1], moon, ev, P, glow, G), peak=C['StarFade'][0] > .1)
             os.replace(c_.with_suffix('.tmp'), c_)
         shutil.copyfile(c_, p); faces.append(f'/levels/{LVL}/art/skies/fh1_sky/{p.name}')
     materials[material] = {'name': material, 'mapTo': 'unmapped_mat', 'class': 'Material', 'Stages': [{}, {}, {}, {}], 'cubemap': cubemap, 'materialTag0': 'beamng'}

@@ -66,11 +66,24 @@ Directions are unit view vectors. The sun is `SunObjectPos`, the visible disc. T
 - `EV` comes from `toneAdaptiveExposure`: its keys, divided by 255, are looked up against the scene's mean linear luminance (see Exposure key), and `filmicTone.exposure` is added.
 - The bake has no scene to measure. It uses the sky's own mean between the horizon and 30°, which is an assumption. Below the horizon it continues the sky as it is at the horizon, fading to a ground colour from −10° to −30°, because a level without FH1's backdrop showed FH1's raw bottom band, or a flat grey, there.
 - In daylight this gives EV −0.49. The model then reproduces measured FH1 screenshot colours within about 10%, except the blue above 20° (FH1 is bluer there).
-- The zone colour-grade LUT and the brightness, contrast and desaturation matrix come after the tone map. The bake doesn't apply them.
+
+**Colour grade** (BloomTonemap, CPU `sub_82552028` and `sub_82432628`). It's applied to the linear tone-mapped colour, before the final sqrt.
+- **LUT.** The CPU blends one 16³ LUT each frame as `identity + DayColorGradeAmount·(day − identity) + NightColorGradeAmount·(night − identity)`, clamped, and between two zones by their blend factor. The shader looks it up trilinearly at `colour·15` texels.
+  - The DDS bytes are BGRA, with red along x and blue along the slices. Every map sits within about 0.02–0.08 of identity in that orientation.
+  - The day amount is about 1 from midday through the afternoon and 0 from 18:10. So FH1's sunset is ungraded.
+- **Colour settings.** Next comes the zone's ColorSettings template, each value times its TimeOfDayA multiplier:
+  1. contrast about 0.5 by `1 + Contrast`;
+  2. `+ Brightness`;
+  3. `colour·DesatAmount + (1 − DesatAmount)·dot(DesatLuminosity, colour)`, so 0.9 keeps 90%. That direction is inferred;
+  4. `× DesatPostMod`, whose B the game reads from R.
+  
+  `ExposureBias` adds to the tone map's exposure.
+- **Zones.** Each zone in `PostProcessingZones_Safe.xml` names its day and night LUTs, its ColorSettings template and its bloom template. A bake can follow only one, so each level uses the zone at its centre: Redrock for Red Rock, Inner_Festival for Colorado and Rally, Reservoir_Foothills for Clear Springs. Faces are cached per zone.
 
 ## Not reproduced
 
 - The clouds moving: close clouds turn several times an hour, and far clouds scroll by `FarCloudSpeedX/Z`.
 - `DitherSettings`.
 - The sun disc. BeamNG draws its own, which `fh1Extras.lua` moves along FH1's `SunObjectPos` path.
-- The colour grade.
+- Zone blending: FH1 eases between zones' grades and bloom as you drive. The bake uses the level centre's zone.
+- A second desaturation and a second contrast and brightness in colorTransform. Their sources weren't traced; they're probably gameplay effects and are neutral by default.
