@@ -1462,8 +1462,9 @@ for f, cs in byfile.items():
             si, slots, cs_ = M[s['ints'][2]]; NM = section_normals(no, slots)
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
             sh_ = vertex_shade(no, slots, fx, m, s) if fx.startswith(('h_road', 'h_vblnd')) and vw is not None else None      # read per vertex, before hex_split
-            if HEXGROUND and no in HEXRING and (isterr or fx.startswith('h_road')):     # only where FH1's hexes draw this ground. Objects in
-                # the same mesh (rock, props) read their UV1 from its vertex buffer, so they stay whole
+            if HEXGROUND and no in HEXRING and (isterr or fx.startswith('h_road') or gamepath.MERGE and fx.startswith('h_vblnd')):     # only where
+                # FH1's hexes draw this ground. Objects in the same mesh (rock, props) read their UV1 from its vertex buffer, so they stay whole.
+                # In a merged track the blend decals too: Colorado's line decals (Object144, 900 m along Red Rock's road) ran over the DLC's dirt
                 cols_ = [a_ for a_ in (p, nr, r0, r1, vw, None if sh_ is None else sh_[:, None]) if a_ is not None]; w_ = np.cumsum([0] + [a_.shape[1] for a_ in cols_])
                 V_, T = hex_split(no, np.concatenate(cols_, 1), T)
                 if not len(T):
