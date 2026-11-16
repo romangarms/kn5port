@@ -109,7 +109,7 @@ Forest files list a matrix's axes as rows, like `TSStatic`s: tilted stock items 
 
 ## Scene
 
-`visibleDistance` 6000, or 24000 with the backdrop, `shadowDistance` 1600, `TimeOfDay` fixed, `ScatterSky`, one `SpawnSphere`. `build3.py`'s spawn is the first race route checkpoint near Red Rock, moved onto the road height, and `info.json` holds the title and spawn point. On the whole map `levelinfo.py` then lists the Horizon Festival and FH1's ten Horizon Outposts (`OUTPOST_<n>_NODE` in `GameObjs.xml`, placed on the node with its facing, 1 m up) instead, with Red Rock Outpost as the default. A chunk keeps `spawn_redrock` and gains the outposts inside it.
+`visibleDistance` 6000, or 24000 with the backdrop, `shadowDistance` 1600, `TimeOfDay` fixed, `ScatterSky`, one `SpawnSphere`. `build3.py`'s spawn is the first race route checkpoint near Red Rock, moved onto the road height, and `info.json` holds the title and spawn point. On the whole map `levelinfo.py` then lists the Horizon Festival and FH1's ten Horizon Outposts (`OUTPOST_<n>_NODE` in `GameObjs.xml`, placed on the node with its facing, 1 m up) instead, with Red Rock Outpost as the default. A chunk keeps `spawn_redrock` and gains the outposts inside it. The Rally Expansion (`fh1_coloradodirt`) has no outposts: it gets a spawn on the pole of each stage (`start_location` in `TrackRoute<n>.xml`, routes under 100), one per start, as the Stage 4s and Rally Heats reuse earlier stages' starts. That's 22, sorted by name, with Red Rock - Stage 1 the default, and `spawn_redrock` is dropped. Its menu preview is the DLC's marketplace picture, `UI4/Marketplace/Rally_LG.xds` in `1600_pri_65.zip` (512x512 tiled ARGB 8888 between black bars), cropped to 4:3.
 
 ## Races
 

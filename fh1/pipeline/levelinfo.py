@@ -1,13 +1,13 @@
 """The level's face in BeamNG: freeroam menu text and previews, spawns at FH1's outposts, location zones, and the data fh1Extras.lua reads.
-Run after build3.py, which wipes the level: python levelinfo.py [fh1_colorado|fh1_redrock]. Safe to run twice. Needs no rebuild."""
-import json, math, os, re, shutil, sys
+Run after build3.py, which wipes the level: python levelinfo.py [fh1_colorado|fh1_redrock|fh1_coloradodirt]. Safe to run twice. Needs no rebuild."""
+import json, math, os, re, shutil, struct, sys
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
-import events, frame, mapart, mission, nav, soundscape
+import events, frame, gamepath, gamezip, mapart, mission, nav, soundscape, tex
 
 LVL = sys.argv[1] if len(sys.argv) > 1 else 'fh1_colorado'
 CX, CZ, HALF = frame.LEVELS[LVL]; LIFT = frame.LIFT
@@ -35,6 +35,10 @@ SOUNDS = [('festival_crowd', -950, -208, 120, 650, .8), ('festival_music', -950,
 # Stock tunnel reverb, placed over FH1's tunnel-like reverb zones. A snapshot event plays from any level, as stock levels share the same banks
 REVERB_EVENT = 'event:>Snapshot Events>Snapshot_ATT_Tunnel_Closed_Position'; REVERB_GRID = 40.0; REVERB_RADIUS = 34; REVERB_ROAD_METRES = 30
 NAMED_ROAD = re.compile(r'(interstate \d+|county route \d+|route \d+|horizon outer loop)')
+# The Rally Expansion's Xbox Marketplace picture: a 512x512 tiled 8888 .xds whose picture sits between black bars, and the left edge of the
+# 4:3 crop that keeps the car in frame
+RALLY_ART = 'media/UI/Textures/UI4/Marketplace/Rally_LG.xds'; RALLY_ART_LEFT = 24
+STAGE_SPAWN_MERGE = 30.0    # metres: stages that start within this of an earlier one share its spawn (Stage 4s reuse a Stage 1 to 3 start)
 
 
 def spawn_preview(x, z, path):
@@ -44,7 +48,20 @@ def spawn_preview(x, z, path):
     im.save(path, quality=90)
 
 
+def rally_art():
+    """the DLC's marketplace picture as RGB, black bars cut off"""
+    b = gamezip.read(gamepath.DLC + '/DLCZips/1600_pri_65.zip', RALLY_ART)
+    size = struct.unpack('>I', b[0x24:0x28])[0]; w, h = (size & 0x1fff) + 1, ((size >> 13) & 0x1fff) + 1
+    a = np.frombuffer(tex.untile(b[52:], w, h, 4), 'u1').reshape(h, w, 4)[..., 1:]      # ARGB
+    rows = np.flatnonzero(a.max((1, 2)) > 24)
+    return Image.fromarray(a[rows[0]:rows[-1] + 1].copy())
+
+
 def level_preview(path):
+    if gamepath.TRACK == 'coloradodirt':
+        src = rally_art(); w, h = src.size; want = int(h * PREVIEW[0] / PREVIEW[1])
+        src.crop((RALLY_ART_LEFT, 0, RALLY_ART_LEFT + want, h)).resize(PREVIEW, Image.LANCZOS).save(path, quality=90)
+        return
     src = Image.open('../ui/New_Map_MapGameReady.jpg').convert('RGB').crop(ART_BOX)
     w, h = src.size; want = int(h * PREVIEW[0] / PREVIEW[1]); left = (w - want) // 2
     src.crop((left, 0, left + want, h)).resize(PREVIEW, Image.LANCZOS).save(path, quality=90)
@@ -83,6 +100,26 @@ def outpost(n, name, nodes):
     return ({'class': 'SpawnSphere', 'name': obj, '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker', 'position': [float(x - CX), float(z + CZ), float(y + LIFT + OUTPOST_DROP)],
              'rotationMatrix': [c, -s, 0, s, c, 0, 0, 0, 1], 'radius': 1},
             {'objectname': obj, 'translationId': f'{name} Outpost', 'preview': f'{obj}_preview.jpg'}, (float(x), float(-z)))
+
+
+def stage_spawns():
+    """a spawn on each rally stage's pole, facing down the stage, named for the first stage that starts there"""
+    out = []; seen = []
+    for r in events.dlc_races():
+        if r['route'] >= 100:            # the three championship routes (100 to 102) have no start of their own
+            continue
+        grid = events.route(r['route']).get('start_location')
+        if not grid:
+            continue
+        (x, y, z), f, _ = grid[0]
+        if any(math.hypot(x - a, z - c) < STAGE_SPAWN_MERGE for a, c in seen):
+            continue
+        seen.append((x, z)); obj = 'spawn_' + re.sub(r'[^a-z0-9]+', '_', r['name'].lower()).strip('_')
+        yaw = math.atan2(f[0], -f[2]); c, s = math.cos(yaw), math.sin(yaw)
+        out.append(({'class': 'SpawnSphere', 'name': obj, '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker',
+                     'position': [float(x - CX), float(z + CZ), float(y + LIFT + OUTPOST_DROP)], 'rotationMatrix': [c, -s, 0, s, c, 0, 0, 0, 1], 'radius': 1},
+                    {'objectname': obj, 'translationId': r['name'], 'preview': f'{obj}_preview.jpg'}, (float(x), float(-z))))
+    return out
 
 
 def zones(p, roads):
@@ -147,6 +184,10 @@ if LVL == 'fh1_colorado':
     for name, obj, x, y in SPAWNS:
         row, point, where = spawn(name, obj, x, y, p, pub)
         spawns.append(row); points.append(point); spawn_preview(*where, level / point['preview'])
+elif gamepath.TRACK == 'coloradodirt':       # the Rally Expansion: its stage starts, Red Rock Stage 1 the default
+    for row, point, where in sorted(stage_spawns(), key=lambda t: t[1]['translationId']):
+        spawns.append(row); points.append(point); spawn_preview(*where, level / point['preview'])
+    default = 'spawn_red_rock_stage_1'
 else:               # a chunk keeps build3.py's spawn, and the outposts that fall inside it
     points.append({'objectname': 'spawn_redrock', 'translationId': 'Red Rock', 'preview': 'spawn_redrock_preview.jpg'}); default = 'spawn_redrock'
     red = next(o for o in mission.rows(items) if o.get('name') == 'spawn_redrock')['position']
@@ -164,6 +205,8 @@ emitters = reverb(reverb_zones, p, roads)
 (items.parent / 'fh1_reverb' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in emitters))
 with mission.edit(items) as rows:
     rows[:] = [o for o in rows if not (o.get('class') == 'SpawnSphere' and o['name'] != 'spawn_redrock')] + spawns
+    if gamepath.TRACK == 'coloradodirt':          # build3's spawn is a route checkpoint, not a stage start
+        rows[:] = [o for o in rows if o.get('name') != 'spawn_redrock']
     if not any(o.get('name') == 'fh1_reverb' for o in rows):
         rows.append({'name': 'fh1_reverb', 'class': 'SimGroup', '__parent': 'MissionGroup'})
 level_preview(level / f'{LVL}_preview.jpg')
@@ -178,6 +221,11 @@ if LVL == 'fh1_colorado':           # a chunk keeps build3.py's title, or the le
                                 'with FH1\'s roads, lighting and regional ambience. Personal use only, not for redistribution.',
                  'features': 'Whole Horizon map, towns, interstate, mountain passes, dirt roads', 'suitablefor': 'Free roam, road trips, rally, touring',
                  'roads': 'Interstate 70 and 76, county routes, dirt tracks'})
+elif gamepath.TRACK == 'coloradodirt':
+    info.update({'description': "Forza Horizon's Rally Expansion, converted from your own copy: Colorado rebuilt for rally, with its dirt stages through Red Rock, "
+                               'the plains, Beaumont, Kettle Hills, Clear Springs and the Rockies. Spawn at any stage start. Personal use only, not for redistribution.',
+                 'features': 'Rally stages, gravel and dirt roads, the whole Colorado map', 'suitablefor': 'Rally, free roam, time trials',
+                 'roads': 'Gravel and dirt rally stages, county routes, interstate'})
 (level / 'info.json').write_text(json.dumps(info, indent=2))
 
 z = zones(p, roads)
