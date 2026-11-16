@@ -973,19 +973,21 @@ sel = [c for c in F if (BACKDROP or c['mx'][0] > X0 and c['mn'][0] < X1 and c['m
 # Origin-local meshes only belong where a zone record puts them, so they must not also go in raw at (0, 0).
 # Any record away from the origin marks a whole LOD group as local. World-space meshes have records at the origin.
 ZREC = pickle.load(open('../zonerec.pkl', 'rb')); NAMEOF = {int(c['f'].split('.')[1]): c['name'] for c in F}
-# A merged track (merge_base.py) draws each hex from one track. A zone lists what is visible from its hex, so Colorado's hexes beside a stage
-# also list Colorado's roads, props and decals inside the DLC's hexes, over the DLC's own. Ground is split cell by cell in hex_selection. Other
-# Colorado-only meshes (merge.json base_mesh and up) placed in a DLC hex are left out: props by their record here, world meshes by their box
-# centre in zone_objects. A mesh centre can't decide ground: a Colorado road centred over the border is the only road its Colorado cells have
+# A merged track (merge_base.py): the DLC's hex file says which hexes are the DLC's, and Colorado's zones fill the rest. Each hex shows its own
+# track's zone with its own track's meshes, and a mesh is shared only when the merge found it unchanged. A zone lists what is visible from its
+# hex, so each track's zones also list its meshes across the border, over the other track's own. Ground is split cell by cell in
+# hex_selection. Placements go by their record: a DLC record (draw below draw_offset) only in a DLC hex, a Colorado one only in a Colorado
+# hex. World meshes only one track loads go by their box centre in zone_objects
 BASEMESH = gamepath.MERGE.get('base_mesh', 1 << 30)
 if gamepath.MERGE:
     _hx, _ = hexzones.hexes(); _zn = np.array(sorted(_hx)); _ht = cKDTree(np.array([_hx[z] for z in _zn]))
     def dlc_hex(x, zz):
         """is (x, zone z) in a hex the DLC has a zone for"""
         return bool(_zn[_ht.query((x, zz))[1]] < gamepath.MERGE['base_zones'])
-    _n = len(ZREC)
-    ZREC = {k: r for k, r in ZREC.items() if not (int(DRAW['t'][k[0]]) >= BASEMESH and abs(r['pos'][0]) + abs(r['pos'][2]) >= 1 and dlc_hex(r['pos'][0], r['pos'][2]))}
-    print('merged track: Colorado placements in DLC hexes left out', _n - len(ZREC))
+    _n = collections.Counter(k[0] < gamepath.MERGE['draw_offset'] for k in ZREC)
+    ZREC = {k: r for k, r in ZREC.items() if abs(r['pos'][0]) + abs(r['pos'][2]) < 1 or (k[0] < gamepath.MERGE['draw_offset']) == dlc_hex(r['pos'][0], r['pos'][2])}
+    _k = collections.Counter(k[0] < gamepath.MERGE['draw_offset'] for k in ZREC)
+    print('merged track: placements in the other track hexes left out: DLC', _n[True] - _k[True], 'Colorado', _n[False] - _k[False])
 GENERIC = re.compile(r'(Plane|Box|Line|Object|Mesh|Rectangle)\d+', re.I)        # exporter default names, shared by unrelated meshes
 
 
@@ -1236,10 +1238,12 @@ def zone_objects(cs):
         if is_ground(c):
             out.append(c)
             continue
-        if no >= BASEMESH and dlc_hex((c['mn'][0] + c['mx'][0]) / 2, -(c['mn'][2] + c['mx'][2]) / 2):
-            stats['zone_objects_colorado_in_dlc_hex'] += 1
-            continue
         zl = set().union(*[loads.get(f_, set()) for f_ in (mem[RING[no]] if no in RING else [no])])
+        if gamepath.MERGE:      # one track's mesh only in that track's hexes; a mesh both tracks' zones load is shared
+            col_ = no >= BASEMESH; dlc_ = not col_ and not any(zn[i] >= gamepath.MERGE['base_zones'] for i in zl)
+            if (col_ or dlc_) and dlc_hex((c['mn'][0] + c['mx'][0]) / 2, -(c['mn'][2] + c['mx'][2]) / 2) != dlc_:
+                stats['zone_objects_other_track_hex'] += 1
+                continue
         if zl:
             xs = np.linspace(c['mn'][0], c['mx'][0], int(np.clip((c['mx'][0] - c['mn'][0]) / 50, 2, 8)))
             zs = np.linspace(c['mn'][2], c['mx'][2], int(np.clip((c['mx'][2] - c['mn'][2]) / 50, 2, 8)))

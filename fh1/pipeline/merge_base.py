@@ -5,8 +5,9 @@ Carson's streets, the festival site and the roads between have no DLC zone. This
 own zone for that hex, as if the game fell back to the base map cell by cell, and adds what those zones and the base map's placed
 sets need to the DLC work folder, renumbered so nothing collides:
 
-- meshes: a Colorado mesh the DLC also has (same geometry and box, or the same name re-cut within metres) is drawn as the DLC's copy;
-  the rest are added as mesh BASE_MESH + its Colorado number.
+- meshes: a Colorado mesh the DLC has unchanged (same name, geometry and box) is drawn as the DLC's copy; the rest are added as mesh
+  BASE_MESH + its Colorado number. Each hex then draws its own track's meshes. A DLC mesh of the same name but re-cut is a different
+  mesh: matched by name within 30 m, CLRD_Road_PlainsA2_02 (2,905 triangles) was drawn as the DLC's 361, leaving holes along the highway.
 - textures: identical files map to the DLC's texture id, the rest are added as TEX_BASE + their Colorado id. Colorado's texture-list
   keys become KEY_BASE + key. Shaders the DLC lacks are appended to its list.
 - draws: Colorado's draw table is appended, so Colorado draw d is DLC draw draw_offset + d. LOD links are relative and survive.
@@ -22,7 +23,6 @@ import numpy as np
 
 BASE_MESH = 10000; KEY_BASE = 20000; TEX_BASE = 0x200000; PGEO_BASE = 20000
 TABLES = ('cat2.pkl', 'meshtab.pkl', 'texshader.pkl', 'mt.npy', 'zonerec.pkl', 'list.json')
-GENERIC = re.compile(r'(Plane|Box|Line|Object|Mesh|Rectangle|cables_|Decals_)\d+', re.I)
 
 
 def link(src, dst):
@@ -102,10 +102,6 @@ def main(B, D):
         cand = [d for d in bysig.get((name, sig(cs)), ()) if np.abs(obb(M2, d) - o1).max() < .01]
         if cand:
             MAP[no] = cand[0]; st['meshes identical'] += 1
-            continue
-        near = sorted((float(np.linalg.norm(obb(M2, d)[9:12] - o1[9:12])), d) for d in byname.get(name, ()))
-        if near and near[0][0] < (5.0 if GENERIC.match(name) else 30.0):
-            MAP[no] = near[0][1]; st['meshes re-cut by the DLC'] += 1
             continue
         st['meshes added'] += 1
     newno = lambda no: MAP.get(no, BASE_MESH + no)
@@ -235,17 +231,9 @@ def main(B, D):
     json.dump(L, open(D + '/list.json', 'w'))
     json.dump(dict(base_mesh=BASE_MESH, draw_offset=DB, key_offset=KEY_BASE, base_zones=n2, pgeo=PG, files=added), open(D + '/merge.json', 'w'))
 
-    # placements: zones.py over the merged zones, then drop Colorado records of a DLC mesh the DLC already places there
+    # placements: zones.py over the merged zones. Both tracks' records are kept; build3 keeps each track's in the hexes it owns
     snap = D + '/prep_snapshot'
     subprocess.check_call([sys.executable, 'zones.py'], cwd=snap)
-    Z = pickle.load(open(D + '/zonerec.pkl', 'rb')); T = np.concatenate([D2['t'], A['t']]).astype(np.int64)
-    mine = {(int(T[d]), p) for d, p in Z if d < DB}; out = {}
-    for (d, p), r in Z.items():
-        if d >= DB and (int(T[d]), p) in mine:
-            st['placements the DLC has'] += 1
-            continue
-        out[(d, p)] = r
-    pickle.dump(out, open(D + '/zonerec.pkl', 'wb'))
     st['colorado zones'] = len(used); st['files added'] = len(added)
     print(dict(st))
 
