@@ -1323,6 +1323,32 @@ def hex_selection(cs):
     load = [{int(DRAW['t'][d]) for d in hexzones.drawn(z) if d < len(DRAW)} for z in zn]       # the ids a zone loads (bit 31)
     cj, ci = np.divmod(np.arange(HN[0] * HN[1]), HN[0]); cx_ = X0 + (ci + .5) * HG; cz_ = Z0 + (cj + .5) * HG
     dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_], k=HEX_K)
+    # cells a near hex covers with what it loads, ground or not: the ground-shader sections of every other world mesh, where one of the
+    # cell's nearest hexes loads that mesh's group. The fallback leaves those alone. FH1's hex by the Plains overpass loads MidBridgeTerrain
+    # (not ground here, for 'bridge' in its name) over the slip roads, and the fallback laid the Uber shell 0.4 m above them
+    covered = np.zeros(HN[0] * HN[1], bool); loaded_by = defaultdict(set)
+    for k_ in range(len(zn)):
+        for f_ in load[k_]:
+            loaded_by[f_].add(k_)
+    byo = defaultdict(list)
+    for c in cs:
+        no = int(c['f'].split('.')[1])
+        if not is_ground(c) and no < len(MT) and any(GROUNDFX.match(SHADERS[x_]) for x_ in MT[no][1]):
+            byo[c['f']].append(c)
+    for f_, cs_ in byo.items():
+        b_ = open('../x/' + f_, 'rb').read(); P_ = rmb.parse(b_); Mt_ = materials(b_, P_); no = int(f_.split('.')[1])
+        hx_ = set().union(*[loaded_by.get(x_, set()) for x_ in (mem[RING[no]] if no in RING else [no])])
+        if not hx_:
+            continue
+        for c in cs_:
+            m = P_['meshes'][c['mi']]; p, _, _ = rmb.verts(m)
+            T = [rmb.tris(s_['ib'], m['nv'], s_['ints'][1]) for s_ in m['secs'] if s_['ints'][2] < len(Mt_) and Mt_[s_['ints'][2]][0] < len(MT[no][1])
+                 and GROUNDFX.match(SHADERS[MT[no][1][Mt_[s_['ints'][2]][0]]])]
+            T = np.concatenate(T) if T else np.zeros((0, 3), int)
+            if not len(T):
+                continue
+            k = hg_cells(hg_grid(p)[T], HN[0], HN[1], buf); cl_ = buf[:min(k, len(buf))].copy()
+            covered[cl_[np.isin(hK[cl_], list(hx_)).any(1)]] = True
     ms_ = [set(mem[r_]) if r_ in mem else {r_[1]} for r_ in rings_]
     Lh = defaultdict(list); byfile = defaultdict(list)
     for a, m_ in enumerate(ms_):
@@ -1380,8 +1406,8 @@ def hex_selection(cs):
     for p, T in STRUCTS:
         k = hg_cells(hg_grid(p)[T], HN[0], HN[1], buf); held[buf[:min(k, len(buf))]] = True
     near = np.array([any(((int(g_) >> 3) & 1) for f_ in ms_[a] for g_ in GBITS.get(f_, ())) for a in range(len(rings_))])     # g bit 3: close-range ground
-    o_ = np.flatnonzero(~done[pc] & ~held[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], ~near[pr[o_]], pc[o_]))]
-    stats['hex_cells_structure'] = int((held & ~done).sum())
+    o_ = np.flatnonzero(~done[pc] & ~held[pc] & ~covered[pc]); o_ = o_[np.lexsort((-dens[pr[o_]], ~near[pr[o_]], pc[o_]))]
+    stats['hex_cells_structure'] = int((held & ~done).sum()); stats['hex_cells_covered_by_other_meshes'] = int((covered & ~done & ~held).sum())
     first = np.r_[True, pc[o_][1:] != pc[o_][:-1]]; sel[o_[first]] = True
     fb = collections.Counter((name_[rings_[pr[i]]], bool(decided[i])) for i in o_[first])      # decided: a hex among the nearest loads it, past its cull distance
     print('hex fallback by ring (name, loaded by a near hex): cells', fb.most_common(15))
