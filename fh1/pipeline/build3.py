@@ -1314,9 +1314,6 @@ def hex_selection(cs):
     load = [{int(DRAW['t'][d]) for d in hexzones.drawn(z) if d < len(DRAW)} for z in zn]       # the ids a zone loads (bit 31)
     cj, ci = np.divmod(np.arange(HN[0] * HN[1]), HN[0]); cx_ = X0 + (ci + .5) * HG; cz_ = Z0 + (cj + .5) * HG
     dK, hK = cKDTree(ZC).query(np.c_[cx_, -cz_], k=HEX_K)
-    # a merged track (merge_base.py): a cell takes ground only from its own track's hexes. A hex's zone lists what is visible from it, so
-    # Colorado's hexes by a stage load Colorado ground over the DLC's own, which flickered through it
-    trk = np.array(zn) >= gamepath.MERGE.get('base_zones', 1 << 30); same = (trk[hK] == trk[hK[:, :1]]).astype(np.int64)
     ms_ = [set(mem[r_]) if r_ in mem else {r_[1]} for r_ in rings_]
     Lh = defaultdict(list); byfile = defaultdict(list)
     for a, m_ in enumerate(ms_):
@@ -1327,6 +1324,18 @@ def hex_selection(cs):
             for a in byfile.get(f_, ()):
                 Lh[a].append(k_)
     Ls = {a: set(v) for a, v in Lh.items()}
+    # A merged track (merge_base.py). A hex's zone lists what is visible from it, so Colorado's hexes beside a stage load Colorado's ground
+    # over the DLC's own there, which flickered through it. Ground only one track has goes only in cells whose nearest hex is that track's:
+    # Colorado's (mesh base_mesh and up) and the DLC's that no Colorado hex loads. Ground both load (the merge maps Colorado's copy to the
+    # DLC's) can't overlap itself, so any hex may draw it: kept to its own track, Plains_Area2_PATCH_06, which only Colorado's hexes load,
+    # left holes beside the highway in a DLC cell
+    trk = np.array(zn) >= gamepath.MERGE.get('base_zones', 1 << 30); colcell = trk[hK[:, 0]]
+    kind = np.zeros(len(rings_), np.int64)      # 0 both tracks, 1 Colorado only, 2 DLC only
+    if gamepath.MERGE:
+        for a, m_ in enumerate(ms_):
+            kind[a] = 1 if min(m_) >= gamepath.MERGE['base_mesh'] else 0 if any(trk[k_] for k_ in Ls.get(a, ())) else 2
+    allow = lambda o_: ((kind[pr[o_]] == 0) | ((kind[pr[o_]] == 1) & colcell[pc[o_]]) | ((kind[pr[o_]] == 2) & ~colcell[pc[o_]])).astype(np.int64)
+    print('merged ground groups: both tracks, Colorado only, DLC only', np.bincount(kind, minlength=3).tolist())
     cull = {}
     for a in range(len(rings_)):        # the record's last switch distance is where FH1 stops drawing the group; 131008 means never
         sw_ = next((lod_of[f_] for f_ in ms_[a] if f_ in lod_of), None)
@@ -1342,7 +1351,7 @@ def hex_selection(cs):
         o_ = np.flatnonzero(~decided)
         if not len(o_):
             break
-        key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64), same[pc[o_], q]], 1)
+        key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64), allow(o_)], 1)
         uk, inv = np.unique(key, axis=0, return_inverse=True); inv = inv.ravel()
         ld_ = np.array([m and h in Ls.get(a, ()) for a, h, b, m in uk])
         ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b, m), l in zip(uk, ld_)])
