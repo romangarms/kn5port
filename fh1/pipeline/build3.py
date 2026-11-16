@@ -2614,12 +2614,12 @@ def post_script(s_):
 
 
 def post_build():
-    """the AFTER scripts, each started once those it waits for are done. After a failure nothing new starts, and the first error is raised once the rest finish"""
-    done_ = set(); running = {}; failed = []
+    """the AFTER scripts, each started once those it waits for are done. A failed script's dependents don't start, the others still run, and the first error is raised once they finish"""
+    done_ = set(); running = {}; failed = []; failed_ = set()
     with ThreadPoolExecutor(len(AFTER)) as ex:
         while True:
             for s_, need in AFTER.items():
-                if not failed and s_ not in done_ and s_ not in running.values() and all(n in done_ for n in need):
+                if s_ not in done_ and s_ not in failed_ and s_ not in running.values() and all(n in done_ for n in need):
                     running[ex.submit(post_script, s_)] = s_
             if not running:
                 break
@@ -2631,7 +2631,7 @@ def post_build():
                     with SAY:
                         print(f'[time] {s_}.py {TIMES[-1][1]:.1f}s', flush=True)
                 except Exception as e:
-                    failed.append(e)
+                    failed.append(e); failed_.add(s_)
     if failed:
         raise failed[0]
 
