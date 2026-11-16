@@ -1353,8 +1353,8 @@ def hex_selection(cs):
             break
         key = np.stack([pr[o_], hK[pc[o_], q], (dK[pc[o_], q] // 10).astype(np.int64), allow(o_)], 1)
         uk, inv = np.unique(key, axis=0, return_inverse=True); inv = inv.ravel()
-        ld_ = np.array([m and h in Ls.get(a, ()) for a, h, b, m in uk])
-        ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b, m), l in zip(uk, ld_)])
+        ld_ = np.array([bool(m) and h in Ls.get(a, ()) for a, h, b, m in uk], bool)      # bool: a 0 from m made it an index array
+        ok = np.array([l and (b + .5) * 10 < cull[a] for (a, h, b, m), l in zip(uk, ld_)], bool)
         decided[o_[ld_[inv]]] = True; sel[o_[ok[inv]]] = True
     done = np.zeros(HN[0] * HN[1], bool); done[pc[sel]] = True
     global HEXDONE; HEXDONE = done.copy()           # cells a hex draws ground for, before the fallback below
