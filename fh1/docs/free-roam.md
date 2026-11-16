@@ -12,6 +12,7 @@ Implemented in `build3.py` (`event_kept`), using `zonerec.pkl` from `zones.py`. 
 | Block, empty list, no owner | Signs, fences, bins, snow poles | Yes |
 | List includes byte 0 | Each event's start pen (owner `FR22_01` and so on: about 30 `OBJ_FEST_BarrierMetal`, 4 flags, the `TeamTrailer` or 2 outhouses), the 100 `flyer_` discount signs, banners, cones, signs | Yes: 1,718 placements more on the whole map than before |
 | Gameplay marker models (`MARKER`): `Temp_Arrow_Pointer` (mesh 6620), `Glow_01` (mesh 6509) | Arrows and light pillars at GameObjs.xml nodes | Never, in free roam or race prefabs |
+| Event ground flares (`particles.py`, `GAMEPLAY_FLARE`): 88 `ParticleEmitters.xml` emitters with GameplayID `<event>_flare`, effect `_Composite_Flare*`, named `fx_activationzone_*` | Coloured flares with sparks. Their authored spots match neither their event's start nor its route, often km off: FH1's game code places them | Never. The user saw them as grey sparklers on roads by day (2026-11-16) |
 | List of race routes only | Food trucks, RVs, cones, tyre stacks, grandstands | No, except flower holders and barriers (`ALWAYS`, `ROADSIDE`). They go in their route's race prefab (below) |
 | List of 21-31 only | 20 records | No: online free roam only |
 | Owner name, no byte 0 | `BF_..._OPEN`, speed camera markers, reset points | No, except `TeamTrailer` |

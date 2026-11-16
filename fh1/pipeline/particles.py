@@ -221,12 +221,24 @@ def to_b(q):
     return np.array([q[0], -q[2], q[1]])
 
 
+# Event beacons, not scenery: the 88 coloured ground flares (_Composite_Flare*, GameplayID '<event>_flare', named fx_activationzone_*) belong to
+# FH1's game code, which draws them where an event is offered. Their authored spots match neither their own event's start nor its route, often
+# kilometres off. Placed there, they stood on roads in free roam and read as grey sparklers by day (the user, 2026-11-16). Same reasoning as
+# build3's MARKER models
+GAMEPLAY_FLARE = re.compile(r'_flare$', re.I)
+
+
+def gid(e):
+    g = e.find('GameplayID')
+    return g.get('value', '') if g is not None else ''
+
+
 # Ambient placements: (effect, BeamNG position, ejection axis, wake distance, time window). Emitters eject along their local y
 scene = []
 for e in root:
     eff = e.find('Effect'); pos = e.find('Position'); o = e.find('Orientation')
     dist = next((f for r, f in AMBIENT if r.match(eff.get('value'))), None) if eff is not None else None
-    if dist is None or pos is None:
+    if dist is None or pos is None or GAMEPLAY_FLARE.search(gid(e)):
         continue
     X, Y, Z = (v3(o.find(k)) for k in ('XAxis', 'YAxis', 'ZAxis')) if o is not None else np.eye(3)
     name = eff.get('value'); when = None; subs = [(name, np.zeros(3))]
