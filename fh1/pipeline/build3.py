@@ -937,7 +937,12 @@ def cell_split(b, nb, uv, uv1, T):
     return V[:, :3], n_, V[:, 6:8], V[:, 8:], np.arange(len(V)).reshape(-1, 3)
 
 
+TRACE = {int(x) for x in os.environ.get('FH1_TRACE', '').split(',') if x.strip()}; CUR = None      # FH1_TRACE=8385,8386: what happens to those meshes
+
+
 def add(cat, mat, p, n, uv, T, lift=0.0, uv1=None):
+    if CUR in TRACE:
+        print('[trace]', CUR, 'add', cat, mat, 'LV', LV, 'FIX', FIX, 'tris', len(T), flush=True)
     if not len(T):
         return
     b = g2b(p); nb = n2b(n)
@@ -1437,7 +1442,9 @@ for f, cs in byfile.items():
     if len(M) < 1 + max((s['ints'][2] for m in P['meshes'] for s in m['secs']), default=0):
         stats['file_short_mats'] += 1
     for c in cs:
-        m = P['meshes'][c['mi']]; n = c['name']; l = lod_level(c)
+        m = P['meshes'][c['mi']]; n = c['name']; l = lod_level(c); CUR = no
+        if no in TRACE:
+            print('[trace]', no, c['name'], 'reached the section loop, stride', m['sd'], flush=True)
         if m['sd'] < 20:
             stats['stride16'] += 1
             continue
@@ -1455,6 +1462,8 @@ for f, cs in byfile.items():
                     FARQ.append((d_ < 1500, no, M, m, p, nr, r0, r1, g, gkey(c)))
                 continue
         have_ = sorted(AV[gkey(c)]); rel_ = have_.index(l)
+        if no in TRACE:
+            print('[trace]', no, n, 'level', l, 'group levels', have_, 'isterr', isterr, 'cube', cube, 'in HEXRING', no in HEXRING, flush=True)
         if rel_ > 1 and isterr or rel_ > 2:     # terrain LOD1 and LOD2 are close in size, so LOD1 covers both
             stats['lod_dropped'] += 1
             continue
@@ -1474,6 +1483,8 @@ for f, cs in byfile.items():
                 continue
             si, slots, cs_ = M[s['ints'][2]]; NM = section_normals(no, slots)
             fx = SHADERS[MT[no][1][si]] if si < len(MT[no][1]) else ''
+            if no in TRACE:
+                print('[trace]', no, 'section', si_, fx, 'tris', len(T), flush=True)
             sh_ = vertex_shade(no, slots, fx, m, s) if fx.startswith(('h_road', 'h_vblnd')) and vw is not None else None      # read per vertex, before hex_split
             if HEXGROUND and no in HEXRING and (isterr or fx.startswith('h_road') or gamepath.MERGE and fx.startswith('h_vblnd')):     # only where
                 # FH1's hexes draw this ground. Objects in the same mesh (rock, props) read their UV1 from its vertex buffer, so they stay whole.
