@@ -111,24 +111,11 @@ def _ram_gb():
 
 
 def find_ffmpeg():
-    """ffmpeg on PATH, or on the PATH as it is now in the registry (installed after the app started), or winget's"""
-    hit = shutil.which("ffmpeg")       # absolute: on Windows this also finds .fmpeg.exe, which the build, run from another folder, can't
-    if hit or sys.platform != "win32":
-        return os.path.abspath(hit) if hit else ""
-    dirs = []
-    try:
-        import winreg
-        for hive, key in ((winreg.HKEY_CURRENT_USER, r"Environment"),
-                          (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
-            try:
-                with winreg.OpenKey(hive, key) as k:
-                    dirs += os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]).split(";")
-            except OSError:
-                pass
-    except ImportError:
-        pass
-    dirs.append(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links"))
-    hit = shutil.which("ffmpeg", path=os.pathsep.join(d for d in dirs if d))
+    """the ffmpeg inside kn5port.exe (packaging/build.ps1 puts it there), or for a source install the one on PATH. Always an absolute path"""
+    bundled = Path(getattr(sys, "_MEIPASS", "")) / "ffmpeg" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    if getattr(sys, "_MEIPASS", None) and bundled.exists():
+        return str(bundled)
+    hit = shutil.which("ffmpeg")
     return os.path.abspath(hit) if hit else ""
 
 
@@ -223,7 +210,7 @@ class FH1:
             "pipeline": bool(pipeline_src()), "missing_packages": missing_packages(), "python": str(py or ""),
             "runtime": {"needed": runtime.needed(), "ready": bool(py), "mb": runtime.DOWNLOAD_MB,
                         "dir": str(runtime.root())},
-            "ffmpeg": find_ffmpeg(), "winget": bool(shutil.which("winget")), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
+            "ffmpeg": find_ffmpeg(), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
             "ram_gb": _ram_gb(), "mods": str(mods) if str(mods) not in ("", ".") else "",
             "levels": levels, "radio": (mods / "unpacked" / "fh1_radio").exists(),
             "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5], "play_ram": c[6]}
@@ -257,7 +244,7 @@ class FH1:
         if s["missing_packages"]:
             out.append("Missing Python packages: " + ", ".join(s["missing_packages"]) + ".")
         if not s["ffmpeg"]:
-            out.append("ffmpeg wasn't found. The level's ambient sound and the radio need it.")
+            out.append("ffmpeg wasn't found. Install it from ffmpeg.org and put it on your PATH (kn5port.exe has its own).")
         if not s["source"]["kind"]:
             out.append("Pick your copy of Forza Horizon.")
         if not s["mods"]:
@@ -296,16 +283,11 @@ class FH1:
             return self.job
 
     def setup_task(self, what):
-        """'python': the packages (pip) or, in the exe, the private Python; 'ffmpeg': ffmpeg through winget"""
+        """'python': the packages (pip) or, in the exe, the private Python"""
         with self.lock:
             if self.busy():
                 raise RuntimeError("a Forza Horizon job is already running")
-            if what == "ffmpeg":
-                if not shutil.which("winget"):
-                    raise RuntimeError("winget isn't available: install ffmpeg from ffmpeg.org instead.")
-                task = "ffmpeg"
-            else:
-                task = "runtime" if runtime.needed() else "pip"
+            task = "runtime" if runtime.needed() else "pip"
             self.job = Job(self, {"task": task})
             return self.job
 
@@ -376,9 +358,8 @@ class Job:
         if r.returncode:
             why = ((r.stdout + r.stderr).strip().splitlines() or ["no output"])[-1]
             raise RuntimeError(
-                f"ffmpeg was found at {find_ffmpeg() or '(nowhere)'}, but the converter can't run it ({why}). "
-                "To fix it: 1) click Install next to ffmpeg under Before you build, or install it from ffmpeg.org into a folder of its own "
-                "and add that folder's bin to your PATH; 2) restart kn5port; 3) build again. Nothing was built.")
+                f"ffmpeg at {find_ffmpeg() or '(not found)'} won't start ({why}), and the level's sound needs it. Nothing was built. "
+                "To fix it: 1) if your antivirus blocked or removed it, allow kn5port.exe and restore it; 2) restart kn5port; 3) build again.")
 
     def _run(self):
         try:
@@ -395,14 +376,6 @@ class Job:
                     self.progress = x
                 runtime.setup(self.say, prog, lambda: self._cancel)
                 self.progress = None
-            elif task == "ffmpeg":
-                self.stages = ["ffmpeg"]; self.stage = "ffmpeg"
-                self.say("Installing ffmpeg (Gyan.FFmpeg) with winget")
-                self._cmd(["winget", "install", "--id", "Gyan.FFmpeg", "--exact", "--silent", "--disable-interactivity",
-                           "--accept-source-agreements", "--accept-package-agreements"], Path.home())
-                if not find_ffmpeg():
-                    raise RuntimeError("winget finished, but ffmpeg still isn't found. Restart kn5port and check again.")
-                self.say(f"ffmpeg is at {find_ffmpeg()}")
             else:
                 self._convert()
             if self.status == "running":

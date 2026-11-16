@@ -8,7 +8,9 @@ a = Analysis(
            # the FH1 pipeline and kn5port's own sources, run by the private Python the app sets up (kn5port/runtime.py)
            ("../fh1/pipeline/*.py", "fh1_pipeline"), ("../fh1/pipeline/*.lua", "fh1_pipeline"),
            ("../fh1/pipeline/fh1radio_app/*.js*", "fh1_pipeline/fh1radio_app"),
-           ("../kn5port/*.py", "kn5port_src/kn5port"), ("../kn5port/ui/*.py", "kn5port_src/kn5port/ui")],
+           ("../kn5port/*.py", "kn5port_src/kn5port"), ("../kn5port/ui/*.py", "kn5port_src/kn5port/ui"),
+           ("bin/FFMPEG_LICENSE.txt", "ffmpeg")],
+    binaries=[("bin/ffmpeg.exe", "ffmpeg")],      # build.ps1 downloads it; kn5port/ui/fh1.py find_ffmpeg uses it
     hiddenimports=collect_submodules("kn5port") + collect_submodules("webview"),
     excludes=["matplotlib", "scipy", "numba", "llvmlite", "pandas", "IPython", "pytest"],   # FH1 gets these from its own runtime
 )

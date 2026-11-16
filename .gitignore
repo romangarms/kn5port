@@ -14,3 +14,4 @@ output/
 levels/
 .venv-build/
 packaging/__pycache__/
+packaging/bin/

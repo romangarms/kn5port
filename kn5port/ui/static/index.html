@@ -717,7 +717,7 @@ $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port
 
 // ---- Forza Horizon 1 tab ----------------------------------------------------------------------------------
 const fh = { s: null, job: null, chunk: null, radio: null, adv: false, polling: false, loading: false };
-const FH_STAGES = { python: "Set up Python", ffmpeg: "Install ffmpeg", extract: "Copy game files", prepare: "Read map tables", build: "Build level", radio: "Radio mod" };
+const FH_STAGES = { python: "Set up Python", extract: "Copy game files", prepare: "Read map tables", build: "Build level", radio: "Radio mod" };
 const gb = (x) => x == null ? "?" : x >= 100 ? `${Math.round(x)} GB` : `${x.toFixed(1)} GB`;
 const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
@@ -762,9 +762,9 @@ function fhChecks(s) {
     ? row("bad", "Python packages", `Missing ${s.missing_packages.map(esc).join(", ")}. kn5port can install them into <code>${esc(s.python)}</code> with pip.`,
         `<button class="primary" data-setup="python" ${dis}>Install</button>`)
     : row("ok", "Python packages", "numpy, scipy, numba and Pillow are installed."));
-  out.push(s.ffmpeg ? row("ok", "ffmpeg", esc(s.ffmpeg))
-    : row("bad", "ffmpeg", `Needed for the level's ambient sound and the radio.${s.winget ? " kn5port can install it with winget (the Gyan.FFmpeg package, about 100 MB)." : ""} Or get it from <a class="lnk" href="https://ffmpeg.org/download.html" target="_blank" rel="noopener">ffmpeg.org</a>, then check again.`,
-        `${s.winget ? `<button class="primary" data-setup="ffmpeg" ${dis}>Install</button> ` : ""}<button class="secondary" data-recheck>Check again</button>`));
+  if (!s.ffmpeg)       // kn5port.exe has its own; only a source install can be missing it
+    out.push(row("bad", "ffmpeg", `Needed for the level's sound. Install it from <a class="lnk" href="https://ffmpeg.org/download.html" target="_blank" rel="noopener">ffmpeg.org</a>, put it on your PATH, then check again.`,
+        `<button class="secondary" data-recheck>Check again</button>`));
   out.push(s.mods ? row("ok", "BeamNG mods folder", esc(s.mods))
     : row("bad", "BeamNG mods folder", "Not found. Set it under Folders.", `<button class="secondary" id="fhFolders">Folders</button>`));
   // the same estimate the server checks before it starts a build (FH1.disk)
