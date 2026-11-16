@@ -34,9 +34,23 @@ CLOSE_U0 = .5
 FAR_R, FAR_DROP = 10000.0, 9700.0; FAR_ALPHA_UV = 5.0; FAR_MASK_UV = (1.01, 3.2); FAR_COVER = (.616, .43); FAR_SHARP = .984
 # FH1's post: scene colour (stored as sqrt, so blends happen on sqrt values) times 2^EV, then Hable's filmic curve with Colorado's filmicTone,
 # divided by its value at white, and written as sqrt. EV is the toneAdaptiveExposure table looked up by the scene's mean sqrt luminance, plus
-# filmicTone's exposure. A bake has no scene, so its key is the sky's own mean between the horizon and KEY_TOP degrees (an assumption).
-# The zone's colour grade LUT, brightness, contrast and desaturation come after this and aren't applied
+# filmicTone's exposure. The key is the plain mean linear luminance of the unexposed scene (centre-weighted); a bake has no scene, so it uses the
+# sky's own between the horizon and KEY_TOP degrees (an assumption). The zone's colour grade LUT, brightness, contrast and desaturation come
+# after the tone map and aren't applied
 KEY_TOP = 30.0
+# FH1's bloom, added to the scene before the tone map. Bright pass on the exposed scene x, L its luminance:
+#   e = x * max(lower L, upper L + (lower - upper) knee) / L - 1/255,  times scale
+# then four levels each blurred and halved from the last, and bloom = sum of weight * 0.2 * (e, level 0..3). The base values are the zone's
+# Bloom_Templates.xml entry; TimeOfDayA.xml's Bloom*Multiplier curves scale cutoff (the knee) and scale, and since the lower gradient's base is 0,
+# its curve is taken as the value and the upper's as a multiplier of 1 (both inferred). BLOOM_TEMPLATE is Red Rock's, Plains', Maintown's and
+# Redstone's. Persist (frame feedback, about 6%) is left out. The blur sizes are in FH1's screen texels: the bright pass is at a quarter of
+# 1280 px, and the blurs (FH1's 7-tap kernel, sigma 1.49 texels) compound down the levels; BLOOM_FOV, the horizontal field of view that turns
+# them into degrees, is an assumption
+BLOOM_TEMPLATE = 'Hot_hazy'; BLOOM_FOV = 90.0; BLOOM_PX = 1280; BLUR_SIGMA = 1.49; PANO = .25
+# Below the horizon FH1's dome goes on to -6 degrees in its pure bottom colour, a bright band its backdrop terrain always covers. Where a BeamNG
+# level lacks that backdrop the skybox shows, and that band read as a white or yellow wall, the flat ground colour before it as grey. So below the
+# horizon the bake shows the sky as it is at the horizon, fading to a ground colour between these elevations, which only reflections reach (chosen)
+GROUND_FADE = (-10.0, -30.0)
 # fh1Extras.lua gets the sun's azimuth and elevation every SUN_STEP minutes of BeamNG's clock and interpolates between
 SUN_STEP = 10
 # Stars.bin is the Yale Bright Star Catalogue, brightest first: 9096 big-endian (x, y, z, w), y towards the celestial pole, RA = atan2(x, z),
@@ -239,7 +253,8 @@ def far_clouds(d, C, maps):
     col, a = front
     tot = a + out_a * (1 - a)
     rgb = (col * a[..., None] + out_c * (1 - a)[..., None]) / np.maximum(tot, 1e-6)[..., None]
-    return rgb, tot
+    # the cap ends 6 degrees below the horizon
+    return rgb, tot * (z >= zr)
 
 
 def close_clouds(d, C, maps, sun):
@@ -270,23 +285,67 @@ def scene(d, C, maps, sun):
 
 
 def key_of(C, maps, sun):
-    """The bake's stand-in for FH1's scene luminance: mean sqrt luminance of the sky between the horizon and KEY_TOP degrees."""
+    """The bake's stand-in for FH1's scene luminance: mean linear luminance of the sky between the horizon and KEY_TOP degrees."""
     az, el = np.meshgrid(np.linspace(0, 2 * np.pi, 180, endpoint=False), np.radians(np.linspace(.5, KEY_TOP, 30)))
     d = np.stack([np.sin(az) * np.cos(el), np.cos(az) * np.cos(el), np.sin(el)], -1)
-    return float(np.sqrt(scene(d, C, maps, sun) @ [.2126, .7152, .0722]).mean())
+    return float((scene(d, C, maps, sun) @ [.2126, .7152, .0722]).mean())
 
 
-def bake(d, C, R, maps, sun, stars, moon, ev, P):
-    """One cube face: FH1's sky pass through its tone map, as sRGB bytes, plus the stars, moon and ground bounce baked over it."""
-    x = scene(d, C, maps, sun) * 2 ** ev
+def sky_pass(d, C, maps, sun):
+    """The scene the bake shows: FH1's sky pass above the horizon, and below it the sky alone as it is at the horizon (see GROUND_FADE)."""
+    level = d.copy(); level[..., 2] = np.maximum(level[..., 2], 0); level /= np.linalg.norm(level, axis=-1, keepdims=True)
+    return np.where((d[..., 2] >= 0)[..., None], scene(d, C, maps, sun), sky(level, C, sun))
+
+
+def bloom_template():
+    t = ET.fromstring(gamezip.read('dynamicpost.zip', 'Tracks/Colorado/Bloom_Templates.xml'))
+    a = {k.lower(): float(v) for k, v in next(e for e in t if e.get('Name') == BLOOM_TEMPLATE).attrib.items() if k != 'Name'}
+    return a['cutoff'], a['scale'], [a.get(f'weight{i}', 1.0) for i in range(5)]
+
+
+def bloom(C, maps, sun, ev):
+    """FH1's bloom of the sky, linear, as an equirectangular panorama (PANO degrees a pixel, rows from +90 to -90 elevation)."""
+    from scipy.ndimage import gaussian_filter1d
+    h, w = int(180 / PANO), int(360 / PANO)
+    el, az = np.radians(90 - (np.arange(h) + .5) * PANO), np.radians((np.arange(w) + .5) * PANO)
+    el, az = np.meshgrid(el, az, indexing='ij')
+    d = np.stack([np.sin(az) * np.cos(el), np.cos(az) * np.cos(el), np.sin(el)], -1)
+    x = sky_pass(d, C, maps, sun) * 2 ** ev
+    cutoff, scale, weights = bloom_template()
+    knee = cutoff * C['BloomCutoffMultiplier'][0]; scale *= C['BloomScaleMultiplier'][0]
+    lower, upper = C['BloomLowerGradientMultiplier'][0], C['BloomUpperGradientMultiplier'][0]
+    L = np.maximum(x @ [.2125, .7154, .0721], 1e-6)[..., None]
+    e = np.maximum(x * np.maximum(lower * L, upper * L + (lower - upper) * knee) / L - 1 / 255, 0) * scale
+    texel = BLOOM_FOV / (BLOOM_PX / 4)  # degrees per bright-pass texel
+    out = weights[0] * .2 * e; level = e; sigma = 0.0; cos = np.maximum(np.cos(el[:, 0]), .05)
+    for k in range(4):
+        texel *= 2; sigma = np.hypot(sigma, BLUR_SIGMA * texel)
+        level = gaussian_filter1d(e, sigma / PANO, axis=0, mode='nearest')
+        level = np.stack([gaussian_filter1d(level[r], sigma / PANO / cos[r], axis=0, mode='wrap') for r in range(h)])
+        out = out + weights[k + 1] * .2 * level
+    return out
+
+
+def pano_at(pano, d):
+    """Sample an equirectangular panorama from bloom() at unit directions d."""
+    h, w = pano.shape[:2]
+    row = (90 - np.degrees(np.arcsin(np.clip(d[..., 2], -1, 1)))) / PANO - .5
+    col = (np.degrees(np.arctan2(d[..., 0], d[..., 1])) % 360) / PANO - .5
+    return np.stack([ni.map_coordinates(pano[..., i], [row, col], order=1, mode='grid-wrap') for i in range(3)], -1)
+
+
+def bake(d, C, R, maps, sun, stars, moon, ev, P, glow):
+    """One cube face: FH1's sky pass plus its bloom (glow, from bloom()) through its tone map, as sRGB bytes, then the stars, moon and ground bounce."""
+    x = (sky_pass(d, C, maps, sun) + pano_at(glow, d)) * 2 ** ev
     col = linear(np.sqrt(np.clip(hable(x, P[0]) / hable(P[0]['white'], P[0]), 0, 1)) * 255)
     col = col + stars[..., None] * C['StarFade'][0]
     if moon is not None:
         m = moon_layer(d, C, moon)
         if m is not None:
             col = col * (1 - m[1]) + m[0] * m[1]
-    # Ground bounce below the horizon, which only reflections see. HLBottomColour barely changes at night, so it dims with FH1's horizon
-    g = np.clip(-d[..., 2] / .05, 0, 1)[..., None]
+    # Ground bounce well below the horizon, for reflections. HLBottomColour barely changes at night, so it dims with FH1's horizon
+    el = np.degrees(np.arcsin(np.clip(d[..., 2], -1, 1)))
+    g = np.clip((el - GROUND_FADE[0]) / (GROUND_FADE[1] - GROUND_FADE[0]), 0, 1)[..., None]
     dim = min(1, float((C['AtmosphereBottomColour'] / np.maximum(R['AtmosphereBottomColour'], 1e-3)).mean() * C['SkyGain'][0] / R['SkyGain'][0]))
     col = col * (1 - g) + C['HLBottomColour'] * 2 * dim * g
     return (srgb(col) * 255 + .5).astype('u1')
@@ -351,8 +410,8 @@ for minute, tag, _ in BAKES:
         p = out / f'{stem}_{i}.color.dds'; c_ = CACHE / p.name
         if not c_.exists():
             if ev is None:
-                ev = exposure(key_of(C, maps, sun_dir(minute)), P); print(tag, 'EV', round(ev, 2))
-            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, maps, sun_dir(minute), stars[i - 1], moon, ev, P), peak=C['StarFade'][0] > .1)
+                ev = exposure(key_of(C, maps, sun_dir(minute)), P); glow = bloom(C, maps, sun_dir(minute), ev); print(tag, 'EV', round(ev, 2))
+            dds.save(c_.with_suffix('.tmp'), bake(dirs[i - 1], C, R, maps, sun_dir(minute), stars[i - 1], moon, ev, P, glow), peak=C['StarFade'][0] > .1)
             os.replace(c_.with_suffix('.tmp'), c_)
         shutil.copyfile(c_, p); faces.append(f'/levels/{LVL}/art/skies/fh1_sky/{p.name}')
     materials[material] = {'name': material, 'mapTo': 'unmapped_mat', 'class': 'Material', 'Stages': [{}, {}, {}, {}], 'cubemap': cubemap, 'materialTag0': 'beamng'}

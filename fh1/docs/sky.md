@@ -47,10 +47,24 @@ Directions are unit view vectors. The sun is `SunObjectPos`, the visible disc. T
 
 **Blending.** Every pass writes `sqrt(colour)`, and alpha blending happens on those stored values. The post pass squares them.
 
+**Bloom** (shaders `Add_HotExtract`, `GaussianBlurAccumX/Y` and `Add2Textures_UVScale`; CPU `sub_82435800`). It's added to the scene before the tone map: `c = scene + bloom`.
+- **Bright pass.** It runs on the exposed scene `x = scene · 2^EV`, with `L` its luminance: `e = (x · max(lower·L, upper·L + (lower − upper)·knee) / L − 1/255) · scale`.
+- **Blur.** Four levels follow at 1/2, 1/4, 1/8 and 1/16 of the bright pass's quarter-screen size. Each is blurred with a 7-tap kernel (weights 0.24095, 0.21264, 0.12200, 0.04488) and fed from the previous one.
+- **Combine.** `bloom = Σ weight_k · 0.2 · level_k`, with the bright pass counted as level −1.
+- **Where the values come from.**
+  - Cutoff, scale and the five weights come from the zone's entry in `dynamicpost.zip` `Tracks/Colorado/Bloom_Templates.xml`. `TimeOfDay.xml`'s `<bloom>` has only four weights, so it looks like a legacy copy.
+  - `TimeOfDayA.xml`'s `Bloom{Cutoff,Scale,UpperGradient}Multiplier` curves multiply those.
+  - `BloomLowerGradientMultiplier` has a base of 0, so it's taken as the value itself. That is inferred, as is which file wins.
+- **In practice.** Lower ≈ 0.2 and upper ≈ 2, so FH1 blooms a fifth of everything, plus twice the energy above the knee (1.5). That gives its milky glow around the sun.
+- **Persist.** Frame feedback of about 6%. The bake leaves it out.
+- **In the bake.** The bloom is computed on an equirectangular panorama. Blur sizes are converted to degrees with an assumed 90° horizontal field of view.
+
+**Exposure key.** The 1×1 key is a plain linear average of a 16-sample column: squared samples, centre-weighted by `tonemapWeightRange`. It's then smoothed over time. It isn't log-averaged or sqrt-encoded.
+
 **Tone map** (`Ribbon_00/TimeOfDay.xml`):
 - `out = sqrt(Hable(c · 2^EV) / Hable(white))`, using `filmicTone`'s parameters as Hable's A–F.
-- `EV` comes from `toneAdaptiveExposure`: its keys, divided by 255, are looked up against the scene's mean sqrt luminance, and `filmicTone.exposure` is added.
-- The bake has no scene to measure. It uses the sky's own mean between the horizon and 30°, which is an assumption.
+- `EV` comes from `toneAdaptiveExposure`: its keys, divided by 255, are looked up against the scene's mean linear luminance (see Exposure key), and `filmicTone.exposure` is added.
+- The bake has no scene to measure. It uses the sky's own mean between the horizon and 30°, which is an assumption. Below the horizon it continues the sky as it is at the horizon, fading to a ground colour from −10° to −30°, because a level without FH1's backdrop showed FH1's raw bottom band, or a flat grey, there.
 - In daylight this gives EV −0.49. The model then reproduces measured FH1 screenshot colours within about 10%, except the blue above 20° (FH1 is bluer there).
 - The zone colour-grade LUT and the brightness, contrast and desaturation matrix come after the tone map. The bake doesn't apply them.
 
