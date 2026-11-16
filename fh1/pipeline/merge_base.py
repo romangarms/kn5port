@@ -245,30 +245,6 @@ def main(B, D):
             st['placements the DLC has'] += 1
             continue
         out[(d, p)] = r
-    # A zone lists what is visible from its hex, so a Colorado hex beside a stage also draws Colorado's road over the border, on top of the
-    # DLC's own (asphalt flickering through dirt). Each hex is drawn by one track: Colorado draws of a mesh only Colorado has, placed in a
-    # hex the DLC has a zone for, lose their load bit (bit 31) and their placement record. A world mesh's record is at the origin, so its box
-    # centre decides; mesh z is opposite to zone z
-    full = cKDTree([(X0 + (c + .5) * 1.5 * R, Z0 + (r + .5 + .5 * (c % 2)) * np.sqrt(3) * R) for r in range(G.shape[0]) for c in range(G.shape[1])])
-    def dlc_hex(no, pos):
-        x, z = (pos[0], pos[2]) if abs(pos[0]) + abs(pos[2]) > 1 else (M[no][2][9], -M[no][2][11])
-        return G.flat[full.query((x, z))[1]] < n2
-    drop = lambda d, pos: d >= DB and int(T[d]) >= BASE_MESH and dlc_hex(int(T[d]), pos)
-    cwd = os.getcwd(); os.chdir(snap)
-    try:
-        sys.path.insert(0, snap); import zones as zr
-        for nz in used.values():
-            f = f'__R00Z{nz:05d}.pvsz'; b = bytearray(open(f'{D}/x/{f}', 'rb').read()); recs = zr.zone(f)
-            for i, x in enumerate(recs or ()):
-                o = 4 + 4 * (i + 1); v = struct.unpack_from('>I', b, o)[0]
-                if v >> 31 and drop(v & 0x7fffffff, x['pos']):
-                    struct.pack_into('>I', b, o, v & 0x7fffffff); st['colorado loads in dlc hexes cleared'] += 1
-            st['colorado zones unreadable'] += recs is None
-            open(f'{D}/x/{f}', 'wb').write(b)
-    finally:
-        os.chdir(cwd)
-    for k in [k for k, r in out.items() if drop(k[0], r['pos'])]:
-        del out[k]; st['colorado placements in dlc hexes dropped'] += 1
     pickle.dump(out, open(D + '/zonerec.pkl', 'wb'))
     st['colorado zones'] = len(used); st['files added'] = len(added)
     print(dict(st))
