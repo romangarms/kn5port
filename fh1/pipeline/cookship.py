@@ -4,7 +4,7 @@ Run after build3.py and one load of the level in BeamNG, with the game closed: p
 A rebuild wipes the cooked shapes.
 
 The zip holds the mod folder's contents at its root (gameplay/, levels/, lua/, scripts/), as BeamNG reads a mod zip. README_kn5port.txt
-stays out, as in the releases packed by hand. Files that are already compressed (.jpg, .png, .ogg) are stored, everything else deflated.
+is replaced by README_<level>.txt with credits, and info.json's description and authors by credits, in the zip only. Files that are already compressed (.jpg, .png, .ogg) are stored, everything else deflated.
 It is written beside the target and renamed at the end, so a failed run never leaves a half-written zip with the release's name."""
 import json, os, shutil, sys, time, zipfile
 from pathlib import Path
@@ -41,13 +41,57 @@ print('done', n, 'shapes', size >> 20, 'MB', stale, 'stale ->', level)
 if n < dae:
     print(f'warning: {dae - n} of {dae} shapes have no fresh cooked copy, so players cook them on first load. Load the level once, close BeamNG, run again')
 
+def credits(title):
+    """README_<level>.txt at the zip root: who made the original and who converted it. Named per level, as every mod's root shares one folder in game"""
+    from kn5port import __version__
+    return '\n'.join([
+        f'{title}',
+        '=' * len(title),
+        '',
+        'An unofficial fan conversion of Colorado from Forza Horizon (2012) for BeamNG.drive.',
+        'Not affiliated with or endorsed by Microsoft, Playground Games or Turn 10 Studios.',
+        '',
+        'ORIGINAL GAME',
+        '  Forza Horizon (2012), developed by Playground Games with Turn 10 Studios, published by Microsoft Studios.',
+        '  The map, models, textures and sounds are theirs. All rights belong to their owners.',
+        '',
+        'CONVERSION',
+        f'  Converted by Roman Garms with kn5port {__version__}, built with Claude Code (Anthropic).',
+        f'  kn5port: {beamng.REPO}',
+        '',
+        'INSTALL',
+        '  Put this .zip, unopened, in BeamNG.drive\'s mods folder (in the game: Mods > Open mods folder),',
+        '  then pick the level from Freeroam. The FH1 radio is a separate mod, fh1_radio.',
+        '',
+        'RIGHTS HOLDERS',
+        f'  To have this mod taken down, open an issue at {beamng.REPO}/issues.',
+        '',
+        f'Packed {time.strftime("%Y-%m-%d")}.',
+        ''])
+
+
+def release_info(raw):
+    """The level's info.json as the release shows it in the level picker: credits instead of the personal-copy notice"""
+    from kn5port import __version__
+    info = json.loads(raw)
+    info['description'] = 'Colorado from Forza Horizon (2012), converted to BeamNG.drive. Unofficial fan conversion, not affiliated with Microsoft or Playground Games.'
+    info['authors'] = f'Playground Games, Turn 10 Studios, Microsoft Studios (Forza Horizon). Converted by Roman Garms with kn5port {__version__}'
+    return json.dumps(info, indent=1)
+
+
 if ZIP:
     RELEASE.mkdir(exist_ok=True)
     out = RELEASE / f'{LVL}.zip'; tmp = out.with_suffix('.zip.part')
     files = sorted(p for p in mod.rglob('*') if p.is_file() and p.name not in SKIP)
+    info_path = level / 'info.json'; title = json.loads(info_path.read_text())['title']
     t0 = time.time(); raw = 0
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        z.writestr(f'README_{LVL}.txt', credits(title))
         for i, p in enumerate(files):
+            if p == info_path:
+                z.writestr(p.relative_to(mod).as_posix(), release_info(p.read_text()))
+                raw += p.stat().st_size
+                continue
             z.write(p, p.relative_to(mod).as_posix(), zipfile.ZIP_STORED if p.suffix.lower() in STORED else zipfile.ZIP_DEFLATED)
             raw += p.stat().st_size
             if i % 2000 == 0:
@@ -55,7 +99,7 @@ if ZIP:
     # Check before replacing the old release: every file there, and the level's own info.json reads back
     with zipfile.ZipFile(tmp) as z:
         names = set(z.namelist())
-        assert len(names) == len(files), 'zip lost files'
+        assert len(names) == len(files) + 1, 'zip lost files'
         json.loads(z.read(f'levels/{LVL}/info.json'))
     os.replace(tmp, out)
     tops = sorted({x.split('/')[0] for x in names})
