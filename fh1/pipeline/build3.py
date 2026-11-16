@@ -1471,6 +1471,10 @@ for f, cs in byfile.items():
         LV = tuple(range(rel_, 3)) if rel_ == len(have_) - 1 or isterr and rel_ == 1 else (rel_,)
         FIX = group_cell(gkey(c))
         near_ = rel_ == 0; base_ = (p, nr, r0, r1, vw, g)
+        # cut by cell only meshes the hex selection placed. HEXRING is by file, and a file can hold a mesh that isn't ground beside one that is:
+        # file 8385 holds road_plains_05_24_LOD00 and MidBridgeTerrain_LOD00, and cut to the road's cells, the ground under the Plains
+        # overpass lost every triangle at LOD0 and showed sky up close
+        gnd_ = no in HEXRING and is_ground(c)
         for si_, s in enumerate(m['secs']):
             p, nr, r0, r1, vw, g = base_
             T = rmb.tris(s['ib'], m['nv'], s['ints'][1])
@@ -1486,7 +1490,7 @@ for f, cs in byfile.items():
             if no in TRACE:
                 print('[trace]', no, 'section', si_, fx, 'tris', len(T), flush=True)
             sh_ = vertex_shade(no, slots, fx, m, s) if fx.startswith(('h_road', 'h_vblnd')) and vw is not None else None      # read per vertex, before hex_split
-            if HEXGROUND and no in HEXRING and (isterr or fx.startswith('h_road') or gamepath.MERGE and fx.startswith('h_vblnd')):     # only where
+            if HEXGROUND and gnd_ and (isterr or fx.startswith('h_road') or gamepath.MERGE and fx.startswith('h_vblnd')):     # only where
                 # FH1's hexes draw this ground. Objects in the same mesh (rock, props) read their UV1 from its vertex buffer, so they stay whole.
                 # In a merged track the blend decals too: Colorado's line decals (Object144, 900 m along Red Rock's road) ran over the DLC's dirt
                 cols_ = [a_ for a_ in (p, nr, r0, r1, vw, None if sh_ is None else sh_[:, None]) if a_ is not None]; w_ = np.cumsum([0] + [a_.shape[1] for a_ in cols_])
