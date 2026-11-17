@@ -1,7 +1,7 @@
 """Simple collision shapes for placed props, which BeamNG copies into physics once per object at about 41.5 bytes a triangle.
 A shape's own geometry is the model frame, z up. Everything returns a triangle mesh wound outward, as BeamNG collision is one-sided:
     boxes(P)    one box, or two stacked when the bottom is much wider than the top (barrier feet, a pole's crossarm)
-    generic(P)  a convex hull for small near-convex things (rocks, logs), else a skyline of boxes (buildings, tents)
+    generic(P, T) a convex hull for small near-convex things (rocks, logs), else a skyline of boxes (buildings, tents) turned to their walls
     rails(cells) walls swept along world-mesh barriers, guardrails and fences"""
 import collections
 import numpy as np
@@ -25,10 +25,15 @@ def sample(p_, step=.25):
     return np.concatenate(out) if out else np.zeros((0, 3))
 
 
-def points(groups, collide, farcut):
-    """points spread over the triangles that collide today, so thin walls and long triangles are seen"""
-    out = [sample(g[1][np.asarray(g[4]).reshape(-1, 3)]) for g in groups if collide in g[0][1] or collide == 2 and farcut in g[0][1]]
-    return np.concatenate(out) if out else np.zeros((0, 3))
+def triangles(groups, collide, farcut):
+    """the triangles (n, 3, 3) that collide today"""
+    out = [g[1][np.asarray(g[4]).reshape(-1, 3)] for g in groups if collide in g[0][1] or collide == 2 and farcut in g[0][1]]
+    return np.concatenate(out) if out else np.zeros((0, 3, 3))
+
+
+def points(T):
+    """points spread over triangles (n, 3, 3), so thin walls and long triangles are seen"""
+    return sample(T) if len(T) else np.zeros((0, 3))
 
 
 def _box(Q):
@@ -79,10 +84,14 @@ def hull(P):
 
 def skyline(P, cell):
     """columns of `cell` metres from each column's lowest to highest point, merged into rectangles of matching height. A column's lowest
-    point is its lowest surface, so eaves, carport roofs and the lintel over a doorway float and can be driven under"""
+    point is its lowest surface, so eaves, carport roofs and the lintel over a doorway float and can be driven under. Each box is trimmed to
+    its columns' points, so a coarse grid doesn't push it past the walls"""
     lo = P.min(0); ij = np.floor((P[:, :2] - lo[:2]) / cell).astype(int); nx, ny = ij.max(0) + 1
-    zmin = np.full((nx, ny), np.inf); zmax = np.full((nx, ny), -np.inf)
-    np.minimum.at(zmin, (ij[:, 0], ij[:, 1]), P[:, 2]); np.maximum.at(zmax, (ij[:, 0], ij[:, 1]), P[:, 2])
+    zmin = np.full((nx, ny), np.inf); zmax = np.full((nx, ny), -np.inf); at = (ij[:, 0], ij[:, 1])
+    np.minimum.at(zmin, at, P[:, 2]); np.maximum.at(zmax, at, P[:, 2])
+    xy0 = np.full((nx, ny, 2), np.inf); xy1 = np.full((nx, ny, 2), -np.inf)       # each column's points' extent, which its box is trimmed to
+    for k in (0, 1):
+        np.minimum.at(xy0[..., k], at, P[:, k]); np.maximum.at(xy1[..., k], at, P[:, k])
     full = np.isfinite(zmin); tol = max(.3, (P[:, 2].max() - lo[2]) / 10)
     qa = np.round(zmin / tol); qb = np.round(zmax / tol); used = ~full; out = []
     for i in range(nx):
@@ -97,7 +106,8 @@ def skyline(P, cell):
                 i1 += 1
             used[i:i1 + 1, j:j1 + 1] = True
             z0 = zmin[i:i1 + 1, j:j1 + 1].min(); z1 = max(zmax[i:i1 + 1, j:j1 + 1].max(), z0 + BOXMIN)
-            out.append((np.array([lo[0] + i * cell, lo[1] + j * cell, z0]), np.array([lo[0] + (i1 + 1) * cell, lo[1] + (j1 + 1) * cell, z1])))
+            a_ = xy0[i:i1 + 1, j:j1 + 1].reshape(-1, 2).min(0); b_ = np.maximum(xy1[i:i1 + 1, j:j1 + 1].reshape(-1, 2).max(0), a_ + BOXMIN)
+            out.append((np.r_[a_, z0], np.r_[b_, z1]))
     return out, float(sum((zmax[full] - zmin[full])) * cell * cell)
 
 
@@ -256,16 +266,77 @@ def rails(cells, pool=None):
     return out, (len(S), len(chains))
 
 
-def generic(P):
-    """('hull' or 'skyline', (vertices, triangle indices)) for any prop, or None when neither works"""
-    if len(P) < 4:
-        return None
+WALL_SHARE = .12               # a wall direction holding this share of the wall area gets its own frame
+VOTE_CELL = 1.; VOTE_R = 4.    # metres: points in a cell take the direction holding most wall area this near
+
+
+def wall_dirs(T):
+    """the main wall directions of triangles (n, 3, 3), as angles in degrees mod 90, most wall area first (at most 3), each triangle's
+    index into them (-1 for floors and roofs), and the triangles' areas"""
+    n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]); a = np.linalg.norm(n, axis=1); n = n / np.maximum(a, 1e-12)[:, None]; a = a / 2
+    w = (np.abs(n[:, 2]) < .3) & (a > 1e-4)
+    ang = np.degrees(np.arctan2(n[:, 1], n[:, 0])) % 90
+    h = np.bincount(np.floor(ang[w]).astype(int) % 90, a[w], 90); tot = h.sum(); h = sum(np.roll(h, k) for k in range(-2, 3)); out = []      # 5 degree windows
+    while tot > 0 and len(out) < 3:
+        k = int(np.argmax(h))
+        if out and h[k] < WALL_SHARE * tot:
+            break
+        d = (ang - k - .5 + 45) % 90 - 45; m = w & (np.abs(d) < 3)       # the peak's mean, to a fraction of a degree
+        out.append(float(k + .5 + np.average(d[m], weights=a[m])) % 90 if m.any() else k + .5)
+        h[[(k + d_) % 90 for d_ in range(-10, 11)]] = 0
+    lab = np.full(len(T), -1)
+    if out:
+        lab[w] = np.argmin([np.abs((ang[w] - d + 45) % 90 - 45) for d in out], 0)
+    return out, lab, a
+
+
+def _rot(deg):
+    c, s_ = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+    return np.array([[c, -s_, 0], [s_, c, 0], [0, 0, 1.]])
+
+
+def _skyline_fit(P):
     ext = np.ptp(P, 0); cell = float(np.clip(max(ext[:2]) / 24, .5, 2.))
     while True:
         bs, vol = skyline(P, cell)
         if len(bs) <= MAX_BOXES or cell > 8:
-            break
+            return bs, vol
         cell *= 1.4
+
+
+def oriented_skyline(P, T):
+    """skyline boxes in the frame of the walls. A building turned in its model frame, or with wings at an angle (Clear Springs' diner and
+    arcade, one 96 m prop), got a staircase of boxes reaching metres past its walls into the car park. Points go to the wall direction
+    holding most wall area near them, and each direction's points get their own skyline -> (vertices, triangle indices), column volume"""
+    dirs, lab, area = wall_dirs(T) if len(T) else ([], None, None)
+    if not dirs:
+        bs, vol = _skyline_fit(P)
+        return box_mesh(bs), vol
+    lp = np.zeros(len(P), int)
+    if len(dirs) > 1:
+        from scipy.spatial import cKDTree
+        g = np.floor(P[:, :2] / VOTE_CELL).astype(int); cells, inv = np.unique(g, axis=0, return_inverse=True)
+        cc = (cells + .5) * VOTE_CELL; c_ = T.mean(1)[:, :2]; score = np.zeros((len(cells), len(dirs)))
+        for i in range(len(dirs)):
+            wa = area[lab == i]
+            for k, nb in enumerate(cKDTree(c_[lab == i]).query_ball_point(cc, VOTE_R)):
+                score[k, i] = wa[nb].sum()
+        lp = np.argmax(score, 1)[inv.ravel()]
+    V = []; I = []; vol = 0.; nv = 0
+    for i, d in enumerate(dirs):
+        Q = P[lp == i]
+        if len(Q) < 4:
+            continue
+        R = _rot(d); bs, v_ = _skyline_fit(Q @ R); vol += v_       # Q @ R turns by -d, into the walls' frame
+        v, t = box_mesh(bs); I.append(t + nv); V.append(v @ R.T); nv += len(v)       # a turn keeps the winding
+    return (np.concatenate(V), np.concatenate(I)), vol
+
+
+def generic(P, T=()):
+    """('hull' or 'skyline', (vertices, triangle indices)) for any prop, or None when neither works. T: the triangles P was spread over"""
+    if len(P) < 4:
+        return None
+    ext = np.ptp(P, 0); cm, vol = oriented_skyline(P, np.asarray(T, float).reshape(-1, 3, 3))
     h = hull(P) if max(ext[:2]) < HULL_MAX else None
     if h is not None:
         try:
@@ -274,4 +345,4 @@ def generic(P):
             hv = 0
         if hv > 0 and vol / hv > CONVEX:
             return 'hull', h
-    return 'skyline', box_mesh(bs)
+    return 'skyline', cm

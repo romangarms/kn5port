@@ -2486,8 +2486,8 @@ def prop_shape(no, objs):
     allp = np.concatenate([g[1] for g in shape]); R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
     collide = None if all(o['smash'] for o in objs) or NOCOL.search(it['item']) else 2; cm = None
     if COLBOX and collide is not None and not KEEPMESH.search(it['item']):
-        P_ = colfit.points(shape, collide, FARCUT); had = sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1])
-        kind, cm = ('box', colfit.boxes(P_)) if BOXED.search(it['item']) and 2 * R_ < 16 else (colfit.generic(P_) or (None, None))
+        T_ = colfit.triangles(shape, collide, FARCUT); P_ = colfit.points(T_); had = sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1])
+        kind, cm = ('box', colfit.boxes(P_)) if BOXED.search(it['item']) and 2 * R_ < 16 else (colfit.generic(P_, T_) or (None, None))
         if cm is not None:
             n_ = sum(not o['smash'] for o in objs)
             stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (had - len(cm[1]) // 3)
