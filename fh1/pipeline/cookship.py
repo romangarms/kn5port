@@ -1,12 +1,13 @@
 """Copies BeamNG's cooked shapes into the level, next to their .dae files, as stock levels ship them. That skips the COLLADA import on load.
 Then packs the mod into fh1/release/<level>.zip, ready to upload.
-Run after build3.py and one load of the level in BeamNG, with the game closed: python cookship.py [fh1_colorado|fh1_redrock|...] [--no-zip].
+Run after build3.py and one load of the level in BeamNG, with the game closed: python cookship.py [fh1_colorado|fh1_redrock|...] [--version=v3] [--no-zip].
+--version names the zip <level>_<version>.zip. Its exact size and SHA-256 are printed at the end, for the release post.
 A rebuild wipes the cooked shapes.
 
 The zip holds the mod folder's contents at its root (gameplay/, levels/, lua/, scripts/), as BeamNG reads a mod zip. README_kn5port.txt
 is replaced by README_<level>.txt with credits, and info.json's description and authors by credits, in the zip only. Files that are already compressed (.jpg, .png, .ogg) are stored, everything else deflated.
 It is written beside the target and renamed at the end, so a failed run never leaves a half-written zip with the release's name."""
-import json, os, shutil, sys, time, zipfile
+import hashlib, json, os, shutil, sys, time, zipfile
 from pathlib import Path
 sys.path.insert(0, os.path.abspath('../..'))
 from kn5port import beamng
@@ -15,6 +16,7 @@ import buildq
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 LVL = args[0] if args else 'fh1_colorado'
 ZIP = '--no-zip' not in sys.argv
+VERSION = next((a.split('=', 1)[1] for a in sys.argv[1:] if a.startswith('--version=')), None)
 mods = Path(beamng.find_mods()); mod = mods / 'unpacked' / LVL; level = mod / 'levels' / LVL; cooked = mods.parent / 'temp' / 'levels' / LVL
 STORED = {'.jpg', '.jpeg', '.png', '.ogg'}
 SKIP = {beamng.NOTICE_FILE}
@@ -83,7 +85,7 @@ def release_info(raw):
 
 if ZIP:
     RELEASE.mkdir(exist_ok=True)
-    out = RELEASE / f'{LVL}.zip'; tmp = out.with_suffix('.zip.part')
+    out = RELEASE / (f'{LVL}_{VERSION}.zip' if VERSION else f'{LVL}.zip'); tmp = out.with_suffix('.zip.part')
     files = sorted(p for p in mod.rglob('*') if p.is_file() and p.name not in SKIP)
     info_path = level / 'info.json'; title = json.loads(info_path.read_text())['title']
     t0 = time.time(); raw = 0
@@ -106,3 +108,8 @@ if ZIP:
     os.replace(tmp, out)
     tops = sorted({x.split('/')[0] for x in names})
     print(f'zip {out}: {len(files)} files, {raw >> 20} MB -> {out.stat().st_size >> 20} MB, {time.time() - t0:.0f} s, top level {tops}')
+    h = hashlib.sha256()
+    with open(out, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 24), b''):
+            h.update(b)
+    print(f'{out.name}\n  size    {out.stat().st_size:,} bytes\n  SHA-256 {h.hexdigest()}')
