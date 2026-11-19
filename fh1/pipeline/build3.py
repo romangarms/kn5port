@@ -97,6 +97,10 @@ def samplers():
 SAMP = samplers()
 lap('wipe and load tables')
 
+# Surfaces a wheel may roll on or a car meets head on: instanced props of these keep their mesh as collision, and world meshes of these collide
+# with their LOD0 ('prk' and 'lik' cells), not LOD2. BLDG_CLRD_SouthBridge's LOD2 is 112 triangles up to 200 m long, which stood as a sloped
+# sheet across the I-70 median at (-1857, -3858) where LOD0 has a closed concrete wall, and pushed cars through it (the user, 2026-11-18)
+KEEPMESH = re.compile(r'bridge|ramp|jump|stage|platform|deck|road|tunnel|pavement|kerb|curb|car_?park|parking|dam(?![a-z])', re.I)
 NOUSE = re.compile(r'occluder|shadow|underground|reflect|^Ref_|proxy|collision|_CAGE', re.I)
 # The draw table's f flags above 0x3f tag a record's kind: 0x100 on all 1,103 TERR_CUBE records (FH1's occluder boxes, never visible ground,
 # among them Carson's town-block stand-ins), 0x80 on *_ShadowCaster_* meshes, 0x1000 on road markings and tyre marks. A mesh whose every
@@ -540,7 +544,16 @@ def vertex_shade(no, slots, fx, m, s):
     if t_:
         A = TX.get(t_)['src'][..., :3].mean(2) / 255; h_, w_ = A.shape
         u2 = box_uv(np.frombuffer(a[:, 24:28].tobytes(), '>u2').reshape(-1, 2).astype('f8') / 65535, s['fl'])
-        f = f * (.05 + .95 * ni.map_coordinates(A, [u2[:, 1] * h_ - .5, u2[:, 0] * w_ - .5], order=1, mode='nearest'))
+        ao_ = ni.map_coordinates(A, [u2[:, 1] * h_ - .5, u2[:, 0] * w_ - .5], order=1, mode='nearest')
+        # Some reads are wrong, and black: 8 sections' maps are blank, 15 read a 4 by 256 strip, and others land on the black between an
+        # atlas's islands (RedRock_Area01A_Terrain_LOD00_31 reads 0x408E at 0.12-0.46, 0.66-0.83, mostly off its islands). Open ground
+        # and roads are never near fully occluded, so a section with over 5% of its vertices below 0.05 keeps no AO: 377 of 15,534
+        # sections on Colorado. They drew as black ground and rock (the user, 2026-11-18). Only the section's vertices count, as the box is its own
+        sv_ = np.unique(rmb.tris(s['ib'], m['nv'], s['ints'][1]).ravel())
+        if A.max() < .02 or h_ != w_ or len(sv_) and (ao_[sv_] < .05).mean() > .05:
+            stats['ao_reads_dropped'] += 1
+            return f
+        f = f * (.05 + .95 * ao_)
     return f
 
 
@@ -1613,7 +1626,7 @@ for f, cs in byfile.items():
                         raster(Rock, g[T])
                 else:
                     lit_ = bool(lm or win)
-                    add('lit' if lit_ else 'pro', material(tid, alpha=opac, ao=ao, lm=lm, win=win, emis=emis, spec=sp_), p, nr, uv, T, uv1=u1)
+                    add(('lik' if lit_ else 'prk') if KEEPMESH.search(n) else 'lit' if lit_ else 'pro', material(tid, alpha=opac, ao=ao, lm=lm, win=win, emis=emis, spec=sp_), p, nr, uv, T, uv1=u1)
                     surf['prop_lit' if lit_ else 'prop'] += len(T); surf['windows'] += len(T) if win else 0
                 surf['ao'] += len(T) if ao else 0
 LV = (0, 1, 2); FIX = None; NM = {}
@@ -2378,6 +2391,7 @@ for rt_, recs in RACE.items():
 print('race layouts', len(RACEOBJ), 'routes,', sum(len(v) for v in RACEOBJ.values()), 'props from', len({no for v in RACEOBJ.values() for no, _ in v}), 'models')
 PLANT = PLANT_RE
 solid = 0; SOLIDS = collections.Counter(); INST = defaultdict(list)
+BAKED = defaultdict(list)      # (cell, category) -> [(model, rotation and scale, position)]: placements baked into cells, which collide as baked_colmesh fits them
 for no, it in list(defs.items()):
     if not it or PLANT.search(it['item']) or it['item'] not in rows:
         continue
@@ -2390,7 +2404,8 @@ for no, it in list(defs.items()):
             continue
         far_ = FARCUT if max(it['h'], it['w']) < 15 else 2                       # small objects stop at 800 m
         # 'lit' cells are TSStatics that core_environment lights at night, for lightmaps and glowing glass
-        cat_ = 'vis' if smash_ else 'lit' if lm_ is not None or no in GLOWING else 'pro'
+        # 'prb' and 'lib' cells hold only these placements, apart from the world's own 'pro' and 'lit' objects, as they collide with what baked_colmesh fits
+        cat_ = 'vis' if smash_ else 'lib' if lm_ is not None or no in GLOWING else 'prb'; carried_ = cat_ == 'vis'
         for lvl_, top_, g in [(((0,) if it['low'] else (0, 1, far_)), True, g) for g in it['groups']] + [((1, far_), False, g) for g in it['low']]:
             mat, pb, nb, uv, t, uv1, spec = g
             if lm_ is not None and spec['draw'] and top_:       # the lightmap is laid out for this mesh's UV1, not its LOD1's
@@ -2403,6 +2418,8 @@ for no, it in list(defs.items()):
                 continue
             key = np.floor((c[:2] + HALF) / CELL).astype(int); u = int(key[0]) * 1000 + int(key[1])
             cells[(u, cat_)][(mat, lvl_)].append((P, N_, uv, t.reshape(-1, 3), uv1))
+            if not carried_:        # the first cell a placement draws in carries its collision
+                BAKED[(u, cat_)].append((no, Rm, pos)); carried_ = True
             stats['pro'] += len(t) // 3; stats['own_lightmap_tris'] += len(t) // 3 if lm_ is not None else 0
         solid += 1
 print('pgeo problems', {k: v for k, v in stats.items() if k.startswith(('pgeo', 'proc'))}, LOSTSET.most_common(8))
@@ -2466,7 +2483,7 @@ def detail_sizes(R_, cat):
 # triangle: fences alone held 2.7M of the 8M instanced collision triangles. Thin and simple props (BOXED) get one or two boxes; the rest
 # a convex hull (rocks, logs) or a skyline of boxes (buildings, tents) from colfit.py, even where that isn't fewer triangles, as boxes
 # behave better in a crash than a detailed mesh. FH1_COLBOX=0 keeps
-# the meshes, for comparison. KEEPMESH names surfaces a wheel may roll on, where seams between boxes would be bumps
+# the meshes, for comparison. KEEPMESH (above) names surfaces a wheel may roll on, where seams between boxes would be bumps
 COLBOX = os.environ.get('FH1_COLBOX', '1') != '0'
 BOXED = re.compile(r'fence|wall|gate|railing|barrier|logwall|wood0|proc_cars|truckcab|pole|pylon|streetlight|lamppost|signs?(?![a-z])|sign_|'
                    r'(?<![a-z])bin[a-z]?(?![a-z])|bench|table|container|skip|haybale|crate|rack|hoarding|bollard', re.I)
@@ -2476,23 +2493,62 @@ NOCOL = re.compile(r'rope|BannerSingleLane', re.I)       # festival bunting, 35 
 # FH1_PROPFOREST=0 keeps TSStatics, for comparison
 PROPFOREST = os.environ.get('FH1_PROPFOREST', '1') != '0'; PROPDATA = {}
 KEEPSTATIC = {n for n, nm in NAMEOF.items() if nm in ('PLA_FARM_WindmillMetal_LOD00_', 'PLA_FARM_WindmillWood_LOD00_', 'GLOB_STFN_WindTurbine_02_LOD00_')}     # animated.py's OBJECTS
-KEEPMESH = re.compile(r'bridge|ramp|jump|stage|platform|deck|road|tunnel|pavement|kerb|curb|car_?park|parking|dam(?![a-z])', re.I)
+
+
+def prop_groups(no):
+    """model `no`'s groups with their detail levels, and its radius"""
+    it = defs[no]; far_ = FARCUT if max(it['h'], it['w']) < 15 else 2
+    shape = [((g[0], (0,) if it['low'] else (0, 1, far_)),) + tuple(g[1:]) for g in it['groups']] + [((g[0], (1, far_)),) + tuple(g[1:]) for g in it['low']]
+    allp = np.concatenate([g[1] for g in shape]); return shape, float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
+
+
+PROPFIT = {}
+
+
+def prop_fit(no):
+    """model `no`'s collision in its own frame -> (kind, (vertices, triangle indices) or None, the triangles that collide without a fit (n, 3, 3)).
+    The fit is None where the model keeps its mesh (KEEPMESH, FH1_COLBOX=0, or neither fit works); nothing collides for NOCOL"""
+    if no not in PROPFIT:
+        it = defs[no]; shape, R_ = prop_groups(no); kind = cm = None
+        T_ = np.zeros((0, 3, 3)) if NOCOL.search(it['item']) else colfit.triangles(shape, 2, FARCUT)
+        if COLBOX and len(T_) and not KEEPMESH.search(it['item']):
+            P_ = colfit.points(T_)
+            kind, cm = ('box', colfit.boxes(P_)) if BOXED.search(it['item']) and 2 * R_ < 16 else (colfit.generic(P_, T_) or (None, None))
+        PROPFIT[no] = (kind, cm, T_)
+    return PROPFIT[no]
 
 
 def prop_shape(no, objs):
     """write art/shapes/fh1/m<no>.dae, one shared shape for every placement of model `no` -> the TSStatics' collision type"""
-    it = defs[no]; far_ = FARCUT if max(it['h'], it['w']) < 15 else 2
-    shape = [((g[0], (0,) if it['low'] else (0, 1, far_)),) + tuple(g[1:]) for g in it['groups']] + [((g[0], (1, far_)),) + tuple(g[1:]) for g in it['low']]
-    allp = np.concatenate([g[1] for g in shape]); R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
+    it = defs[no]; shape, R_ = prop_groups(no)
     collide = None if all(o['smash'] for o in objs) or NOCOL.search(it['item']) else 2; cm = None
-    if COLBOX and collide is not None and not KEEPMESH.search(it['item']):
-        T_ = colfit.triangles(shape, collide, FARCUT); P_ = colfit.points(T_); had = sum(len(g[4]) // 3 for g in shape if collide in g[0][1] or FARCUT in g[0][1])
-        kind, cm = ('box', colfit.boxes(P_)) if BOXED.search(it['item']) and 2 * R_ < 16 else (colfit.generic(P_, T_) or (None, None))
+    if collide is not None:
+        kind, cm, T_ = prop_fit(no)
         if cm is not None:
             n_ = sum(not o['smash'] for o in objs)
-            stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (had - len(cm[1]) // 3)
+            stats[f'col_{kind}_shapes'] += 1; stats['col_tris_saved'] += n_ * (len(T_) - len(cm[1]) // 3)
     col = queue_lod(sdir / 'fh1' / f'm{no}.dae', shape, np.zeros(3), detail_sizes(R_, 'pro'), collide, colmesh=cm)
     return 'Collision Mesh' if col else 'None'
+
+
+def baked_colmesh(placed):
+    """the collision of the placements baked into one cell [(model, rotation and scale, position)], in world space, as instanced props
+    collide: colfit's boxes or hull, or the model's own triangles where it keeps its mesh -> (vertices, triangle indices) or None.
+    Baked placements (mirrored, at the map's edge, or with their own lightmap) collided with their drawn LOD2 instead. A guardrail's is
+    one sheet, which pushed a car met from behind through it, onto the I-70 median at (-1857, -3858) (the user, 2026-11-18). A mirrored
+    placement turns its triangles inside out, so their winding is reversed to keep the boxes' faces outward"""
+    V = []; I = []; o_ = 0
+    for no, Rm, pos in placed:
+        _, cm, T_ = prop_fit(no)
+        v, i = cm if cm is not None else (T_.reshape(-1, 3), np.arange(3 * len(T_)))
+        if not len(v):
+            continue
+        i = np.asarray(i).reshape(-1, 3)
+        if np.linalg.det(Rm) < 0:
+            i = i[:, ::-1]
+        V.append(np.asarray(v) @ Rm.T + pos); I.append(i.ravel() + o_); o_ += len(v)
+        stats['col_baked_placements'] += 1; stats['col_baked_tris'] += len(i)
+    return (np.concatenate(V), np.concatenate(I)) if V else None
 
 
 SHAPE_CT = {}
@@ -2543,8 +2599,9 @@ for (u, cat), mm in cells.items():
     R_ = float(np.linalg.norm(allp.max(0) - allp.min(0))) / 2
     # a mesh drawn at every LOD is cooked once per detail level, so those go in a one-detail shape: one copy instead of three
     whole = [((g[0][0], (0,)),) + tuple(g[1:]) for g in groups if {0, 1, 2} <= set(g[0][1])]
-    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 0, 'pro': 2, 'lit': 2}.get(cat)
+    lods = [g for g in groups if not {0, 1, 2} <= set(g[0][1])]; collide = {'col': 0, 'pro': 2, 'lit': 2, 'prb': 2, 'lib': 2, 'prk': 0, 'lik': 0}.get(cat)
     rail = RAILMESH.get(u) if cat == 'bar' else None
+    baked_ = baked_colmesh(BAKED.get((u, cat), ())) if COLBOX and cat in ('prb', 'lib') else None
     if cat == 'bar' and not COLBOX:
         collide = 2
     for fn, gs, single in ((f'c{u}_{cat}', lods, False), (f'c{u}_{cat}f', whole, True)):
@@ -2556,12 +2613,18 @@ for (u, cat), mm in cells.items():
             cm = rail; collide = 0; stats['col_rail_tris'] += len(rail[1]) // 3; rail = None
         elif cat == 'bar' and COLBOX:
             collide = None
+        elif baked_ is not None:        # likewise the baked placements' fitted collision
+            cm = baked_; collide = 0; baked_ = None
+        elif COLBOX and cat in ('prb', 'lib'):
+            collide = None
         col = queue_lod(sdir / 'fh1' / f'{fn}.dae', gs, o_, sizes[2:] if single else sizes, 0 if single and collide is not None else collide, colmesh=cm)
         ct = 'Collision Mesh' if col else 'None'
         items.append({'class': 'TSStatic', 'name': f'fh1_{fn}', '__parent': 'fh1', 'shapeName': f'{rel}/art/shapes/fh1/{fn}.dae',
                       'position': [float(x) for x in o_], 'collisionType': ct, 'decalType': ct,
-                      **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if cat == 'lit' else {})})
+                      **({'useInstanceRenderData': True, 'instanceColor': [0, 0, 0, 1], 'nightEmissive': '1'} if cat in ('lit', 'lib', 'lik') else {})})
     METRIC.append((org, R_, cat, [sum(len(g[4]) // 3 for g in groups if lv in g[0][1]) for lv in range(3)]))
+print('world meshes colliding at LOD0 (KEEPMESH)', sum(len(t_) // 3 for (u_, c_), mm_ in cells.items() if c_ in ('prk', 'lik') for (m_, lv_), ps_ in mm_.items() if 0 in lv_ for *_, t_, _ in ps_), 'triangles')
+print('baked placements', stats['col_baked_placements'], 'collide with', stats['col_baked_tris'], 'fitted triangles')
 print('rail collision', RAIL_CHAINS, 'walls from', RAIL_SEGS, 'pieces,', stats['col_rail_tris'], 'triangles, for', sum(len(t) for v in RAILS.values() for t in v), 'barrier triangles at LOD0')
 lap('shapes queued')
 for f_ in PENDING:

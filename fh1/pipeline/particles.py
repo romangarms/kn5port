@@ -29,7 +29,7 @@ ROOT = f'/levels/{LVL}/art/particles'
 # Wake distances in metres, chosen for how far each can be seen. _Composite_ entries are expanded into the effects they list
 AMBIENT = [(re.compile(r'AMB_Falling_Leaf_'), 250), (re.compile(r'AMB_Road_Dust$'), 400), (re.compile(r'_Composite_CampFire$'), 800), (re.compile(r'AMB_Lantern'), 2500),
            (re.compile(r'_Composite_(Fountain|Ind_Chimney_Smoke)$'), 1500), (re.compile(r'AMB_Birds_Flocking'), 600), (re.compile(r'AMB_Balloon'), 1500),
-           (re.compile(r'AMB_Camera_Flash$'), 400), (re.compile(r'_Composite_Flare(_\d)?$'), 800), (re.compile(r'_Composite_(MainStage|SubStage)$'), 1500)]
+           (re.compile(r'_Composite_Flare(_\d)?$'), 800), (re.compile(r'_Composite_(MainStage|SubStage)$'), 1500)]
 # Rate factors, chosen by eye. Bird flocks were left out once, when the user found them out of bounds; since placements were fixed they stand 10 to
 # 80 m from roads. At FH1's rates the reservoir's 98 flocks hold about 8000 birds and would take the whole particle budget
 THIN = [(re.compile(r'AMB_Birds_Flocking'), .25)]
@@ -221,11 +221,11 @@ def to_b(q):
     return np.array([q[0], -q[2], q[1]])
 
 
-# Event beacons, not scenery: the 88 coloured ground flares (_Composite_Flare*, GameplayID '<event>_flare', named fx_activationzone_*) belong to
-# FH1's game code, which draws them where an event is offered. Their authored spots match neither their own event's start nor its route, often
-# kilometres off. Placed there, they stood on roads in free roam and read as grey sparklers by day (the user, 2026-11-16). Same reasoning as
+# Gameplay effects, not scenery: every emitter with a GameplayID is one FH1's game code fires. 88 are coloured event ground flares
+# (_Composite_Flare*, GameplayID '<event>_flare'), drawn where an event is offered; their authored spots match neither their event's start nor its
+# route, often kilometres off. 44 are speed-camera flashes (AMB_Camera_Flash, GameplayID 'speed_camera_NN_left/right'), fired when you pass the
+# camera. Placed as scenery, both stood by roads and read as grey sparklers by day (the user, 2026-11-16 and 2026-11-18). Same reasoning as
 # build3's MARKER models
-GAMEPLAY_FLARE = re.compile(r'_flare$', re.I)
 
 
 def gid(e):
@@ -238,7 +238,7 @@ scene = []
 for e in root:
     eff = e.find('Effect'); pos = e.find('Position'); o = e.find('Orientation')
     dist = next((f for r, f in AMBIENT if r.match(eff.get('value'))), None) if eff is not None else None
-    if dist is None or pos is None or GAMEPLAY_FLARE.search(gid(e)):
+    if dist is None or pos is None or gid(e):
         continue
     X, Y, Z = (v3(o.find(k)) for k in ('XAxis', 'YAxis', 'ZAxis')) if o is not None else np.eye(3)
     name = eff.get('value'); when = None; subs = [(name, np.zeros(3))]
