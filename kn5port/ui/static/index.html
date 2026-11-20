@@ -718,7 +718,7 @@ $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port
 
 // ---- Forza Horizon 1 tab ----------------------------------------------------------------------------------
 const fh = { s: null, job: null, chunk: null, radio: null, adv: false, polling: false, loading: false };
-const FH_STAGES = { python: "Set up Python", extract: "Copy game files", prepare: "Read map tables", rally: "Read rally tables", build: "Build level", radio: "Radio mod" };
+const FH_STAGES = { python: "Set up Python", extract: "Copy game files", dlc: "Copy DLC files", prepare: "Read map tables", rally: "Read rally tables", build: "Build level", radio: "Radio mod" };
 const gb = (x) => x == null ? "?" : x >= 100 ? `${Math.round(x)} GB` : `${x.toFixed(1)} GB`;
 const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
@@ -817,15 +817,17 @@ function fhJobHtml(j) {
 
 // the Rally Expansion (beta): where its DLC is, under the build choices when it's picked
 function fhDlcHtml(s, busy) {
-  const d = s.dlc_source, ok = !!d.path, dis = busy ? "disabled" : "";
-  const status = ok ? "✓ " + esc(d.why) : s.dlc ? "✕ " + esc(d.why) : "Install the DLC in Xenia (File > Install Content), then pick Xenia's content folder.";
-  const after = !ok ? "" : s.rally_prepared ? "Rally tables already read."
-    : `kn5port will read its tables (about ${gb(s.need.rally)}) into the work folder's <code>dirt</code>.`;
+  const d = s.dlc_source, ok = !!(d.path || d.package), dis = busy ? "disabled" : "";
+  const status = ok ? "✓ " + esc(d.why) : s.dlc ? "✕ " + esc(d.why) : "Pick the DLC's package file (off a console or USB drive), or Xenia's content folder if it's installed there.";
+  const copy = d.package && !d.copied ? `kn5port will copy its files (about ${gb(s.need.dlc)}) into the work folder's <code>dlc</code>` : "";
+  const read = s.rally_prepared ? "" : `read its tables (about ${gb(s.need.rally)}) into the work folder's <code>dirt</code>`;
+  const after = !ok ? "" : copy ? copy + (read ? ", then " + read : "") + "."
+    : read ? `kn5port will ${read}.` : "Rally tables already read.";
   return `<div class="box" style="margin:4px 0 14px">
     <div class="note warnline" style="margin:0 0 8px"><b>Beta.</b> The Rally Expansion isn't fully working yet: expect missing or misplaced pieces, and changes between kn5port versions.</div>
     <label class="muted">Your copy of the Rally Expansion DLC</label>
-    <div class="field" style="margin-top:4px"><input type="text" id="fhDlc" value="${esc(s.dlc)}" placeholder="${esc(ok && !s.dlc ? d.path : "Xenia's content folder, or the DLC package's Media folder")}" ${dis}>
-      <button class="secondary" data-pick="dlc" ${dis}>Folder…</button></div>
+    <div class="field" style="margin-top:4px"><input type="text" id="fhDlc" value="${esc(s.dlc)}" placeholder="${esc(ok && !s.dlc ? d.path || d.package : "The DLC package file, or Xenia's content folder")}" ${dis}>
+      <button class="secondary" data-pick="dlc" ${dis}>Folder…</button><button class="secondary" data-pick="dlcfile" ${dis}>Package file…</button></div>
     <div class="srcline ${ok ? "ok" : s.dlc ? "bad" : ""}"><span class="k">${status}</span>${after ? `<span class="muted">${after}</span>` : ""}</div>
   </div>`;
 }
@@ -838,6 +840,7 @@ function fhRender() {
   const c = s.chunks.find((x) => x.key === fh.chunk) || s.chunks[0];
   const steps = srcOk ? [!s.extracted && `copy about ${s.need.game} GB of game files out of the ${src.kind === "god" ? "GOD package" : "ISO"}`,
     !s.prepared && "read the map's tables (about 3 minutes, once)",
+    c.dlc && s.dlc_source.package && !s.dlc_source.copied && `copy about ${s.need.dlc} GB of DLC files out of its package`,
     c.dlc && (!s.rally_prepared || !s.prepared) && "read the Rally Expansion's tables (once)", `build ${c.name}`, fh.radio && "build the radio mod"].filter(Boolean) : [];
   $("#fh").innerHTML = `
     <div><h1>Forza Horizon 1 <small>Colorado → BeamNG</small></h1>
@@ -921,9 +924,10 @@ $("#fh").addEventListener("click", async (e) => {
   if (pick) {
     try {
       const start = pick === "work" ? $("#fhWork").value || fh.s.work_default
-        : pick === "dlc" ? $("#fhDlc").value || fh.s.dlc_source.path || "" : $("#fhGame").value;
-      const r = await api(pick === "file" ? "/api/pick-file" : "/api/pick-folder", { start });
-      if (r.path) await fhSave(pick === "work" ? { fh1_work: r.path } : pick === "dlc" ? { fh1_dlc: r.path } : { fh1_game: r.path });
+        : pick.startsWith("dlc") ? $("#fhDlc").value || fh.s.dlc_source.path || "" : $("#fhGame").value;
+      const file = pick === "file" || pick === "dlcfile";
+      const r = await api(file ? "/api/pick-file" : "/api/pick-folder", { start, kind: pick === "dlcfile" ? "any" : "disc" });
+      if (r.path) await fhSave(pick === "work" ? { fh1_work: r.path } : pick.startsWith("dlc") ? { fh1_dlc: r.path } : { fh1_game: r.path });
     } catch (err) { alert(err.message); }
     return;
   }

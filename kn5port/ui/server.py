@@ -479,7 +479,8 @@ def make_handler(app, port_ref):
                     return self._send(200, {"path": path or ""})
                 if u.path == "/api/pick-file":
                     start = str(body.get("start") or "")
-                    path = app.pick_file(start) if app.pick_file else pick_tk(start, file=True)
+                    kind = "any" if body.get("kind") == "any" else "disc"
+                    path = app.pick_file(start, kind) if app.pick_file else pick_tk(start, file=True, kind=kind)
                     return self._send(200, {"path": path or ""})
                 if u.path == "/api/update/check":
                     app.updater.check()

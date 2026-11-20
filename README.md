@@ -55,8 +55,8 @@ included, come as a separate mod that works on any map.
 
 Point it at a Games on Demand folder, a disc image (`.iso`) or extracted files. Then build the whole 16 km
 map (about 10 minutes, 3.3 GB) or a quick 4 km chunk around Red Rock or Clear Springs. The first time, the app
-offers to download what it needs, about 100 MB. If you have the Rally Expansion DLC installed in Xenia, you can
-also build its version of Colorado with the rally stages; that one is a beta and not fully working yet. See [`fh1/`](fh1/README.md) for how it works.
+offers to download what it needs, about 100 MB. If you have the Rally Expansion DLC, as its original package or
+installed in Xenia, you can also build its version of Colorado with the rally stages; that one is a beta and not fully working yet. See [`fh1/`](fh1/README.md) for how it works.
 
 <table>
 <tr>

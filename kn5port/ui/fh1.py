@@ -9,7 +9,8 @@ A conversion runs the fh1/pipeline scripts as subprocesses, from a copy of the p
 4. build     build3.py and its post-build scripts, into <mods>/unpacked/<level>
 5. radio     radio.py, the separate fh1_radio mod (optional)
 
-The Rally Expansion (chunk coloradodirt) is its own track, read from the DLC package's Media folder, and builds from its own
+The Rally Expansion (chunk coloradodirt) is its own track, read from the DLC package's Media folder (Xenia's install of
+it, or one copied out of the original STFS package into <work>/dlc first: the "dlc" step), and builds from its own
 work folder <work>/dirt. Its prepare step merges in base Colorado's tables, so Colorado's are prepared first.
 """
 import ctypes
@@ -19,6 +20,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -45,6 +47,8 @@ RALLY_DIR = "dirt"          # the Rally Expansion's work folder, under the main 
 RALLY_PREPARED_GB = 2.5
 RALLY_FILES = ("DLCZips/ColoradoDirt_pri_65.zip", "DLCZips/1600_pri_65.zip")
 RALLY_TITLE = "4D5309C9"    # FH1's title id; its DLC packages sit in <content>/4D5309C9/00000002/<package>/Media
+DLC_DIR = "dlc"             # where an STFS package's files are copied out to, under the work folder
+DLC_GB = 1.2                # the Rally Expansion package's files
 PACKAGES = [("numpy", "numpy"), ("scipy", "scipy"), ("numba", "numba"), ("PIL", "pillow")]
 GAME_GB = 4.2           # the part of media/ the pipeline reads
 PREPARED_GB = 2.8       # x/, tables, caches
@@ -135,35 +139,82 @@ def _is_rally_media(p):
     return all((p / f).is_file() for f in RALLY_FILES)
 
 
+RALLY_ZIP = "media/dlczips/coloradodirt_pri_65.zip"
+
+
+def _rally_package(f):
+    """(True, why) if this file is the Rally Expansion's STFS package, else (False, why) or None if it isn't a package"""
+    info = xbox.stfs_info(f)
+    if not info:
+        return None
+    if info["title_id"] != RALLY_TITLE:
+        return False, f"An Xbox 360 content package, but not Forza Horizon's: {info['name'] or info['title_id']}."
+    try:
+        s = xbox.Stfs(f)
+        try:
+            ok = any(p.lower() == RALLY_ZIP for p, _, _ in s.files())
+        finally:
+            s.close()
+    except (OSError, xbox.XboxError, struct.error, IndexError) as e:
+        return False, f"A Forza Horizon package, but it couldn't be read: {e}"
+    if not ok:
+        return False, f"A Forza Horizon DLC package, but not the Rally Expansion: {info['name'] or Path(f).name}."
+    return True, f"The Rally Expansion package ({info['magic'].strip()}): kn5port copies its files out before building."
+
+
 def detect_dlc(path):
-    """the Rally Expansion's Media folder from the path given: that folder, the package folder above it, FH1's
-    00000002 folder, or a Xenia content or Xenia folder. {"path": the Media folder or None, "why": what was found}"""
+    """the Rally Expansion from the path given. {"path": its Media folder or None, "package": its STFS package file or
+    None, "why": what was found}. A folder can be the Media folder, the package folder above it, FH1's 00000002 folder,
+    a Xenia content or Xenia folder, or a console drive's Content folder; it can also hold the package file itself."""
     path = str(path or "").strip().strip('"')
+    none = {"path": None, "package": None, "why": ""}
     if not path:
-        return {"path": None, "why": ""}
+        return none
     p = Path(path)
     if p.is_file():
-        return {"path": None, "why": "This is a single file. If it's the DLC package copied off a console, install it in Xenia "
-                                     "(File > Install Content), then pick Xenia's content folder."}
+        r = _rally_package(p)
+        if r and r[0]:
+            return {**none, "package": str(p), "why": r[1]}
+        return {**none, "why": r[1] if r else "This file isn't an Xbox 360 content package."}
     if not p.is_dir():
-        return {"path": None, "why": "This folder doesn't exist."}
+        return {**none, "why": "This folder doesn't exist."}
+    roots = [p]
+    for sub in (RALLY_TITLE, "content", "Content", "Content/0000000000000000", "0000000000000000"):
+        roots += [p / sub / RALLY_TITLE / "00000002"] if sub != RALLY_TITLE else [p / sub, p / sub / "00000002"]
+    roots = [r for r in dict.fromkeys(roots) if r.is_dir()]
     cands = [p, p / "Media"]
-    for root in (p, p / RALLY_TITLE, p / RALLY_TITLE / "00000002", p / "content" / RALLY_TITLE / "00000002"):
+    for root in roots:
         try:
-            if root.is_dir():
-                cands += [q / "Media" for q in root.iterdir() if q.is_dir()]
+            cands += [q / "Media" for q in root.iterdir() if q.is_dir()]
         except OSError:
             pass
     for c in cands:
         if _is_rally_media(c):
-            return {"path": str(c), "why": "Found the Rally Expansion."}
-    return {"path": None, "why": "No Rally Expansion here: its package's Media folder holds DLCZips\\ColoradoDirt_pri_65.zip."}
+            return {**none, "path": str(c), "why": "Found the Rally Expansion."}
+    other = None
+    for root in roots:
+        try:
+            files = [q for q in root.iterdir() if q.is_file() and q.stat().st_size > 0x10000]
+        except OSError:
+            continue
+        for q in files:
+            r = _rally_package(q)
+            if r and r[0]:
+                return {**none, "package": str(q), "why": r[1]}
+            other = other or (r and r[1])
+    return {**none, "why": other or "No Rally Expansion here: neither its package file, nor its Media folder with "
+                                    "DLCZips\\ColoradoDirt_pri_65.zip."}
 
 
 def default_dlc():
     """the Rally Expansion where Xenia installs it by default, if it's there"""
     xenia = Path(os.path.expanduser("~")) / "Documents" / "Xenia"
     return detect_dlc(xenia)["path"] if xenia.is_dir() else None
+
+
+def _package_key(f):
+    st = Path(f).stat()
+    return f"{Path(f)}|{st.st_size}|{int(st.st_mtime)}"
 
 
 def beamng_running():
@@ -217,17 +268,48 @@ class FH1:
         return self.work() / RALLY_DIR
 
     def dlc(self):
-        """the Rally Expansion: what the setting points at, else Xenia's default place"""
+        """the Rally Expansion: what the setting points at, else Xenia's default place. "path" is the Media folder the
+        pipeline reads; for a package it's the copy in <work>/dlc once copied out ("copied"), until then None"""
         d = detect_dlc(self.settings.get("fh1_dlc"))
-        if not d["path"] and not self.settings.get("fh1_dlc"):
+        if not d["path"] and not d["package"] and not self.settings.get("fh1_dlc"):
             found = default_dlc()
             if found:
-                d = {"path": found, "why": "Found the Rally Expansion in Xenia's content folder."}
+                d = {"path": found, "package": None, "why": "Found the Rally Expansion in Xenia's content folder."}
+        d["copied"] = False
+        if d["package"]:
+            out = self.work() / DLC_DIR
+            mark = _read_json(out / ".kn5port-source.json")
+            media = out / mark.get("media", "Media")
+            if mark.get("key") == _package_key(d["package"]) and _is_rally_media(media):
+                d["path"], d["copied"] = str(media), True
         return d
 
-    def rally_prepared(self, game):
+    def copy_dlc(self, package, progress=None, cancelled=lambda: False):
+        """copy an STFS package's files into <work>/dlc; -> (its Media folder, files copied)"""
+        out = self.work() / DLC_DIR
+        if out.exists():
+            shutil.rmtree(out)
+        pkg = xbox.Stfs(package)
+        try:
+            zipped = next((p for p, _, _ in pkg.files() if p.lower() == RALLY_ZIP), None)
+            if not zipped:
+                raise RuntimeError("This package isn't the Rally Expansion: it has no Media/DLCZips/ColoradoDirt_pri_65.zip.")
+            n = pkg.extract(out, progress=progress, cancelled=cancelled)
+        finally:
+            pkg.close()
+        media = zipped.split("/")[0]
+        if not _is_rally_media(out / media):
+            raise RuntimeError("The package's files were copied, but its Media folder lacks the Rally Expansion's zips.")
+        (out / ".kn5port-source.json").write_text(json.dumps({"key": _package_key(package), "media": media}))
+        return str(out / media), n
+
+    def dlc_ok(self, d=None):
+        d = d or self.dlc()
+        return bool(d["path"] or d["package"])
+
+    def rally_prepared(self, game, d=None):
         """the Rally Expansion's tables are in <work>/dirt, for this game copy and DLC, merged with base Colorado's"""
-        w, dlc = self.rally_work(), self.dlc()["path"]
+        w, dlc = self.rally_work(), (d or self.dlc())["path"]
         if not (game and dlc and all((w / f).exists() for f in PREPARED_FILES) and (w / "merge.json").exists()):
             return False
         mark = _read_json(w / "prepared.json")
@@ -276,6 +358,7 @@ class FH1:
             info = mods / "unpacked" / lvl / "levels" / lvl / "info.json"
             levels[key] = int(info.stat().st_mtime) if info.exists() else 0
         py = interpreter()
+        dlc = self.dlc()
         s = {
             "game": self.settings.get("fh1_game", ""), "work": str(work), "work_default": str(default_work()),
             "source": det, "extracted": bool(game), "prepared": self.prepared(game),
@@ -287,10 +370,10 @@ class FH1:
             "levels": levels, "radio": (mods / "unpacked" / "fh1_radio").exists(),
             "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5], "play_ram": c[6],
                         "beta": c[0] in BETA, "dlc": c[0] == RALLY} for c in CHUNKS],
-            "dlc": self.settings.get("fh1_dlc", ""), "dlc_source": self.dlc(),
-            "rally_prepared": self.rally_prepared(game),
+            "dlc": self.settings.get("fh1_dlc", ""), "dlc_source": dlc,
+            "rally_prepared": self.rally_prepared(game, dlc),
             "need": {"game": GAME_GB, "prepared": PREPARED_GB, "radio": RADIO_GB, "cache": CACHE_GB,
-                     "rally": RALLY_PREPARED_GB},
+                     "rally": RALLY_PREPARED_GB, "dlc": DLC_GB},
             "job": self.job.view(len(self.job.lines)) if self.job else None,
         }
         s["disk"] = {c[0]: {r: self.disk(s, c[0], r == "radio") for r in ("plain", "radio")} for c in CHUNKS}
@@ -302,6 +385,8 @@ class FH1:
         work = (0 if s["extracted"] else GAME_GB) + (0 if s["prepared"] else PREPARED_GB) + CACHE_GB
         if chunk == RALLY:      # its own tables and caches, in <work>/dirt
             work += (0 if s["rally_prepared"] else RALLY_PREPARED_GB) + CACHE_GB
+            d = s["dlc_source"]
+            work += DLC_GB if d["package"] and not d["copied"] else 0      # a package's files, copied out
         c = CHUNK.get(chunk)
         level = c[4] if c else 0
         mods = level + (RADIO_GB if radio and not s["radio"] else 0)
@@ -330,8 +415,8 @@ class FH1:
             out.append("BeamNG.drive wasn't found. Set its install folder under Folders: the folder that holds content\\levels.")
         if opts.get("chunk") not in CHUNK:
             out.append("Pick which part of the map to build.")
-        if opts.get("chunk") == RALLY and not s["dlc_source"]["path"]:
-            out.append("Pick your copy of the Rally Expansion DLC: its package's Media folder, or Xenia's content folder.")
+        if opts.get("chunk") == RALLY and not self.dlc_ok(s["dlc_source"]):
+            out.append("Pick your copy of the Rally Expansion DLC: its package file, or Xenia's content folder.")
         if beamng_running():
             out.append("Close BeamNG first: building replaces the level's files, which BeamNG keeps open.")
         d = self.disk(s, opts.get("chunk"), opts.get("radio"))
@@ -477,10 +562,19 @@ class Job:
         game = f.game_dir(det)
         prepared = f.prepared(game) and not self.opts.get("force_prepare")
         rally = self.opts.get("chunk") == RALLY
-        dlc = f.dlc()["path"] if rally else None
-        rally_prepared = rally and prepared and f.rally_prepared(game)      # it merges in Colorado's tables, so it follows them
-        self.stages = (["extract"] if not game else []) + (["prepare"] if not prepared else []) + \
-            (["rally"] if rally and not rally_prepared else []) + ["build"] + (["radio"] if self.opts.get("radio") else [])
+        dsrc = f.dlc() if rally else None
+        dlc = dsrc["path"] if rally else None
+        rally_prepared = rally and prepared and f.rally_prepared(game, dsrc)      # it merges in Colorado's tables, so it follows them
+        self.stages = (["extract"] if not game else []) + (["dlc"] if rally and dsrc["package"] and not dsrc["copied"] else []) + \
+            (["prepare"] if not prepared else []) + (["rally"] if rally and not rally_prepared else []) + ["build"] + \
+            (["radio"] if self.opts.get("radio") else [])
+        last = [0.0]
+
+        def prog(done, total, path):
+            self.progress = done / max(total, 1)
+            if time.time() - last[0] > 2:
+                last[0] = time.time()
+                self.say(f"  {self.progress * 100:4.0f}%  {path}")
 
         if not game:
             self.stage = "extract"
@@ -488,13 +582,6 @@ class Job:
             self.say(f"Copying the game files the converter needs out of the {det['kind'].upper()} into {game}")
             g = xbox.open_game(det["path"])
             try:
-                last = [0.0]
-
-                def prog(done, total, path):
-                    self.progress = done / max(total, 1)
-                    if time.time() - last[0] > 2:
-                        last[0] = time.time()
-                        self.say(f"  {self.progress * 100:4.0f}%  {path}")
                 n = g.extract(game, lambda p: bool(WANT.match(p)), prog, lambda: self._cancel)
             finally:
                 g.close()
@@ -502,6 +589,14 @@ class Job:
                 raise RuntimeError("This copy has no media/tracks/colorado/bin.zip, so it isn't Forza Horizon (2012), "
                                    "or it's incomplete.")
             (game / ".kn5port-source.json").write_text(json.dumps({"key": _source_key(det)}))
+            self.progress = None
+            self.say(f"Copied {n} files.")
+
+        if "dlc" in self.stages:
+            self.stage = "dlc"
+            self.say(f"Copying the Rally Expansion's files out of {dsrc['package']} into {work / DLC_DIR}, "
+                     "checking every block's hash")
+            dlc, n = f.copy_dlc(dsrc["package"], prog, lambda: self._cancel)
             self.progress = None
             self.say(f"Copied {n} files.")
 
@@ -566,15 +661,17 @@ class Job:
         self.say(f"Done. Fully restart BeamNG, then pick \"{CHUNK[key][2]}\" (level {lvl}) from the level list.")
 
 
-def pick_tk(start="", file=False):
-    """a native folder or file dialog through tkinter, for the browser version of the app"""
+def pick_tk(start="", file=False, kind="disc"):
+    """a native folder or file dialog through tkinter, for the browser version of the app. kind "any" for a file
+    with no extension, such as a DLC package"""
     import tkinter
     from tkinter import filedialog
     root = tkinter.Tk(); root.withdraw(); root.attributes("-topmost", True)
     try:
         if file:
             return filedialog.askopenfilename(initialdir=start or None, parent=root,
-                                              filetypes=[("Disc images", "*.iso *.xiso"), ("All files", "*.*")]) or ""
+                                              filetypes=[("All files", "*")] if kind == "any" else
+                                              [("Disc images", "*.iso *.xiso"), ("All files", "*.*")]) or ""
         return filedialog.askdirectory(initialdir=start or None, parent=root, mustexist=True) or ""
     finally:
         root.destroy()
