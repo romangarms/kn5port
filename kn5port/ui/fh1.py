@@ -36,7 +36,7 @@ CHUNKS = [
     ("redrock", "fh1_redrock", "Red Rock", "4 km around Red Rock on a 2 m grid. A quick test, about 2 minutes.", 0.3, 3, 8),
     ("clearsprings", "fh1_clearsprings", "Clear Springs", "4 km around Clear Springs on a 2 m grid. About 4 minutes.", 0.5, 3, 8),
     ("coloradodirt", "fh1_coloradodirt", "Rally Expansion",
-     "The Rally Expansion DLC's Colorado with its rally stages. Needs the DLC. Not fully working yet. About 20 minutes.", 2.0, 6, 16),
+     "The Rally Expansion DLC's Colorado with its rally stages. Needs the DLC. Not fully working yet. About 20 minutes.", 2.9, 6, 16),
 ]
 CHUNK = {c[0]: c for c in CHUNKS}
 BETA = {"coloradodirt"}
