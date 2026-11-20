@@ -180,6 +180,10 @@ def cmd_convert(a):
         args += ["--layer-lift", str(a.layer_lift)]
     if a.no_ground_layers:
         args += ["--no-ground-layers"]
+    if a.no_lods:
+        args += ["--no-lods"]
+    if a.lod_scale is not None:
+        args += ["--lod-scale", str(a.lod_scale)]
     level.main(args)
     if a.terrain != "off":
         print("\n== 2/4 terrain")
@@ -252,6 +256,10 @@ def main(argv=None):
     p.add_argument("--layer-lift", type=float, default=None, metavar="M", help="raise road layers lying exactly on "
                    "an earlier-drawn surface (patches, lines, decals) by M metres per layer so they don't z-fight "
                    "(default 0.02; 0 = off)")
+    p.add_argument("--no-lods", action="store_true", help="keep only AC's highest LOD of each mesh and draw it at "
+                   "every distance, instead of swapping in AC's lower LODs and culling where AC does")
+    p.add_argument("--lod-scale", type=float, default=None, metavar="X", help="multiply AC's LOD switch and cull "
+                   "distances by X (default 1)")
     p.set_defaults(func=cmd_convert)
 
     p = sub.add_parser("validate", help="check a converted level for broken references")

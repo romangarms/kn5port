@@ -19,7 +19,8 @@ Geometry handling:
   * Meshes are merged per material inside each grid cell, so BeamNG can cull cells.
   * AC physics meshes (names like 1ROAD_xxx, 1GRASS_xxx) go into *_col.dae shapes that
     BeamNG collides with; everything else is visual only (no collision).
-  * Only the highest LOD of each AC mesh is kept.
+  * AC LODs and cull distances (lodIn/lodOut) become detail levels (kn5port/lods.py): lower LODs swap in and
+    objects vanish where AC's do. Collision meshes always draw. --no-lods keeps only the highest LOD, never culled.
 
 This is a starting point, not a finished level: AC's shaders (multilayer terrain, CSP GrassFX,
 reflections) don't exist in BeamNG, so materials are simplified to base colour + normal (+ detail).
@@ -36,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import beamng, shape
+from . import beamng, lods, shape
 from .kn5 import KN5, KN5Error, Dummy, Mesh
 from .overlay import OverlayLifter, STEP as LAYER_STEP
 from .layers import LayerSplitter, pieces, layer_material
@@ -134,13 +135,18 @@ def models_from_ini(track_dir):
 _fmt = shape.fmt        # fh1/pipeline/daewrite.py imports it from here
 
 
-def write_dae(path, groups, origin, collide=False, hidden=()):
-    """groups: list of (material_name, positions(N,3) BeamNG world, normals(N,3), uvs(N,2), idx(M,)).
-    One detail level that draws until the shape is under a pixel (kn5port/shape.py). collide: every group also goes
+def write_dae(path, groups, origin, collide=False, hidden=(), sizes=(1,)):
+    """groups: list of (material_name, positions(N,3) BeamNG world, normals(N,3), uvs(N,2), idx(M,)), or
+    (material_name, levels, positions, ...) to draw at those detail levels of `sizes` (kn5port/lods.py). By default
+    one detail level that draws until the shape is under a pixel (kn5port/shape.py). collide: every group also goes
     into the shape's one collision mesh (TSStatic collisionType "Collision Mesh"); groups whose material is in
     `hidden` only collide and aren't drawn at all. Returns whether the shape has a collision mesh."""
-    g2 = [((m, (1,) if m in hidden else (0,)), p, n, u, i) for m, p, n, u, i in groups]
-    return shape.write_lod(path, g2, origin, (1,), (0, 1) if collide else None, tool="kn5port convert")
+    g2 = []
+    for g in groups:
+        m, lv, rest = (g[0], g[1], g[2:]) if len(g) == 6 else (g[0], (0,), g[1:])
+        g2.append(((m, (len(sizes),) if m in hidden else lv), *rest))
+    return shape.write_lod(path, g2, origin, sizes, set(range(len(sizes) + 1)) if collide else None,
+                           tool="kn5port convert")
 
 
 def collision_bins(groups, limit=shape.COLMESH_MAX_VERTS):
@@ -551,6 +557,10 @@ def main(argv=None):
     ap.add_argument("--no-ground-layers", action="store_true",
                     help="draw AC multilayer ground with one blended detail texture instead of giving each triangle the "
                          "tiling texture (grass, dirt, rock) of the layer that dominates there")
+    ap.add_argument("--no-lods", action="store_true",
+                    help="keep only each AC mesh's highest LOD and draw it at every distance (before LODs were read)")
+    ap.add_argument("--lod-scale", type=float, default=1.0, metavar="X",
+                    help="multiply AC's LOD switch and cull distances by X (default 1)")
     args = ap.parse_args(argv)
 
     track = Path(args.track_dir)
@@ -659,16 +669,17 @@ def main(argv=None):
         tex_by_name = {t.name: t for t in k.textures}
         global USES
         USES = material_uses(k, SURFACES, PROFILE)
-        cells = defaultdict(lambda: defaultdict(list))  # (cx, cy, kind) -> matname -> [parts]
+        cells = defaultdict(lambda: defaultdict(list))  # (cx, cy, kind, cell, edges) -> (mat, surf, hidden, levels) -> [parts]
         mat_surfaces = defaultdict(set)
         uv_density = defaultdict(lambda: np.zeros(2))   # material -> (3D area, UV area): metres per UV unit
         ground_mats = set()
         kept = dropped_lod = dropped_crop = dropped_veg = dropped_ground = dropped_hidden = dropped_layout = 0
+        pending = []    # (kind, (material, surface, hidden), part, (lod_in, lod_out), centre, radius, mean)
 
         for m in k.meshes():
             if not len(m.indices) or m.name.startswith("AC_"):
                 continue
-            if m.lod_in > 0:
+            if m.lod_in > 0 and args.no_lods:
                 dropped_lod += 1; continue
             if not args.keep_ac_trees and is_vegetation(m):
                 dropped_veg += 1; continue
@@ -706,10 +717,8 @@ def main(argv=None):
             kind = "col" if surf else "vis"
             if surf:
                 mat_surfaces[m.material.name].add(surf)
-            c = pos.mean(0)
-            cell = (int(math.floor(c[0] / args.cell)), int(math.floor(c[1] / args.cell)), kind)
             pos32, idx32 = pos.astype(np.float32), idx.astype(np.uint32)
-            if not hidden:     # drawn: may be a layer on top of an earlier surface (lifted in place below)
+            if not hidden and m.lod_in <= 0:   # drawn: may be a layer on top of an earlier surface (lifted below)
                 lifter.add(pos32, idx32, m.transparent or m.material.alpha_blend == 1)
             uvs = m.uvs * m.material.uv_mult if m.material.uv_mult != 1.0 else m.uvs
             t3 = idx.reshape(-1, 3)
@@ -722,8 +731,35 @@ def main(argv=None):
             if not hidden and not args.no_ground_layers and mt.shader.startswith("ksMultilayer") and \
                     not ROAD_LIKE.search(f"{mt.name} {mt.samplers.get('txDiffuse', '')}"):
                 split = splitter.split(k, mt, pos, uvs, idx)   # sharp per-layer textures (layers.py)
-            cells[cell][(m.material.name, surf, hidden)].append((pos32, nrm.astype(np.float32), uvs, idx32, split))
-            kept += 1
+            used_ = pos[np.unique(idx)]
+            lo_, hi_ = used_.min(0), used_.max(0)
+            band = (0.0, lods.INF) if args.no_lods else \
+                (m.lod_in * args.lod_scale, m.lod_out * args.lod_scale if m.lod_out > 0 else lods.INF)
+            pending.append((kind, (m.material.name, surf, hidden), (pos32, nrm.astype(np.float32), uvs, idx32, split),
+                            band, (lo_ + hi_) / 2, float(np.linalg.norm(hi_ - lo_)) / 2, pos.mean(0)))
+
+        # cells: chains of LODs (and culled meshes) by their switch distances, in cells that shrink with the first;
+        # the rest, and any chain with collision in it (collision always draws), in --cell cells at one detail
+        objs, orphans = lods.chains([p_[3] for p_ in pending], [p_[4] for p_ in pending], [p_[5] for p_ in pending])
+        dropped_lod += len(orphans)
+        culled = lod_meshes = 0
+        for edges, members in objs:
+            if any(pending[i][0] == "col" for i, _ in members):
+                dropped_lod += sum(pending[i][3][0] > 0 for i, _ in members)
+                members = [(i, (0,)) for i, _ in members if pending[i][3][0] <= 0]
+                edges = (0.0, lods.INF)
+            plain_ = edges == (0.0, lods.INF)
+            cs = args.cell if plain_ else lods.cell_size(edges, args.cell)
+            ctr = None if plain_ else np.mean([pending[i][4] for i, _ in members], 0)
+            for i, lv in members:
+                kind, key, part, _, _, _, c = pending[i]
+                o = c if plain_ else ctr
+                cell = (int(math.floor(o[0] / cs)), int(math.floor(o[1] / cs)), kind, cs, edges)
+                cells[cell][key + (lv,)].append(part)
+                kept += 1
+                if not plain_:
+                    lod_meshes += 1
+                    culled += edges[-1] < lods.INF
 
         lifted0 = lifter.stats["meshes"]
         lifter.resolve()
@@ -736,10 +772,11 @@ def main(argv=None):
                 return f"{base}_{surf}"
             return base
 
-        for (cx, cy, kind), bymat in cells.items():
+        lod_shapes = 0
+        for (cx, cy, kind, cs, edges), bymat in cells.items():
             groups = []
             hidden_mats = set()      # collide only: not drawn at all
-            for (acname, surf, hidden), parts in bymat.items():
+            for (acname, surf, hidden, lv), parts in bymat.items():
                 name = bng_name(acname, surf)
                 acmat = next(mm for mm in k.materials if mm.name == acname) if acname != "__missing__" else None
                 if hidden:
@@ -769,7 +806,7 @@ def main(argv=None):
                     for c_, sub, sc in pieces(p_, p_[4]):   # after lifting: pieces copy the (lifted) positions
                         (by_layer[(c_, sc)].append(sub) if c_ else plain.append(sub))
                 for chunk in merge_chunks(plain):
-                    groups.append((name, *chunk))
+                    groups.append((name, lv, *chunk))
                 for (c_, sc), items in by_layer.items():
                     # one material per layer and tiling: the colour comes from the macro map on the mesh's own
                     # UVs, so meshes whose UVs cover a different number of metres need their own detail scale
@@ -784,23 +821,33 @@ def main(argv=None):
                         if acname in ground_mats:
                             materials[lname]["kn5_ground"] = True
                     for chunk in merge_chunks(items):
-                        groups.append((lname, *chunk))
-            origin = np.array([(cx + 0.5) * args.cell, (cy + 0.5) * args.cell, 0.0])
+                        groups.append((lname, lv, *chunk))
             base = f"x{cx:+04d}_y{cy:+04d}_{kind}".replace("+", "p").replace("-", "m")
+            if edges == (0.0, lods.INF):
+                sizes = (1,)
+                origin = np.array([(cx + 0.5) * args.cell, (cy + 0.5) * args.cell, 0.0])
+            else:   # detail sizes from the shape's own radius, as the engine measures; its origin at its centre
+                lo_ = np.min([g[2].min(0) for g in groups], 0); hi_ = np.max([g[2].max(0) for g in groups], 0)
+                sizes = lods.detail_sizes(float(np.linalg.norm(hi_ - lo_)) / 2, edges)
+                origin = np.round((lo_ + hi_) / 2, 1)
+                base = (f"c{int(cs)}_{base}_l" + "_".join(str(int(e)) for e in edges[1:] if e < lods.INF)
+                        + ("_i" if edges[-1] == lods.INF else ""))
+                lod_shapes += 1
             # a collision cell is as many shapes as keep each one's single Colmesh small enough
             for b, bin_ in enumerate(collision_bins(groups) if kind == "col" else [groups]):
                 fname = base if b == 0 else f"{base}_{b + 1}"
                 dae = out_level / "art" / "shapes" / stem / f"{fname}.dae"
-                col = write_dae(dae, bin_, origin, collide=kind == "col", hidden=hidden_mats)
+                col = write_dae(dae, bin_, origin, collide=kind == "col", hidden=hidden_mats, sizes=sizes)
                 ct = "Collision Mesh" if col else "None"
                 statics[group_name(stem)].append({
                     "class": "TSStatic", "name": f"{group_name(stem)}_{fname}", "__parent": group_name(stem),
                     "shapeName": f"{lvl_rel}/art/shapes/{stem}/{fname}.dae",
                     "position": [round(float(v), 3) for v in origin], "collisionType": ct, "decalType": ct})
         stats[stem] = dict(meshes=kept, lod_dropped=dropped_lod, cropped=dropped_crop, layers_lifted=lifted,
-                           shapes=len(cells), seconds=round(time.time() - ts, 1))
+                           shapes=len(cells), lod_shapes=lod_shapes, lod_meshes=lod_meshes, culled_meshes=culled,
+                           seconds=round(time.time() - ts, 1))
         print(f"  {stem}: {kept} meshes -> {len(cells)} shapes "
-              f"(dropped {dropped_lod} LOD, {dropped_crop} outside crop, {dropped_veg} vegetation, "
+              f"({lod_meshes} meshes in {lod_shapes} LOD/cull shapes, {culled} culled; dropped {dropped_lod} LOD, {dropped_crop} outside crop, {dropped_veg} vegetation, "
               f"{dropped_ground} terrain-replaced, {dropped_hidden} hidden, {dropped_layout} layout props; "
               f"{lifted} layers lifted) "
               f"in {stats[stem]['seconds']}s")

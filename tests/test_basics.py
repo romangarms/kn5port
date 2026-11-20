@@ -447,3 +447,33 @@ def test_broad_macro_map_is_not_a_road():
         assert not ROAD_LIKE.search(s), s
     for s in ("road_new plainroad_01_cah_bds.dds", "1ROAD_03", "b1road_oldstyle", "sec67outerroad", "ROAD"):
         assert ROAD_LIKE.search(s), s
+
+
+def test_lod_chains_link_overlapping_bands():
+    from kn5port import lods
+    inf = lods.INF
+    # a house with 3 LODs overlapping like Kunos's (HI to 75, LOW from 70), a culled sign, a lone low LOD, a plain wall
+    bands = [(0, 75), (70, 150), (145, 0 or inf), (0, 160), (300, 900), (0, inf)]
+    c = [(0, 0, 0), (0.1, 0, 0), (0, 0.1, 0), (50, 0, 0), (500, 0, 0), (900, 0, 0)]
+    objs, orphans = lods.chains(bands, c, [10, 10, 10, 1, 5, 20])
+    assert orphans == [4]
+    by = {tuple(sorted(i for i, _ in m)): (e, dict(m)) for e, m in objs}
+    e, lv = by[(0, 1, 2)]
+    assert len(e) == 4 and e[-1] == inf and lv == {0: (0,), 1: (1,), 2: (2,)}
+    assert 65 <= e[1] <= 80 and 135 <= e[2] <= 160
+    assert by[(3,)][0][-1] < inf and by[(5,)][0] == (0.0, inf)
+    s = lods.detail_sizes(10, e)
+    assert s[-1] == 1 and all(a > b for a, b in zip(s, s[1:]))
+    assert abs(lods.detail_sizes(10, (0.0, 100.0))[0] - lods.PX * 10 / 100) <= 1
+    assert lods.cell_size((0.0, 40.0, inf), 500) <= 20 and lods.cell_size((0.0, inf), 500) == 500
+
+
+def test_write_dae_lod_levels():
+    from kn5port.level import write_dae
+    q = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0]], np.float32)
+    n = np.tile([0, 0, 1], (3, 1)).astype(np.float32); uv = np.zeros((3, 2), np.float32); i = np.arange(3)
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "s.dae"
+        write_dae(p, [("hi", (0,), q, n, uv, i), ("lo", (1,), q, n, uv, i)], np.zeros(3), sizes=(80, 20))
+        t = p.read_text()
+        assert "o0_a80" in t and "o1_a20" in t and "Colmesh" not in t

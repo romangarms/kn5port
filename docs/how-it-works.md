@@ -10,6 +10,16 @@ symptom → cause → fix log, open issues and a debugging checklist, see [learn
    road. Physics meshes (`1ROAD_…`, `1GRASS_…`; the key comes from `surfaces.ini`) become collision shapes
    with a BeamNG ground model; everything else is visual-only. Meshes are merged per material inside 500 m
    cells so BeamNG can cull them. Writes materials, spawn points (one per layout) and `info.json`.
+   **LODs (`lods.py`):** each AC mesh draws between its `lodIn` and `lodOut` metres, and most track geometry
+   has a `lodOut` (often 80 to 500 m). An object's LOD meshes are linked into a chain by overlapping bands on
+   meshes of about the same size and place (Kunos overlaps them: HI to 75 m, LOW from 70 m), and switch halfway
+   through the overlap. Objects with the same switch distances share a shape in a cell that shrinks to under half
+   the first switch, as Torque measures from the shape's centre. Each band is a detail level sized
+   `PX x radius / distance` (`PX` 1250, FH1's, about 1440p); below the last size the shape draws nothing, which is
+   the cull a `nulldetail` node gives hand-made shapes. Lower LODs aren't layer-lifted. Chains with collision in
+   them, and lower LODs whose LOD0 wasn't found, stay as before: LOD0 at every distance. `--no-lods` turns it
+   off, `--lod-scale` stretches every distance. Laguna Seca: 244 of 255 meshes of the main kn5 vanish somewhere,
+   and the level grows 7% from the lower LODs.
 2. **`terrain.py` (terrain):** rasterises AC's ground in priority order (horizon backdrop → distant terrain →
    near ground). Each layer is offset from the one below where they overlap (AC sinks hidden geometry), so
    lower layers are bent to meet upper ones over a fade distance. The terrain is then *fitted* under the
