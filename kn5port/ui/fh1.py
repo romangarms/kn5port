@@ -5,8 +5,12 @@ A conversion runs the fh1/pipeline scripts as subprocesses, from a copy of the p
 
 1. extract   copy the needed game files out of an ISO or GOD package into <work>/game (skipped for a folder)
 2. prepare   prepare.py: decode the map's tables into <work> (once per game copy, about 3 minutes)
-3. build     build3.py and its post-build scripts, into <mods>/unpacked/<level>
-4. radio     radio.py, the separate fh1_radio mod (optional)
+3. rally     prepare_dlc.py: the Rally Expansion's tables into <work>/dirt (beta; only for that chunk, once per DLC copy)
+4. build     build3.py and its post-build scripts, into <mods>/unpacked/<level>
+5. radio     radio.py, the separate fh1_radio mod (optional)
+
+The Rally Expansion (chunk coloradodirt) is its own track, read from the DLC package's Media folder, and builds from its own
+work folder <work>/dirt. Its prepare step merges in base Colorado's tables, so Colorado's are prepared first.
 """
 import ctypes
 import importlib.util
@@ -31,8 +35,16 @@ CHUNKS = [
     ("colorado", "fh1_colorado", "Whole map", "All of Colorado, 16 km square on a 4 m grid. About 10 minutes.", 3.3, 6, 16),
     ("redrock", "fh1_redrock", "Red Rock", "4 km around Red Rock on a 2 m grid. A quick test, about 2 minutes.", 0.3, 3, 8),
     ("clearsprings", "fh1_clearsprings", "Clear Springs", "4 km around Clear Springs on a 2 m grid. About 4 minutes.", 0.5, 3, 8),
+    ("coloradodirt", "fh1_coloradodirt", "Rally Expansion",
+     "The Rally Expansion DLC's Colorado with its rally stages. Needs the DLC. Not fully working yet. About 20 minutes.", 2.0, 6, 16),
 ]
 CHUNK = {c[0]: c for c in CHUNKS}
+BETA = {"coloradodirt"}
+RALLY = "coloradodirt"
+RALLY_DIR = "dirt"          # the Rally Expansion's work folder, under the main one (buildq.py's WORKS)
+RALLY_PREPARED_GB = 2.5
+RALLY_FILES = ("DLCZips/ColoradoDirt_pri_65.zip", "DLCZips/1600_pri_65.zip")
+RALLY_TITLE = "4D5309C9"    # FH1's title id; its DLC packages sit in <content>/4D5309C9/00000002/<package>/Media
 PACKAGES = [("numpy", "numpy"), ("scipy", "scipy"), ("numba", "numba"), ("PIL", "pillow")]
 GAME_GB = 4.2           # the part of media/ the pipeline reads
 PREPARED_GB = 2.8       # x/, tables, caches
@@ -119,6 +131,41 @@ def find_ffmpeg():
     return os.path.abspath(hit) if hit else ""
 
 
+def _is_rally_media(p):
+    return all((p / f).is_file() for f in RALLY_FILES)
+
+
+def detect_dlc(path):
+    """the Rally Expansion's Media folder from the path given: that folder, the package folder above it, FH1's
+    00000002 folder, or a Xenia content or Xenia folder. {"path": the Media folder or None, "why": what was found}"""
+    path = str(path or "").strip().strip('"')
+    if not path:
+        return {"path": None, "why": ""}
+    p = Path(path)
+    if p.is_file():
+        return {"path": None, "why": "This is a single file. If it's the DLC package copied off a console, install it in Xenia "
+                                     "(File > Install Content), then pick Xenia's content folder."}
+    if not p.is_dir():
+        return {"path": None, "why": "This folder doesn't exist."}
+    cands = [p, p / "Media"]
+    for root in (p, p / RALLY_TITLE, p / RALLY_TITLE / "00000002", p / "content" / RALLY_TITLE / "00000002"):
+        try:
+            if root.is_dir():
+                cands += [q / "Media" for q in root.iterdir() if q.is_dir()]
+        except OSError:
+            pass
+    for c in cands:
+        if _is_rally_media(c):
+            return {"path": str(c), "why": "Found the Rally Expansion."}
+    return {"path": None, "why": "No Rally Expansion here: its package's Media folder holds DLCZips\\ColoradoDirt_pri_65.zip."}
+
+
+def default_dlc():
+    """the Rally Expansion where Xenia installs it by default, if it's there"""
+    xenia = Path(os.path.expanduser("~")) / "Documents" / "Xenia"
+    return detect_dlc(xenia)["path"] if xenia.is_dir() else None
+
+
 def beamng_running():
     if sys.platform != "win32":
         return False
@@ -166,8 +213,33 @@ class FH1:
         """Folders-dialog fields the build needs that aren't set or found, for the page to ask for"""
         return [k for k, ok in (("beamng", self.beamng()), ("mods", str(self.mods()) not in ("", "."))) if not ok]
 
+    def rally_work(self):
+        return self.work() / RALLY_DIR
+
+    def dlc(self):
+        """the Rally Expansion: what the setting points at, else Xenia's default place"""
+        d = detect_dlc(self.settings.get("fh1_dlc"))
+        if not d["path"] and not self.settings.get("fh1_dlc"):
+            found = default_dlc()
+            if found:
+                d = {"path": found, "why": "Found the Rally Expansion in Xenia's content folder."}
+        return d
+
+    def rally_prepared(self, game):
+        """the Rally Expansion's tables are in <work>/dirt, for this game copy and DLC, merged with base Colorado's"""
+        w, dlc = self.rally_work(), self.dlc()["path"]
+        if not (game and dlc and all((w / f).exists() for f in PREPARED_FILES) and (w / "merge.json").exists()):
+            return False
+        mark = _read_json(w / "prepared.json")
+        if mark:
+            return Path(mark.get("dump", "")) == Path(game) and Path(mark.get("dlc", "")) == Path(dlc)
+        # prepared by hand with prepare_dlc.py (a development checkout): trust its track.json and dump_path.txt
+        t, saved = _read_json(w / "track.json"), w / "dump_path.txt"
+        return (Path(t.get("dlc", "")) == Path(dlc) and saved.exists()
+                and Path(saved.read_text(encoding="utf8").strip()) == Path(game))
+
     def update(self, body):
-        for k in ("fh1_game", "fh1_work"):
+        for k in ("fh1_game", "fh1_work", "fh1_dlc"):
             if k in body:
                 self.settings[k] = str(body[k] or "").strip().strip('"')
         self.save(self.settings)
@@ -213,9 +285,12 @@ class FH1:
             "ffmpeg": find_ffmpeg(), "free_gb": _free_gb(work), "mods_free_gb": _free_gb(mods),
             "ram_gb": _ram_gb(), "mods": str(mods) if str(mods) not in ("", ".") else "",
             "levels": levels, "radio": (mods / "unpacked" / "fh1_radio").exists(),
-            "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5], "play_ram": c[6]}
-                       for c in CHUNKS],
-            "need": {"game": GAME_GB, "prepared": PREPARED_GB, "radio": RADIO_GB, "cache": CACHE_GB},
+            "chunks": [{"key": c[0], "level": c[1], "name": c[2], "desc": c[3], "gb": c[4], "ram": c[5], "play_ram": c[6],
+                        "beta": c[0] in BETA, "dlc": c[0] == RALLY} for c in CHUNKS],
+            "dlc": self.settings.get("fh1_dlc", ""), "dlc_source": self.dlc(),
+            "rally_prepared": self.rally_prepared(game),
+            "need": {"game": GAME_GB, "prepared": PREPARED_GB, "radio": RADIO_GB, "cache": CACHE_GB,
+                     "rally": RALLY_PREPARED_GB},
             "job": self.job.view(len(self.job.lines)) if self.job else None,
         }
         s["disk"] = {c[0]: {r: self.disk(s, c[0], r == "radio") for r in ("plain", "radio")} for c in CHUNKS}
@@ -225,6 +300,8 @@ class FH1:
         """free space a build of this chunk needs, in GB: in the work folder, in the mods folder, and in all when
         both are on one drive. A level that's already there is wiped before the build writes, so its space counts."""
         work = (0 if s["extracted"] else GAME_GB) + (0 if s["prepared"] else PREPARED_GB) + CACHE_GB
+        if chunk == RALLY:      # its own tables and caches, in <work>/dirt
+            work += (0 if s["rally_prepared"] else RALLY_PREPARED_GB) + CACHE_GB
         c = CHUNK.get(chunk)
         level = c[4] if c else 0
         mods = level + (RADIO_GB if radio and not s["radio"] else 0)
@@ -253,6 +330,8 @@ class FH1:
             out.append("BeamNG.drive wasn't found. Set its install folder under Folders: the folder that holds content\\levels.")
         if opts.get("chunk") not in CHUNK:
             out.append("Pick which part of the map to build.")
+        if opts.get("chunk") == RALLY and not s["dlc_source"]["path"]:
+            out.append("Pick your copy of the Rally Expansion DLC: its package's Media folder, or Xenia's content folder.")
         if beamng_running():
             out.append("Close BeamNG first: building replaces the level's files, which BeamNG keeps open.")
         d = self.disk(s, opts.get("chunk"), opts.get("radio"))
@@ -397,8 +476,11 @@ class Job:
         det = xbox.detect(f.settings.get("fh1_game"))
         game = f.game_dir(det)
         prepared = f.prepared(game) and not self.opts.get("force_prepare")
-        self.stages = (["extract"] if not game else []) + (["prepare"] if not prepared else []) + ["build"] + \
-            (["radio"] if self.opts.get("radio") else [])
+        rally = self.opts.get("chunk") == RALLY
+        dlc = f.dlc()["path"] if rally else None
+        rally_prepared = rally and prepared and f.rally_prepared(game)      # it merges in Colorado's tables, so it follows them
+        self.stages = (["extract"] if not game else []) + (["prepare"] if not prepared else []) + \
+            (["rally"] if rally and not rally_prepared else []) + ["build"] + (["radio"] if self.opts.get("radio") else [])
 
         if not game:
             self.stage = "extract"
@@ -454,12 +536,27 @@ class Job:
             self._cmd(py + ["prepare.py"], snap, env)
             (work / "prepared.json").write_text(json.dumps({"dump": str(game), "time": int(time.time())}))
 
+        build_dir = snap
+        if rally:
+            rw = f.rally_work()
+            if "rally" in self.stages:
+                self.stage = "rally"
+                self.say(f"Reading the Rally Expansion's tables from {dlc} into {rw} (only done once per copy of the DLC)")
+                rw.mkdir(parents=True, exist_ok=True)
+                (rw / "prepared.json").unlink(missing_ok=True)
+                self._cmd(py + ["prepare_dlc.py", dlc, str(rw)], snap, env)       # from snap, so it merges <work>'s Colorado
+                (rw / "prepared.json").write_text(json.dumps({"dump": str(game), "dlc": dlc, "time": int(time.time())}))
+            build_dir = rw / "app_pipeline"         # build3.py reads the track's data one folder up, as for Colorado
+            if build_dir.exists():
+                shutil.rmtree(build_dir)
+            shutil.copytree(src, build_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.o", "*.lib", "*.exp"))
+
         key, lvl, name = CHUNK[self.opts["chunk"]][:3]
         self.stage = "build"
         self.say(f"Building {name} as {lvl} into {f.mods() / 'unpacked' / lvl}")
         if beamng_running():
             raise RuntimeError("BeamNG is running: close it, then build again.")
-        self._cmd(py + ["build3.py"], snap, dict(env, FH1_CHUNK=key))
+        self._cmd(py + ["build3.py"], build_dir, dict(env, FH1_CHUNK=key))
 
         if self.opts.get("radio"):
             self.stage = "radio"

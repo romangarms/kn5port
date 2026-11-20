@@ -189,6 +189,7 @@ a.lnk:hover, button.lnk:hover { text-decoration: underline; }
 .ck code, .howto code { font-family: var(--mono); font-size: 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 .bar { height: 6px; background: var(--panel2); border-radius: 99px; overflow: hidden; margin-top: 10px; }
 .bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.rec.beta { color: var(--warn); border-color: rgba(232,179,61,.5); }
 .inst { font-size: 11px; color: var(--ok); font-weight: 600; }
 .howto { line-height: 1.55; color: var(--dim); font-size: 13px; }
 .howto h3 { color: var(--text); font-size: 14px; margin: 10px 0 2px; }
@@ -717,7 +718,7 @@ $("#n_ok").addEventListener("click", () => { try { localStorage.setItem("kn5port
 
 // ---- Forza Horizon 1 tab ----------------------------------------------------------------------------------
 const fh = { s: null, job: null, chunk: null, radio: null, adv: false, polling: false, loading: false };
-const FH_STAGES = { python: "Set up Python", extract: "Copy game files", prepare: "Read map tables", build: "Build level", radio: "Radio mod" };
+const FH_STAGES = { python: "Set up Python", extract: "Copy game files", prepare: "Read map tables", rally: "Read rally tables", build: "Build level", radio: "Radio mod" };
 const gb = (x) => x == null ? "?" : x >= 100 ? `${Math.round(x)} GB` : `${x.toFixed(1)} GB`;
 const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
@@ -769,7 +770,7 @@ function fhChecks(s) {
     : row("bad", "BeamNG mods folder", "Not found. Set it under Folders.", `<button class="secondary" id="fhFolders">Folders</button>`));
   // the same estimate the server checks before it starts a build (FH1.disk)
   const d = s.disk[c.key][fh.radio ? "radio" : "plain"];
-  const workWhat = [!s.extracted && "game files", !s.prepared && "map tables", "build caches"].filter(Boolean).join(", ");
+  const workWhat = [!s.extracted && "game files", !s.prepared && "map tables", c.dlc && !s.rally_prepared && "rally tables", "build caches"].filter(Boolean).join(", ");
   const parts = `${gb(d.work)} for the work folder (${workWhat}), ${gb(d.mods)} for the level${fh.radio && !s.radio ? " and radio" : ""}${d.freed ? ` (replacing the ${gb(d.freed)} copy already there)` : ""}`;
   const fits = (need, free, slack) => free == null ? "ok" : free >= need + slack + 2 ? "ok" : free >= need + slack ? "warn" : "bad";
   const worst = (...a) => a.includes("bad") ? "bad" : a.includes("warn") ? "warn" : "ok";
@@ -814,6 +815,21 @@ function fhJobHtml(j) {
     <div class="log" id="fhlog">${esc((j.lines || []).join("\n") || "Starting…")}</div>${res}`;
 }
 
+// the Rally Expansion (beta): where its DLC is, under the build choices when it's picked
+function fhDlcHtml(s, busy) {
+  const d = s.dlc_source, ok = !!d.path, dis = busy ? "disabled" : "";
+  const status = ok ? "✓ " + esc(d.why) : s.dlc ? "✕ " + esc(d.why) : "Install the DLC in Xenia (File > Install Content), then pick Xenia's content folder.";
+  const after = !ok ? "" : s.rally_prepared ? "Rally tables already read."
+    : `kn5port will read its tables (about ${gb(s.need.rally)}) into the work folder's <code>dirt</code>.`;
+  return `<div class="box" style="margin:4px 0 14px">
+    <div class="note warnline" style="margin:0 0 8px"><b>Beta.</b> The Rally Expansion isn't fully working yet: expect missing or misplaced pieces, and changes between kn5port versions.</div>
+    <label class="muted">Your copy of the Rally Expansion DLC</label>
+    <div class="field" style="margin-top:4px"><input type="text" id="fhDlc" value="${esc(s.dlc)}" placeholder="${esc(ok && !s.dlc ? d.path : "Xenia's content folder, or the DLC package's Media folder")}" ${dis}>
+      <button class="secondary" data-pick="dlc" ${dis}>Folder…</button></div>
+    <div class="srcline ${ok ? "ok" : s.dlc ? "bad" : ""}"><span class="k">${status}</span>${after ? `<span class="muted">${after}</span>` : ""}</div>
+  </div>`;
+}
+
 function fhRender() {
   const s = fh.s; if (!s) return;
   const top = $("#fh1View").scrollTop;
@@ -821,7 +837,8 @@ function fhRender() {
   const busy = fhBusy();
   const c = s.chunks.find((x) => x.key === fh.chunk) || s.chunks[0];
   const steps = srcOk ? [!s.extracted && `copy about ${s.need.game} GB of game files out of the ${src.kind === "god" ? "GOD package" : "ISO"}`,
-    !s.prepared && "read the map's tables (about 3 minutes, once)", `build ${c.name}`, fh.radio && "build the radio mod"].filter(Boolean) : [];
+    !s.prepared && "read the map's tables (about 3 minutes, once)",
+    c.dlc && (!s.rally_prepared || !s.prepared) && "read the Rally Expansion's tables (once)", `build ${c.name}`, fh.radio && "build the radio mod"].filter(Boolean) : [];
   $("#fh").innerHTML = `
     <div><h1>Forza Horizon 1 <small>Colorado → BeamNG</small></h1>
       <div class="lead">Turns Colorado from your own copy of Forza Horizon (2012, Xbox 360) into a BeamNG level: the terrain, roads, buildings, plants, water, lights, races and radio. Everything happens on this computer.</div></div>
@@ -838,10 +855,11 @@ function fhRender() {
     <section><h2 class="numh"><span class="num ok">2</span>What to build</h2>
       <div class="og"><div class="choices">${s.chunks.map((x) => `
         <button class="choice ${x.key === fh.chunk ? "on" : ""}" data-chunk="${x.key}" ${busy ? "disabled" : ""}>
-          <span class="ct"><i>${esc(x.name)}</i>${x.key === "colorado" ? '<span class="rec">Recommended</span>' : ""}</span>
+          <span class="ct"><i>${esc(x.name)}</i>${x.key === "colorado" ? '<span class="rec">Recommended</span>' : ""}${x.beta ? '<span class="rec beta">Beta</span>' : ""}</span>
           <span class="pc"><span>${esc(x.desc)}</span><span>${gb(x.gb)} level · <code style="font-size:11px">${esc(x.level)}</code></span>
           ${s.levels[x.key] ? `<span class="inst">Installed, built ${day(s.levels[x.key])}</span>` : ""}</span></button>`).join("")}
         </div>
+        ${c.dlc ? fhDlcHtml(s, busy) : ""}
         <label class="check"><input type="checkbox" id="fhRadio" ${fh.radio ? "checked" : ""} ${busy ? "disabled" : ""}> Also build the FH1 radio mod${s.radio ? " again" : ""}</label>
         <div class="note" style="margin-top:-6px">A separate mod (fh1_radio, ${gb(s.need.radio)}): FH1's three stations with their DJs, tuned with ] and [, and music when a race starts. It works on any map.</div>
       </div></section>
@@ -902,9 +920,10 @@ $("#fh").addEventListener("click", async (e) => {
   const pick = t.closest("[data-pick]")?.dataset.pick;
   if (pick) {
     try {
-      const start = pick === "work" ? $("#fhWork").value || fh.s.work_default : $("#fhGame").value;
+      const start = pick === "work" ? $("#fhWork").value || fh.s.work_default
+        : pick === "dlc" ? $("#fhDlc").value || fh.s.dlc_source.path || "" : $("#fhGame").value;
       const r = await api(pick === "file" ? "/api/pick-file" : "/api/pick-folder", { start });
-      if (r.path) await fhSave(pick === "work" ? { fh1_work: r.path } : { fh1_game: r.path });
+      if (r.path) await fhSave(pick === "work" ? { fh1_work: r.path } : pick === "dlc" ? { fh1_dlc: r.path } : { fh1_game: r.path });
     } catch (err) { alert(err.message); }
     return;
   }
@@ -935,6 +954,7 @@ $("#fh").addEventListener("click", async (e) => {
 $("#fh").addEventListener("change", (e) => {
   if (e.target.id === "fhGame") fhSave({ fh1_game: e.target.value });
   else if (e.target.id === "fhWork") fhSave({ fh1_work: e.target.value });
+  else if (e.target.id === "fhDlc") fhSave({ fh1_dlc: e.target.value });
   else if (e.target.id === "fhRadio") { fh.radio = e.target.checked; fhRender(); }
 });
 $("#fh").addEventListener("toggle", (e) => { if (e.target.id === "fhAdv") fh.adv = e.target.open; }, true);
