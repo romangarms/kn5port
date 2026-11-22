@@ -74,3 +74,25 @@ if __name__ == '__main__':
                     dots.append(np.median(np.abs((attr(m, lay, 'normal0') * attr(m, lay, 'tangent0')).sum(1))))
     print(dict(st), f'normals unit: {np.mean(np.array(nun) > 0.9):.3f} of meshes, tangents {np.mean(np.array(tun) > 0.9):.3f}, '
           f'median |N.T| {np.median(dots):.4f}')
+
+
+
+def materials(b, p):
+    """[(shader index into fm4rmb.file_shaders, [slots], pixel shader constants (n, 4))] by material index (a section's ints[2]).
+    The block after the meshes: 6 words, the 6th the material count, then per material 3, shader, 0 and three groups, each a count c
+    and c arrays of (n, n items): vertex shader float4 constants, pixel shader float4 constants, texture slots. A slot indexes the mesh
+    record's texture list (fm4pvs). FH1's records are the case with no vertex shader constants"""
+    import struct
+    e = p['end']; nw = (len(b) - e) // 4; w = struct.unpack_from('>%dI' % nw, b, e)
+    out = []; o = 6
+    for _ in range(w[5]):
+        if w[o] != 3: raise ValueError(f'material record at word {o}: {w[o]}')
+        sh = w[o + 1]; o += 3; got = []
+        for size in (4, 4, 1):
+            arrs = []
+            for _ in range(w[o]):
+                n = w[o + 1]; arrs.append(w[o + 2:o + 2 + n * size]); o += 1 + n * size
+            o += 1; got.append(arrs[0] if arrs else ())
+        ps = np.array(struct.unpack('>%df' % len(got[1]), struct.pack('>%dI' % len(got[1]), *got[1]))).reshape(-1, 4)
+        out.append((sh, list(got[2]), ps))
+    return out
