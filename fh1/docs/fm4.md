@@ -57,16 +57,39 @@ Meshes stored in world space have draws with rotation diag(1, 1, -1) and positio
 
 `Media/AI/Tracks/<track>_<ribbon>.geo` is an MLP file (`fm4ai.py`): a text header lists each field as `name:type:count:?:offset`, with absolute offsets and big-endian data. `fWaypointX/Y/Z` is the centre line every 2 m (1,056 points on Tsukuba), in BeamNG's own axes (x east, y north, z up). Checked: with mesh z = -Y the waypoints sit on the road at a median height difference of 0.00 m. `fNormalX/Y` is a horizontal vector pointing left, about the half-width long; the `*Chi` fields are lateral positions in its units (walls, kerbs, the racing line). `gamedb.slt` `Tracks` (by `MediaName`, `RibbonIndex`) gives `StartLine` as a lap fraction and `DefaultStartGridPositionsId`, and `StartGridPositions` gives each slot's metres back from the start line, metres right of the centre line, and yaw.
 
+## Ground blending (proven from the shaders)
+
+Read from the ucode with `xenos.py`. In a pixel shader, register rN is the vertex shader's output oN. Every texcoord goes through the section's UV box (`uvOffsetScale`, c0) in the vertex shader, as in FH1. Layers mix by the **green** of the `Blend_Value` mask:
+
+- `road_blnd_*`: colour = B(world x, z × `c360_0.x`) × mask.g(texcoord2 × `c360_0.yz`). B tiles in world space, 2 m at Tsukuba's 0.5. The mask is wear and tyre marks over the road piece, not a mix between layers. The normal map is at world x, z × `c360_1.x`.
+- `terr_blnd_*`: colour = lerp(A(texcoord0 × `c360_1.xy`) × `c360_0.rgb`, B(texcoord0 × `c360_2.xy`), mask.g(texcoord2)).
+- `shldr_blnd_spec_norm_4` and `_nocube_4`: colour = lerp(A(texcoord1 × `c360_0.xy`), B(texcoord1 × `c360_1.xy`), mask.g(texcoord0)) × vertex colour (bytes 1 to 3) × `c360_0.z`.
+- `shldr_blnd_spec_decal_norm_5`: A at texcoord1 × `c360_0.yz`, B at texcoord1 × `c360_1.xy`, C at texcoord2 × `c360_2.xy`; colour = lerp(A, lerp(B, C, vertex alpha), mask.g(texcoord0)) × vertex colour × `c360_0.x`.
+
+The lightmap (s7) reads the mask's UV set through `Light_Map_uvOS` and is tinted between `V2LightmapColor1` and `V2LightmapColor2`. Lighting is in squared space, as in FH1. In BeamNG (`fm4build.ground_material`): layer 0 is A on UV0 with its tiling baked in (B on roads); layer 1 is B, its opacity the mask's green (a BC5 data map) on UV1, through a half-colour detail map when B tiles at another scale (FH1's `half_color`); roads get a black layer at opacity 1 - mask.g. Shoulders carry the vertex colour as a grey `vertColor`. The decal shoulder's third layer is left out. `fm4ground.py` renders the ground from these formulas, top-down, for checking.
+
+Most of Tsukuba's grass is not ground-blended: it is `grass_*` and `diff_*` object shaders. Only 2 sections use `terr_blnd`.
+
+## Collision, `<track>_track_NN.col` (proven)
+
+Read by `fm4col.py`. A 7 × 4 grid of 100 m cells on Tsukuba, with 19 occupied. The header gives the counts, bounds and cell size, then from 0x58 one 24-byte entry per occupied cell: index, cell, offset, size, 0, end. A cell block is a 0x40 header (vertex count, triangle count, vertex offset 0x40, triangle offset, a 12 × 12 sub-grid of 10 m with its origin and offset), then 32-byte vertices (float3 position, a packed word, padding) and 32-byte triangles (u16 surface id, three vertex byte offsets within the cell, float3 face normal). The 10 m sub-grid lists after the triangles and isn't read. Tsukuba: 28,907 vertices, 22,073 triangles. The stored normals agree with the winding on every triangle.
+
+Positions are in the draw frame (mesh z flipped): matched that way, triangle centres sit a median 0.15 m from visual triangle centres, against 4.5 m unflipped. In BeamNG, (x, z, y). That mapping is a reflection, so `fm4build` reverses triangles that would face away from their stored normal.
+
+The surface id indexes the children of `SurfaceTypes` in `Media/physics/surfaceTypes.xml`, 61 of them, each with friction and off-road settings. On Tsukuba: 0 Asphalt (road), 20 AsphaultNoPenalty (pit lane), 21 Asphault2NoPenalty, 6 RumbleStrip (kerbs), 1 Dirt and 2 Grass (runoff), 3 GuardRail, 4 ConcreteBarrier (pit wall), 11 RubberTire and 19 RubberTireSpringy (tyre walls), 33 FoamBarrier, and 9 Invisible: 3,620 walls about 117 m tall along the track limits, as FH1 has. Each id was checked against the visual family nearest its triangles.
+
+`fm4build` writes each cell as a collision-only shape (`col<cell>.dae`), one material per surface carrying a BeamNG ground type (`COLGROUND`: asphalt and concrete ASPHALT, RumbleStrip RUMBLE_STRIP, Grass GRASS, Dirt DIRT, Gravel GRAVEL, Sand SAND, guardrails METAL, tyres and foam RUBBER). Invisible walls are left out unless `FM4_WALLS=1`. Where the `.col` exists, `road_`, `shldr_` and `rdedg_` visual meshes don't collide. Everything else (buildings, terrain, fences) keeps its own mesh collision. The `.col` covers only the circuit and runoff: 9 ha of flat surface on Tsukuba.
+
 ## Build
 
-`fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Materials are the diffuse texture only: `Diffuse_TextureSampler`, or `Blend_A`/`Blend_B` on ground shaders. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky and flares. Ground types: `road_*` and `shldr_*` asphalt, `terr_*` grass, `rdedg_*` dirt. The spawn is grid slot 1 off the AI line.
+`fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Object materials are the diffuse texture only (`Diffuse_TextureSampler`); ground shaders are layered, see Ground blending. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is FM4's `.col` (see Collision) plus each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky, flares, and the ground families the `.col` covers. The spawn is grid slot 1 off the AI line.
 
-Tsukuba, 2026-11-22: 1,470 TSStatics (766 collide), 1,019 shapes, 260 materials, 251 textures, 437k triangles, 95 MB, built in 31 s. Not yet seen in-game.
+Tsukuba, 2026-11-22: 1,470 placed shapes plus 19 collision cells (18,453 `.col` triangles without the invisible walls), 444 materials (180 layered ground), 251 textures, 437k triangles, built in 31 s. Not yet seen in-game.
 
 ## Not decoded yet
 
-- **Blend layers.** Ground shows one layer. The constants that tile each layer, and the `Blend_Value` mask, are unread. FH1's `h_road`/`h_blnd` analysis (`formats.md`) is the place to start.
+- **Ground details.** Normal maps on ground and objects (DXN 0x71, as FH1's `tex.normal`), the decal shoulder's third layer, and terrain's extra multiply (an interpolator whose source isn't certain).
 - **Lightmaps and tints.** Slot 7 lightmaps are atlas tiles (texture table parent, scale, offset); `Paint_Mask` and `Palette` tint `diff_clr_*`.
 - **Cloth flags** (44 meshes on Tsukuba) have no layout yet, as in FH1.
-- **`<track>_track_NN.col`** (1.7 MB on Tsukuba, against FH1's 78 KB): a header with two 100 m grid sizes and a 0x1AB000 table, likely the physics surface. The visual meshes collide for now.
+- **The `.col` vertex word** (`0x7FBF2801` and the like) and the 10 m sub-grid.
 - **The FPVS draw record** beyond mesh, position and rotation: the u16 at 4 varies with LOD (0x0A14 LOD0, 0x7A14 LOD1) and isn't decoded, so neither are fade distances.

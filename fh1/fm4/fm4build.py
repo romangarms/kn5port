@@ -17,6 +17,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE)); sys.path.insert(1, str(HERE.parent / 'pipeline')); sys.path.insert(2, str(HERE.parent.parent))
 import fm4ai
+import fm4col
 import fm4mesh
 import fm4pvs
 import fm4rmb
@@ -43,6 +44,13 @@ NOUSE = re.compile(r'occluder|shadow|^SKY_|proxy|collision|_CAGE|reflect', re.I)
 NODRAW = re.compile(r'^(clr_0|sun_contribution|add_anim_camera_flash|flare_|sky_)')
 NOCOLLIDE = re.compile(r'^(grass|bush|tree|anim_flag|rdline|flare|sky|chain_diff_opac_2)')
 NOCOLLIDE_NAME = re.compile(r'^VEG_|^OBJ_Flag|crowd|spectator|_Tree|Bush|Grass|^RCEDAY_CameraFlash', re.I)
+# FM4's track collision (<track>_track_NN.col) is the drivable surface and barriers. Its surface ids index Media/physics/surfaceTypes.xml;
+# where it exists, these visual families don't collide, so two coincident surfaces don't disagree on ground type
+COLFAMILY = re.compile(r'^(road_|shldr_|rdedg_)')
+WALLS = os.environ.get('FM4_WALLS', '0') == '1'      # FM4's invisible track-limit walls (surface 9, about 117 m tall)
+COLGROUND = [(r'Invisible', None), (r'Cobble', 'COBBLESTONE'), (r'^Dirt', 'DIRT'), (r'Grass(?!crete)|SlowGrass', 'GRASS'), (r'Gravel', 'GRAVEL'),
+             (r'Sand', 'SAND'), (r'Rumble|SpeedBump', 'RUMBLE_STRIP'), (r'GuardRail|WireFence', 'METAL'), (r'RubberTire|FoamBarrier', 'RUBBER'), (r'FoamSign|BrakeMarker', 'PLASTIC'),
+             (r'Wood|HayBail', 'WOOD'), (r'SafetyPlastic', 'PLASTIC'), (r'Grasscrete', 'GRASS'), (r'', 'ASPHALT')]
 GROUND = [(re.compile(r'^road_'), 'ASPHALT'), (re.compile(r'^shldr_'), 'ASPHALT'), (re.compile(r'^terr_'), 'GRASS'), (re.compile(r'^rdedg_'), 'DIRT')]
 DIFFUSE = ('Diffuse_TextureSampler', 'DiffuseSampler', 'Blend_ASampler', 'Blend_BSampler')
 
@@ -101,15 +109,44 @@ def bc4_decode(i):
     return np.dstack([v, v, v, np.full_like(v, 255)])
 
 
+def decode(i):
+    """texture i as an (h, w, 4) array, or None"""
+    t = tex.bix(i)
+    if not t: return None
+    try:
+        return bc4_decode(i) if t['fmt'] == 0x7b else tex.decode(tex.top_mip(t), t['w'], t['h'], t['fmt'])
+    except Exception as e:
+        print('texture', hex(i), 'failed:', e); return None
+
+
+def data_map(name, a):
+    """a 0..1 array as a BC5 .data.dds, whose red BeamNG reads as opacity (8 bits, where DXT1 keeps 5)"""
+    p_ = TEXD / f'{name}.data.dds'
+    if not p_.exists():
+        v = (np.clip(a, 0, 1) * 255 + .5).astype('u1'); dds.save_bc5(p_, np.dstack([v, v]))
+    return f'{REL}/art/textures/{p_.name}'
+
+
+def srgb(lin):
+    return np.where(lin <= .0031308, lin * 12.92, 1.055 * np.power(np.maximum(lin, 0), 1 / 2.4) - .055)
+
+
+def half_color(i):
+    """texture i at half its linear value, for a layer's detail map at strength 1 (saturate(2 d)): the layer's own colour at its own
+    scale, as FH1's build3.half_color"""
+    p_ = TEXD / f'fm4_{i:x}_h.color.dds'
+    if not p_.exists():
+        c = decode(i)[..., :3] / 255; lin = np.where(c <= .04045, c / 12.92, ((c + .055) / 1.055) ** 2.4)
+        dds.save(p_, (srgb(lin / 2) * 255 + .5).astype('u1'))
+    return f'{REL}/art/textures/{p_.name}'
+
+
 def texture(i):
     """write fm4_<id>.color.dds (and _o.data.dds when it has cut-out alpha) -> info or None"""
     if i in TINFO: return TINFO[i]
     t = tex.bix(i); info = None
     if t:
-        try:
-            a = bc4_decode(i) if t['fmt'] == 0x7b else tex.decode(tex.top_mip(t), t['w'], t['h'], t['fmt'])
-        except Exception as e:
-            print('texture', hex(i), 'failed:', e); a = None
+        a = decode(i)
         if a is not None:
             name = f'fm4_{i:x}'
             dds.save(TEXD / f'{name}.color.dds', a[..., :3].astype('u1'), blocks=tex.blocks(i) if t['fmt'] == 0x52 else None)
@@ -147,6 +184,73 @@ def material(shader, slots, rec):
     return key
 
 
+# Ground shaders blend layers by the green of a Blend_Value mask (docs/fm4.md, Ground blending). Every UV set goes through the section's
+# UV box. Per family: (layer UV set, A's scale, B's scale, mask UV set, mask scale), the scales as (constant row, first component) of c360:
+#   road_*         colour = B(world x, z * c0.x) * mask.g(texcoord2 * c0.yz)        no A: B is layer 0, then a black layer at 1 - mask.g
+#   terr_*         colour = lerp(A(tc0 * c1.xy) * c0.rgb, B(tc0 * c2.xy), mask.g(tc2))
+#   shldr_blnd_*   colour = lerp(A(tc1 * c0.xy), B(tc1 * c1.xy), mask.g(tc0)) * vertex colour * c0.z
+#   shldr_blnd_*decal*: A at tc1 * c0.yz, vertex colour * c0.x, and a third layer C (tc2 * c2.xy) lerped into B by vertex alpha, left out for now
+def ground_plan(shader, slots, rec, ps):
+    """-> dict(layers=[(texture id, uv scale)], uv0=(set, scale), mask=(texture id, set, scale), road, tint, vcolor) or None"""
+    smp = SAMPLERS.get(shader, {})
+
+    def tid(name):
+        r = smp.get(name)
+        if r is None or r >= len(slots) or slots[r] >= len(rec['tex']): return None
+        i = TT[rec['tex'][slots[r]]][0]
+        return i if tex.bix(i) else None
+    c = lambda row, k, n=2: np.array(ps[row][k:k + n]) if row < len(ps) else np.ones(n)
+    A, Bt, V = tid('Blend_ASampler'), tid('Blend_BSampler'), tid('Blend_ValueSampler')
+    if shader.startswith('road_blnd') and Bt is not None:
+        return dict(layers=[(Bt, np.ones(2))], uv0=('world', np.full(2, c(0, 0, 1)[0])), mask=(V, 'texcoord2', c(0, 1)), road=True, tint=None, vcolor=False)
+    if shader.startswith('terr_blnd') and A is not None and Bt is not None:
+        return dict(layers=[(A, c(1, 0)), (Bt, c(2, 0))], uv0=('texcoord0', c(1, 0)), mask=(V, 'texcoord2', np.ones(2)), road=False,
+                    tint=c(0, 0, 3), vcolor=False)
+    if shader.startswith('shldr_blnd') and A is not None and Bt is not None:
+        sA = c(0, 1) if 'decal' in shader else c(0, 0)
+        return dict(layers=[(A, sA), (Bt, c(1, 0))], uv0=('texcoord1', sA), mask=(V, 'texcoord0', np.ones(2)), road=False, tint=None,
+                    vcolor=float(c(0, 0 if 'decal' in shader else 2, 1)[0]))
+    return None
+
+
+def ground_material(plan, ground):
+    """the BeamNG material for a ground_plan: layer 0 on UV0, layer 1 masked by mask.g over UV1 (a detail map when its scale differs
+    from layer 0's), roads a black layer at 1 - mask.g"""
+    (t0, s0) = plan['layers'][0]; mt = plan['mask'][0]
+    key = f'fm4_g{t0:x}_' + '_'.join(f'{t:x}x{s[0]:g}' for t, s in plan['layers'][1:]) + (f'_m{mt:x}' if mt is not None else '') + \
+        ('_r' if plan['road'] else '') + ('_v' if plan['vcolor'] else '') + (f'_{ground}' if ground else '')
+    if key in MATS: return key
+    if texture(t0) is None: return None
+    st = [{'baseColorMap': f"{REL}/art/textures/{texture(t0)['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}]
+    if plan['tint'] is not None: st[0]['baseColorFactor'] = [round(float(v), 3) for v in plan['tint']] + [1]
+    g = None
+    if mt is not None:
+        a = decode(mt); g = a[..., 1] / 255 if a is not None else None
+    for t, s in plan['layers'][1:]:
+        if g is None or texture(t) is None: break
+        d = s / s0
+        l = {'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': data_map(f'fm4_m{mt:x}', g), 'opacityMapUseUV': 1}
+        if np.allclose(d, 1): l['baseColorMap'] = f"{REL}/art/textures/{texture(t)['name']}.color.dds"
+        else: l.update({'detailMap': half_color(t), 'detailBaseColorMapStrength': 1, 'detailScale': [round(float(v), 4) for v in d]})
+        st.append(l)
+    if plan['road'] and g is not None:
+        st.append({'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': .9, 'metallicFactor': 0, 'opacityMap': data_map(f'fm4_w{mt:x}', 1 - g),
+                   'opacityMapUseUV': 1})
+    if plan['vcolor']:
+        for l in st: l['vertColor'] = True
+    n = len(st)
+    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st + [{}] * (4 - n), 'activeLayers': n,
+                 'materialTag0': 'beamng', 'translucentBlendOp': 'None', **({'groundType': ground} if ground else {})}
+    stats['ground materials'] += 1
+    return key
+
+
+def box_uv(m, lay, s, name):
+    fl = s['fl']; return np.array(fl[4:6]) + fm4mesh.attr(m, lay, name) * np.array(fl[6:8])
+
+
+COLFILE = next(RDIR.glob('*_track_*.col'), None)
+
 # ---- shapes
 SHAPES = LEVEL / 'art' / 'shapes' / 'fm4'; SHAPES.mkdir(parents=True, exist_ok=True)
 SHAPE = {}
@@ -173,11 +277,24 @@ def shape(no):
             tri = fm4rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(tri): continue
             used = np.unique(tri); remap = np.full(m['nv'], -1); remap[used] = np.arange(len(used))
-            fl = s['fl']
-            uv = (np.array(fl[4:6]) + fm4mesh.attr(m, lay, uvn)[used] * np.array(fl[6:8])) if uvn else np.zeros((len(used), 2))
-            mat = material(shader, slots, rec)
-            collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader)
-            out.append(((mat, (0, COLL) if collide else (0,)), pos[used], nrm[used], uv, remap[tri].ravel()))
+            uv = box_uv(m, lay, s, uvn)[used] if uvn else np.zeros((len(used), 2)); uv1 = None
+            ground = next((g for r, g in GROUND if r.match(shader)), None)
+            plan = ground_plan(shader, slots, rec, mats[mi][2]); mat = None
+            if plan and all(k in lay for k in (plan['uv0'][0], plan['mask'][1]) if k != 'world'):
+                mat = ground_material(plan, ground)
+                if mat:
+                    st_, sc_ = plan['uv0']
+                    uv = (fm4mesh.attr(m, lay, 'position0')[used][:, [0, 2]] if st_ == 'world' else box_uv(m, lay, s, st_)[used]) * sc_
+                    uv1 = box_uv(m, lay, s, plan['mask'][1])[used] * plan['mask'][2]
+                    if plan['vcolor'] and 'color0' in lay:
+                        cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
+                        uv1 = np.c_[uv1, cb[:, 1:4].mean(1) / 255 * plan['vcolor']]
+                    stats['ground sections'] += 1
+            if mat is None:
+                mat = material(shader, slots, rec)
+            collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader
+                           or COLFILE and COLFAMILY.match(shader))
+            out.append(((mat, (0, COLL) if collide else (0,)), pos[used], nrm[used], uv, remap[tri].ravel(), uv1))
             stats['sections'] += 1; stats['triangles'] += len(tri)
     if not out:
         SHAPE[no] = None; return None
@@ -195,6 +312,33 @@ for k, d in enumerate(DRAWS):
     pos = P @ d['pos']; ct = 'Collision Mesh' if sh[1] else 'None'
     items.append({'class': 'TSStatic', 'name': f'fm4_d{k}', '__parent': 'fm4', 'shapeName': sh[0], 'position': [float(x) for x in pos],
                   'rotationMatrix': [float(x) for x in Rn.T.ravel()], 'scale': [float(x) for x in sc], 'collisionType': ct, 'decalType': ct})
+# ---- FM4's own collision: one collision-only shape per .col cell, each surface a material carrying its BeamNG ground type
+if COLFILE:
+    import xml.etree.ElementTree as ET
+    names = [e.tag for e in ET.parse(MEDIA / 'physics' / 'surfaceTypes.xml').getroot().find('SurfaceTypes')]
+    def colground(sid):
+        nm = names[sid] if sid < len(names) else ''
+        return nm, next(g for r, g in COLGROUND if re.search(r, nm))
+    cells = fm4col.cells(COLFILE); ncol = collections.Counter()
+    for ci, (Pc, Tc, Sc, Nc) in enumerate(cells):
+        pb = Pc[:, [0, 2, 1]]; nb = Nc[:, [0, 2, 1]]          # draw frame -> BeamNG, a reflection: flip each triangle to keep it facing its normal
+        cr = np.cross(pb[Tc[:, 1]] - pb[Tc[:, 0]], pb[Tc[:, 2]] - pb[Tc[:, 0]]); Tc = np.where((np.sum(cr * nb, 1) < 0)[:, None], Tc[:, [0, 2, 1]], Tc)
+        grp = []
+        for sid in sorted(set(Sc.tolist())):
+            nm, g = colground(sid)
+            if g is None and not WALLS: ncol['left out: ' + nm] += int((Sc == sid).sum()); continue
+            key = f'fm4col_{nm}'
+            if key not in MATS:
+                MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [{'baseColorFactor': [.5, .5, .5, 1]}, {}, {}, {}],
+                             'materialTag0': 'beamng', **({'groundType': g} if g else {})}
+            k = Sc == sid; grp.append(((key, (COLL,)), pb, np.zeros_like(pb), np.zeros((len(pb), 2)), Tc[k].ravel()))
+            ncol[nm] += int(k.sum())
+        if not grp: continue
+        write_lod(SHAPES / f'col{ci}.dae', grp, np.zeros(3), (1,), COLL)
+        items.append({'class': 'TSStatic', 'name': f'fm4_col{ci}', '__parent': 'fm4', 'shapeName': f'{REL}/art/shapes/fm4/col{ci}.dae',
+                      'position': [0, 0, 0], 'collisionType': 'Collision Mesh', 'decalType': 'Collision Mesh'})
+    lap(f'{len(cells)} collision cells from {COLFILE.name}: ' + ', '.join(f'{k} {v}' for k, v in ncol.most_common()))
+
 lap(f'{len(items)} TSStatics, {sum(1 for v in SHAPE.values() if v)} shapes, {len(MATS)} materials, {sum(1 for v in TINFO.values() if v)} textures; {dict(stats)}')
 
 # ---- spawn: AI waypoint at the start line, then the first grid slot (metres back, metres right)
