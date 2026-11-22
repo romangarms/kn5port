@@ -15,3 +15,6 @@ pipeline/*
 pipeline/fh1radio_app/*
 !pipeline/fh1radio_app/app.js
 !pipeline/fh1radio_app/app.json
+!fm4/
+fm4/*
+!fm4/*.py
