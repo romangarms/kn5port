@@ -5,7 +5,8 @@ Porting FM4's circuits with the FH1 pipeline's readers. `fm4build.py` builds a f
 The dump is `D:\Roms\Xbox 360\Xenia\FM4XeniaFix` (read-only), with 24 track folders and 3 GB of tracks in `Media/Tracks/`. Checked on Tsukuba and Laguna Seca, 2026-11-22.
 
 ```
-python fm4build.py Tsukuba [ribbon]                                 extract if needed, then build mods/unpacked/fm4_tsukuba
+python fm4build.py Tsukuba                                          extract if needed, then build mods/unpacked/fm4_tsukuba (every layout)
+python fm4ui.py Tsukuba                                             layout names, venue text, photo and layout maps to fm4/ui/
 python fm4zip.py "<FM4>/Media/Tracks/Tsukuba/bin.zip" tsukuba      extract to tsukuba/x
 python fm4mesh.py tsukuba                                           check vertex layouts over every mesh
 python fm4top.py tsukuba "<FM4>/Media/Tracks/Tsukuba/Ribbon_00/tsukuba_00.pvs" top.png
@@ -82,7 +83,24 @@ The surface id indexes the children of `SurfaceTypes` in `Media/physics/surfaceT
 
 ## Build
 
-`fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Object materials are the diffuse texture only (`Diffuse_TextureSampler`); ground shaders are layered, see Ground blending. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is FM4's `.col` (see Collision) plus each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky, flares, and the ground families the `.col` covers. The spawn is grid slot 1 off the AI line.
+`fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Object materials are the diffuse texture only (`Diffuse_TextureSampler`); ground shaders are layered, see Ground blending. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is FM4's `.col` (see Collision) plus each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky, flares, and the ground families the `.col` covers. Each layout gets a spawn, see Layouts.
+
+**Layouts.** One level holds every ribbon. A ribbon's FPVS places only what is visible from that layout: Suzuka East leaves out 1,560 of the full circuit's draws, Silverstone National 726. So the level places the union of every ribbon's draws, and of their `.col` triangles, keeping shared triangles once. Ribbons with equal texture, shader and mesh tables share shapes. Most tracks have one such group; Alps and Maple Valley have more, and their shapes are named `m<no>_<group>.dae`.
+
+Some layout-specific objects close one layout off from another. Tsukuba's full circuit has two jersey barriers across the short circuit's link, and the short circuit has one across the full lap. The rule: a draw that some ribbons don't place is left out if it stands on one of those ribbons' roads. "On the road" means a vertex or triangle centre of its colliding, non-ground sections lies between chi -1 and 1 of that layout's AI line, from 1 m below the line to 2 m above it. The road runs over the layout's own `StartLine` to `FinishLine` span, since stages run along the full line. `.col` walls steeper than 60 degrees follow the same rule. This left out exactly those 3 barriers and 32 wall triangles on Tsukuba.
+
+Spawns: one per gamedb `Tracks` row with an AI line. Each is grid slot 1 of the row's `DefaultStartGridPositionsId`, back from the waypoint at its `StartLine`. `StartLine` is a fraction of the layout's own line, by distance. Reverse layouts use `<track>_NN_R.geo`, which runs backwards. Some rows have no `Ribbon_NN` FPVS of their own: TopGear 8 to 10, and most of Fujimi Kaido's 14. They still get a spawn, and their geometry comes from the ribbons that have one.
+
+## Menu art and text (`fm4ui.py`, proven)
+
+- **Names.** gamedb `Tracks.DisplayName` is the layout name ("Full Circuit", "Stage B Reverse"). `Environments`, by `Tracks.EnvironmentId`, holds the venue: `DisplayName` ("Tsukuba Circuit"), `Location`, `Description` and `ThumbImageName`. CrownJewel's ribbons span three venues.
+- **String tables.** A `_&<id>` value is a reference into `Media/StringTables/<lang>.zip`, in `Tracks.str` or `Environments.str` (LZX, bin.zip's layout). A `.str` file is LSB2: at 0x28 a big-endian count n, then n (u16 key, u32 offset) pairs sorted by key, a (0xFFFF, 0, u16) sentinel, then zero-terminated UTF-16BE strings. Offsets count UTF-16 units from the first string. The key is the id's low 16 bits; all 254 track references hit.
+- **Images.** These are in `Media/UI/Textures.zip`:
+  - `UI4/Track_Images/<ThumbImageName>1.xds`: the venue photo, 881 x 315.
+  - `UI4/Logos/Track_Ribbons_LG/RIB_<name>.xds`: the layout map with its start marker, 880 x 313. Its name follows `Tracks.MiniRibbonPath`.
+  
+  An `.xds` is a 52-byte D3DBaseTexture header whose words from 0x1C are the Xenos fetch constant: format in word 1 (0x32, 8888), and size in word 2. The tiled top mip follows, in ARGB.
+- **The level.** `info.json` gets the venue's name with "(FM4)" as the title, and its location and description. The photo, cropped to 4:3, is the level preview. Each layout's map, letterboxed on white, is its spawn preview.
 
 The sky and backdrop are baked into a SkyBox cubemap, see Sky.
 

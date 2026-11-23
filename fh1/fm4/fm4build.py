@@ -1,7 +1,8 @@
-"""Build an FM4 track ribbon as a BeamNG level: one shape per mesh file, one TSStatic per draw, diffuse materials, mesh collision, a spawn on
-the grid. First pass: most detailed LOD only, no blend layers, lightmaps or paint palettes. See docs/fm4.md.
-python fm4build.py Tsukuba [ribbon] [output mod folder]
-Work data (bin.zip extracted) goes in fh1/fm4/<track>/; the level goes to mods/unpacked/fm4_<track>[_<ribbon>]."""
+"""Build an FM4 track as a BeamNG level, every layout (ribbon) in one: one shape per mesh file, one TSStatic per draw, diffuse and blended
+ground materials, FM4's collision, a spawn on each layout's grid, and FM4's own menu art and text. Most detailed LOD only, no lightmaps or
+paint palettes. See docs/fm4.md.
+python fm4build.py Tsukuba [output mod folder]
+Work data (bin.zip extracted) goes in fh1/fm4/<track>/; the level goes to mods/unpacked/fm4_<track>."""
 import collections
 import json
 import math
@@ -22,21 +23,22 @@ import fm4mesh
 import fm4pvs
 import fm4rmb
 import fm4sky
+import fm4ui
 import fm4zip
 import dds
 import tex
 import xenos
 from daewrite import write_lod
 from kn5port import beamng
+from scipy.spatial import cKDTree
 
 FM4 = Path(os.environ.get('FM4_DUMP', r'D:\Roms\Xbox 360\Xenia\FM4XeniaFix'))
 MEDIA = FM4 / 'Media'
 TRACK = sys.argv[1] if len(sys.argv) > 1 else 'Tsukuba'
 TRACK = next((d.name for d in (MEDIA / 'Tracks').iterdir() if d.name.lower() == TRACK.lower()), TRACK)     # the build queue's lane gives it in lower case
-RIB = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-LVL = f'fm4_{TRACK.lower()}' + (f'_{RIB:02d}' if RIB else '')
+LVL = f'fm4_{TRACK.lower()}'
 WORK = HERE / TRACK.lower()
-ROOT = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(beamng.find_mods()) / 'unpacked' / LVL
+ROOT = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(beamng.find_mods()) / 'unpacked' / LVL
 LEVEL = ROOT / 'levels' / LVL; REL = f'/levels/{LVL}'
 T0 = time.time()
 
@@ -71,16 +73,25 @@ def lap(what):
 if not (WORK / 'x').exists():
     fm4zip.main(str(MEDIA / 'Tracks' / TRACK / 'bin.zip'), str(WORK))
 tex.X = str(WORK / 'x')
-RDIR = MEDIA / 'Tracks' / TRACK / f'Ribbon_{RIB:02d}'
-PV = fm4pvs.tables(next(RDIR.glob('*.pvs')).read_bytes())
-TT = PV['textures']; MR = PV['meshes']
+# Every layout (ribbon) goes into the one level. A ribbon's FPVS places what is visible from that layout, so the level places the union of
+# their draws. Layouts whose texture, shader and mesh tables are equal share a table group (all but some of Alps' and Maple Valley's).
+ROWS = fm4ui.layouts(TRACK)
+RDIRS = {int(d.name[7:]): d for d in sorted((MEDIA / 'Tracks' / TRACK).glob('Ribbon_*'))}
+PVS = {ri: fm4pvs.tables(next(d.glob('*.pvs')).read_bytes()) for ri, d in RDIRS.items() if any(d.glob('*.pvs'))}
+TG = []; RG = {}
+for ri, pv in PVS.items():
+    sig = (pv['textures'], pv['shaders'], [m['tex'] for m in pv['meshes']])
+    RG[ri] = next((g for g, t in enumerate(TG) if (t['textures'], t['shaders'], [m['tex'] for m in t['meshes']]) == sig), len(TG))
+    if RG[ri] == len(TG): TG.append(pv)
+RIB0 = min(PVS); PV = PVS[RIB0]; TT = PV['textures']; MR = PV['meshes']
 FETCH = fm4mesh.fetch_lists(str(WORK))
 SAMPLERS = {}
 for f_ in (WORK / 'x').glob('shaders_track_*.fxobj'):
     ps = [s for s in xenos.shaders(f_.read_bytes()) if s['kind'] == 'ps']
     if ps: SAMPLERS[f_.stem[14:].lower()] = {c[0]: c[2] for c in ps[0]['consts'] if c[1] == 3}
 STEM = next((WORK / 'x').glob('*out.00000.rmb.bin')).name.split('.')[0]
-lap(f'{TRACK} ribbon {RIB}: {len(PV["draws"])} draws, {len(MR)} mesh records, {len(TT)} textures, {len(SAMPLERS)} shaders')
+lap(f'{TRACK}: layouts {sorted(PVS)} placed, {len(ROWS)} in gamedb, {len(TG)} table groups; ' +
+    ', '.join(f'ribbon {ri} {len(pv["draws"])} draws' for ri, pv in PVS.items()) + f'; {len(SAMPLERS)} shaders')
 
 
 def lod_of(name):
@@ -97,13 +108,21 @@ def mesh_file(no):
     return FILES[no]
 
 
-# keep the most detailed LOD of each object: LODs are separate draws at one spot
+# the union of every layout's draws, each with the layouts that place it; then the most detailed LOD of each object (LODs are separate
+# draws at one spot)
+UNION = {}
+for ri, pv in PVS.items():
+    for d in pv['draws']:
+        k = (RG[ri], d['mesh'], tuple(np.round(d['pos'], 2)), tuple(np.round(d['rot'].ravel(), 2)))
+        UNION.setdefault(k, dict(d, g=RG[ri], ribs=set()))['ribs'].add(ri)
 groups = collections.defaultdict(list)
-for d in PV['draws']:
+for k, d in UNION.items():
     _, p, _, _ = mesh_file(d['mesh']); nm = p['meshes'][0]['name']
-    groups[(tuple(np.round(d['pos'], 2)), tuple(np.round(d['rot'].ravel(), 2)), re.sub(r'_LOD\d+', '', nm))].append((lod_of(nm), d))
-DRAWS = [min(v, key=lambda x: x[0])[1] for v in groups.values()]
-lap(f'{len(DRAWS)} draws after keeping LOD0')
+    groups[(k[0], k[2], k[3], re.sub(r'_LOD\d+', '', nm))].append((lod_of(nm), d))
+DRAWS = []
+for v in groups.values():
+    d = min(v, key=lambda x: x[0])[1]; d['ribs'] = set().union(*(x[1]['ribs'] for x in v)); DRAWS.append(d)
+lap(f'{len(UNION)} draws over all layouts, {len(DRAWS)} after keeping LOD0, {sum(len(d["ribs"]) < len(PVS) for d in DRAWS)} in only some layouts')
 
 # ---- textures
 TEXD = LEVEL / 'art' / 'textures'; TEXD.mkdir(parents=True, exist_ok=True)
@@ -178,12 +197,12 @@ def flat_material(ps):
     return key
 
 
-def material(shader, slots, rec):
+def material(shader, slots, rec, tt):
     """-> material name for a section, from its shader's diffuse sampler and the mesh record's texture list"""
     smp = SAMPLERS.get(shader, {}); reg = next((smp[s] for s in DIFFUSE if s in smp), None)
     tid = None
     if reg is not None and reg < len(slots) and slots[reg] < len(rec['tex']):
-        tid = TT[rec['tex'][slots[reg]]][0]
+        tid = tt[rec['tex'][slots[reg]]][0]
     t = texture(tid) if tid is not None else None
     ground = next((g for r, g in GROUND if r.match(shader)), None)
     two = '2sd' in shader; alpha = 'opac' in shader and t is not None and t['cut'] > 0.002
@@ -209,14 +228,14 @@ def material(shader, slots, rec):
 #   terr_*         colour = lerp(A(tc0 * c1.xy) * c0.rgb, B(tc0 * c2.xy), mask.g(tc2))
 #   shldr_blnd_*   colour = lerp(A(tc1 * c0.xy), B(tc1 * c1.xy), mask.g(tc0)) * vertex colour * c0.z
 #   shldr_blnd_*decal*: A at tc1 * c0.yz, vertex colour * c0.x, and a third layer C (tc2 * c2.xy) lerped into B by vertex alpha, left out for now
-def ground_plan(shader, slots, rec, ps):
+def ground_plan(shader, slots, rec, ps, tt):
     """-> dict(layers=[(texture id, uv scale)], uv0=(set, scale), mask=(texture id, set, scale), road, tint, vcolor) or None"""
     smp = SAMPLERS.get(shader, {})
 
     def tid(name):
         r = smp.get(name)
         if r is None or r >= len(slots) or slots[r] >= len(rec['tex']): return None
-        i = TT[rec['tex'][slots[r]]][0]
+        i = tt[rec['tex'][slots[r]]][0]
         return i if tex.bix(i) else None
     c = lambda row, k, n=2: np.array(ps[row][k:k + n]) if row < len(ps) else np.ones(n)
     A, Bt, V = tid('Blend_ASampler'), tid('Blend_BSampler'), tid('Blend_ValueSampler')
@@ -268,20 +287,22 @@ def box_uv(m, lay, s, name):
     fl = s['fl']; return np.array(fl[4:6]) + fm4mesh.attr(m, lay, name) * np.array(fl[6:8])
 
 
-COLFILE = next(RDIR.glob('*_track_*.col'), None)
+COLFILES = {ri: f for ri, d in RDIRS.items() for f in [next(d.glob('*_track_*.col'), None)] if f}
+COLFILE = bool(COLFILES)
 
 # ---- shapes
 SHAPES = LEVEL / 'art' / 'shapes' / 'fm4'; SHAPES.mkdir(parents=True, exist_ok=True)
-SHAPE = {}
+SHAPE = {}; COLPTS = {}
 COLL = 5        # a level number no detail level uses: groups carrying it go into the collision mesh only (daewrite.write_lod)
 stats = collections.Counter()
 
 
-def shape(no):
-    """art/shapes/fm4/m<no>.dae -> (path, collides) or None"""
-    if no in SHAPE: return SHAPE[no]
-    b, p, shs, mats = mesh_file(no); rec = MR[no] if no < len(MR) else {'tex': ()}
-    out = []
+def shape(g, no):
+    """art/shapes/fm4/m<no>[_<g>].dae, mesh file no with table group g's textures -> (path, collides) or None. COLPTS[(g, no)] gets the
+    game-frame vertices of its colliding sections that aren't ground (road, shoulder, terrain, verge), for the layout test below."""
+    if (g, no) in SHAPE: return SHAPE[(g, no)]
+    b, p, shs, mats = mesh_file(no); tt = TG[g]['textures']; mr = TG[g]['meshes']; rec = mr[no] if no < len(mr) else {'tex': ()}
+    out = []; cpts = []
     for m in p['meshes']:
         if NOUSE.search(m['name']): continue
         lay = fm4mesh.mesh_layout(m, shs, FETCH)
@@ -300,7 +321,7 @@ def shape(no):
             used = np.unique(tri); remap = np.full(m['nv'], -1); remap[used] = np.arange(len(used))
             uv = box_uv(m, lay, s, uvn)[used] if uvn else np.zeros((len(used), 2)); uv1 = None
             ground = next((g for r, g in GROUND if r.match(shader)), None)
-            plan = ground_plan(shader, slots, rec, mats[mi][2]); mat = None
+            plan = ground_plan(shader, slots, rec, mats[mi][2], tt); mat = None
             if plan and all(k in lay for k in (plan['uv0'][0], plan['mask'][1]) if k != 'world'):
                 mat = ground_material(plan, ground)
                 if mat:
@@ -314,74 +335,143 @@ def shape(no):
             if mat is None and shader.startswith('clr_'):
                 mat = flat_material(mats[mi][2])
             if mat is None:
-                mat = material(shader, slots, rec)
+                mat = material(shader, slots, rec, tt)
                 if VCLR.search(shader) and 'color0' in lay:
                     cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
                     uv1 = np.c_[np.zeros((len(used), 2)), cb[:, 1:4].mean(1) / 255]; stats['vertex-coloured sections'] += 1
             collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader
                            or COLFILE and COLFAMILY.match(shader))
             out.append(((mat, (0, COLL) if collide else (0,)), pos[used], nrm[used], uv, remap[tri].ravel(), uv1))
+            if collide and not ground: cpts.append(fm4mesh.attr(m, lay, 'position0')[used])
             stats['sections'] += 1; stats['triangles'] += len(tri)
+    COLPTS[(g, no)] = np.vstack(cpts) if cpts else np.zeros((0, 3))
     if not out:
-        SHAPE[no] = None; return None
-    path = SHAPES / f'm{no}.dae'
-    col = write_lod(path, out, np.zeros(3), (1,), COLL)
-    SHAPE[no] = (f'{REL}/art/shapes/fm4/m{no}.dae', col)
-    return SHAPE[no]
+        SHAPE[(g, no)] = None; return None
+    nm = f'm{no}' + (f'_{g}' if g else '')
+    col = write_lod(SHAPES / f'{nm}.dae', out, np.zeros(3), (1,), COLL)
+    SHAPE[(g, no)] = (f'{REL}/art/shapes/fm4/{nm}.dae', col)
+    return SHAPE[(g, no)]
 
 
-items = []
+# ---- layouts' roads. Each layout's AI line is Media/AI/Tracks/<track>_<ribbon>[_R].geo (reverse layouts' run backwards), and its road is
+# the strip between chi -1 and 1 of fNormal, over the stretch from StartLine to FinishLine (lap fractions: a stage uses part of the full line)
+ROAD_BELOW, ROAD_ABOVE = 1.0, 2.0       # metres below and above the AI line that count as on its road: barriers, not bridges overhead
+WALL_NZ = 0.5                           # a .col triangle steeper than 60 degrees is a wall, not a surface
+
+
+def ai_file(ri):
+    return next((p for p in sorted((MEDIA / 'AI' / 'Tracks').glob('*.geo')) if re.fullmatch(rf'{TRACK}_{ri:02d}(_R)?\.geo', p.name, re.I)), None)
+
+
+ROADS = {}
+for r_ in ROWS:
+    f_ = ai_file(r_['RibbonIndex'])
+    if f_ is None: continue
+    W_, N_, _ = fm4ai.line(f_); s_ = np.r_[0, np.cumsum(np.linalg.norm(np.diff(W_, axis=0), axis=1))]; frac = s_ / s_[-1]
+    a_, b_ = r_['StartLine'] or 0, r_['FinishLine'] if r_['FinishLine'] is not None else 1
+    span = (frac >= a_) & (frac <= b_) if a_ <= b_ else (frac >= a_) | (frac <= b_)
+    ROADS[r_['RibbonIndex']] = dict(W=W_, N=N_, frac=frac, tree=cKDTree(W_[span, :2]), idx=np.flatnonzero(span), row=r_)
+
+
+def on_road(pts, ri):
+    """which BeamNG points lie on layout ri's road"""
+    R = ROADS[ri]; d, k = R['tree'].query(pts[:, :2]); i = R['idx'][k]
+    n = R['N'][i, :2]; nn = (n * n).sum(1); chi = ((pts[:, :2] - R['W'][i, :2]) * n).sum(1) / nn
+    dz = pts[:, 2] - R['W'][i, 2]
+    return (np.abs(chi) < 1) & (dz > -ROAD_BELOW) & (dz < ROAD_ABOVE) & (d < np.sqrt(nn) + 2)
+
+
+# A draw that some layouts don't place is left out when it stands on one of those layouts' roads: it closes that layout off (Tsukuba's
+# full-circuit barriers across the short circuit's link, and the jersey barrier the short circuit puts across the full one). Ground pieces
+# never block. Every layout stays drivable, the way free roam needs it.
+items = []; blocked = collections.Counter()
 for k, d in enumerate(DRAWS):
-    sh = shape(d['mesh'])
+    sh = shape(d['g'], d['mesh'])
     if sh is None: continue
+    if len(d['ribs']) < len(PVS) and len(COLPTS[(d['g'], d['mesh'])]):
+        w = (COLPTS[(d['g'], d['mesh'])] @ d['rot'] + d['pos'])[:, [0, 2, 1]]
+        on = [j for j in PVS if j not in d['ribs'] and j in ROADS and on_road(w, j).any()]
+        if on:
+            blocked[f"{mesh_file(d['mesh'])[1]['meshes'][0]['name']} (layouts {sorted(d['ribs'])}, on {on})"] += 1; continue
     M = P @ d['rot'].T @ B.T; sc = np.linalg.norm(M, axis=0); Rn = M / sc
     pos = P @ d['pos']; ct = 'Collision Mesh' if sh[1] else 'None'
     items.append({'class': 'TSStatic', 'name': f'fm4_d{k}', '__parent': 'fm4', 'shapeName': sh[0], 'position': [float(x) for x in pos],
                   'rotationMatrix': [float(x) for x in Rn.T.ravel()], 'scale': [float(x) for x in sc], 'collisionType': ct, 'decalType': ct})
-# ---- FM4's own collision: one collision-only shape per .col cell, each surface a material carrying its BeamNG ground type
-if COLFILE:
+lap(f'{sum(blocked.values())} draws left out for standing on another layout\'s road' + ''.join(f'\n    {n} x{c}' for n, c in blocked.most_common()))
+
+# ---- FM4's own collision: every layout's .col, triangles that several share kept once, a layout's walls left out where they stand on
+# another layout's road (as draws above). Written in 100 m tiles, each surface a material carrying its BeamNG ground type
+COLCELL = 100.0
+if COLFILES:
     import xml.etree.ElementTree as ET
     names = [e.tag for e in ET.parse(MEDIA / 'physics' / 'surfaceTypes.xml').getroot().find('SurfaceTypes')]
     def colground(sid):
         nm = names[sid] if sid < len(names) else ''
         return nm, next(g for r, g in COLGROUND if re.search(r, nm))
-    cells = fm4col.cells(COLFILE); ncol = collections.Counter()
-    for ci, (Pc, Tc, Sc, Nc) in enumerate(cells):
-        pb = Pc[:, [0, 2, 1]]; nb = Nc[:, [0, 2, 1]]          # draw frame -> BeamNG, a reflection: flip each triangle to keep it facing its normal
-        cr = np.cross(pb[Tc[:, 1]] - pb[Tc[:, 0]], pb[Tc[:, 2]] - pb[Tc[:, 0]]); Tc = np.where((np.sum(cr * nb, 1) < 0)[:, None], Tc[:, [0, 2, 1]], Tc)
+    TRI = {}; ncol = collections.Counter()
+    for ri, cf in COLFILES.items():
+        for Pc, Tc, Sc, Nc in fm4col.cells(cf):
+            pb = Pc[:, [0, 2, 1]]; nb = Nc[:, [0, 2, 1]]          # draw frame -> BeamNG, a reflection: flip each triangle to keep it facing its normal
+            cr = np.cross(pb[Tc[:, 1]] - pb[Tc[:, 0]], pb[Tc[:, 2]] - pb[Tc[:, 0]]); Tc = np.where((np.sum(cr * nb, 1) < 0)[:, None], Tc[:, [0, 2, 1]], Tc)
+            tri = pb[Tc]; keys = np.round(tri * 100).astype(np.int64)
+            for t, kk, sid, n in zip(tri, keys, Sc.tolist(), nb):
+                key = tuple(sorted(map(tuple, kk.tolist())))
+                if key not in TRI: TRI[key] = [t, sid, n, set()]
+                TRI[key][3].add(ri)
+    keep = []; nwall = 0
+    for t, sid, n, ribs in TRI.values():
+        if len(ribs) < len(COLFILES) and abs(n[2]) < WALL_NZ * np.linalg.norm(n):
+            pts = np.vstack([t, t.mean(0)])
+            if any(on_road(pts, j).any() for j in COLFILES if j not in ribs and j in ROADS): nwall += 1; continue
+        nm, g = colground(sid)
+        if g is None and not WALLS: ncol['left out: ' + nm] += 1; continue
+        keep.append((t, nm, g)); ncol[nm] += 1
+    tiles = collections.defaultdict(lambda: collections.defaultdict(list))
+    for t, nm, g in keep:
+        c = t.mean(0); tiles[(int(c[0] // COLCELL), int(c[1] // COLCELL))][(nm, g)].append(t)
+    for ci, (cell, bysurf) in enumerate(sorted(tiles.items())):
         grp = []
-        for sid in sorted(set(Sc.tolist())):
-            nm, g = colground(sid)
-            if g is None and not WALLS: ncol['left out: ' + nm] += int((Sc == sid).sum()); continue
+        for (nm, g), ts in sorted(bysurf.items()):
             key = f'fm4col_{nm}'
             if key not in MATS:
                 MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': [{'baseColorFactor': [.5, .5, .5, 1]}, {}, {}, {}],
                              'materialTag0': 'beamng', **({'groundType': g} if g else {})}
-            k = Sc == sid; grp.append(((key, (COLL,)), pb, np.zeros_like(pb), np.zeros((len(pb), 2)), Tc[k].ravel()))
-            ncol[nm] += int(k.sum())
-        if not grp: continue
+            v = np.asarray(ts).reshape(-1, 3)
+            grp.append(((key, (COLL,)), v, np.zeros_like(v), np.zeros((len(v), 2)), np.arange(len(v))))
         write_lod(SHAPES / f'col{ci}.dae', grp, np.zeros(3), (1,), COLL)
         items.append({'class': 'TSStatic', 'name': f'fm4_col{ci}', '__parent': 'fm4', 'shapeName': f'{REL}/art/shapes/fm4/col{ci}.dae',
                       'position': [0, 0, 0], 'collisionType': 'Collision Mesh', 'decalType': 'Collision Mesh'})
-    lap(f'{len(cells)} collision cells from {COLFILE.name}: ' + ', '.join(f'{k} {v}' for k, v in ncol.most_common()))
+    lap(f'collision from {len(COLFILES)} layouts: {len(TRI)} distinct triangles, {nwall} walls on another layout\'s road left out, {len(tiles)} tiles: '
+        + ', '.join(f'{k} {v}' for k, v in ncol.most_common()))
 
 lap(f'{len(items)} TSStatics, {sum(1 for v in SHAPE.values() if v)} shapes, {len(MATS)} materials, {sum(1 for v in TINFO.values() if v)} textures; {dict(stats)}')
 
-# ---- spawn: AI waypoint at the start line, then the first grid slot (metres back, metres right)
+# ---- spawns: one per layout, on its grid. The AI waypoint at the layout's StartLine (a lap fraction along its own line, by distance), then
+# the first grid slot of its DefaultStartGridPositionsId (metres back, metres right)
 db = sqlite3.connect(MEDIA / 'db' / 'gamedb.slt')
-row = db.execute('select id, DefaultStartGridPositionsId, StartLine, DisplayName from Tracks where MediaName=? and RibbonIndex=?', (TRACK, RIB)).fetchone()
-grid = db.execute('select MetersBackFromStartLine, MetersRightOfCenterLine, Yaw from StartGridPositions where id=? order by StartIndex', (row[1],)).fetchall()
-AI = MEDIA / 'AI' / 'Tracks' / f'{TRACK.lower()}_{RIB:02d}.geo'
-W, _, _ = fm4ai.line(AI)
-i0 = int(round((row[2] or 0) * len(W))) % len(W)
-fwd = W[(i0 + 1) % len(W)] - W[i0]; fwd[2] = 0; fwd /= np.linalg.norm(fwd); right = np.array([fwd[1], -fwd[0], 0])
-spawns = []
-for g in grid[:1] or [(0, 0, 0)]:
+ENVS = fm4ui.environments(ROWS); ENVNAME = {e['Id']: e['ShortDisplayName'] for e in ENVS}
+spawns = []; points = []
+PREV = (480, 360)
+for r_ in ROWS:
+    ri = r_['RibbonIndex']
+    if ri not in ROADS: lap(f"layout {ri} {r_['name']}: no AI line, no spawn"); continue
+    W = ROADS[ri]['W']; frac = ROADS[ri]['frac']
+    i0 = int(np.argmin(np.abs(frac - (r_['StartLine'] or 0)))) % (len(W) - 1)
+    g = db.execute('select MetersBackFromStartLine, MetersRightOfCenterLine, Yaw from StartGridPositions where id=? order by StartIndex',
+                   (r_['DefaultStartGridPositionsId'],)).fetchone() or (0, 0, 0)
+    fwd = W[i0 + 1] - W[i0]; fwd[2] = 0; fwd /= np.linalg.norm(fwd); right = np.array([fwd[1], -fwd[0], 0])
     back, rt, _ = g; pt = W[i0] - fwd * back + right * rt; pt[2] += .5
     yaw = math.atan2(fwd[0], -fwd[1]); c_, s_ = math.cos(yaw), math.sin(yaw)
-    spawns.append({'class': 'SpawnSphere', 'name': 'spawn_grid', '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker',
+    obj = f'spawn_{ri:02d}'
+    spawns.append({'class': 'SpawnSphere', 'name': obj, '__parent': 'MissionGroup', 'dataBlock': 'SpawnSphereMarker',
                    'position': [float(x) for x in pt], 'rotationMatrix': [c_, -s_, 0, s_, c_, 0, 0, 0, 1], 'radius': 1})
-lap(f'spawn at {spawns[0]["position"]}, start waypoint {i0} of {len(W)}')
+    label = (f"{ENVNAME[r_['EnvironmentId']]}: " if len(ENVS) > 1 else '') + r_['name']
+    points.append({'objectname': obj, 'translationId': label, 'preview': f'{obj}_preview.jpg'})
+    try:
+        fm4ui.fit(fm4ui.ribbon_art(r_), PREV, pad=(255, 255, 255)).save(LEVEL / f'{obj}_preview.jpg', quality=90)
+    except KeyError:
+        del points[-1]['preview']
+    lap(f"spawn {obj} {label}: {[round(float(x), 1) for x in pt]}, waypoint {i0} of {len(W)}")
 
 # ---- sky: the dome baked into a SkyBox cubemap through FM4's post (fm4sky.py), the sun from TrackSettings' ShadowLightDirection
 TS = fm4sky.settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml')
@@ -409,10 +499,23 @@ obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup'
 (mg / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in obj))
 (mg / 'fm4' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in items))
 (LEVEL / 'art' / 'shapes' / 'fm4' / 'main.materials.json').write_text(json.dumps(MATS, indent=1))
+# ---- the freeroam menu: FM4's venue name, location and description (gamedb Environments, Environments.str), its photo
+# (UI4/Track_Images) as the level's preview, and each layout's map (UI4/Logos/Track_Ribbons_LG) as its spawn's
+venue = ' / '.join(e['DisplayName'] for e in ENVS) or TRACK
+desc = '\n\n'.join(f"{e['DisplayName']}, {e['Location']}. {e['Description']}" if len(ENVS) > 1 else f"{e['Location']}. {e['Description']}" for e in ENVS)
+layouts = ', '.join(p_['translationId'] for p_ in points)
+previews = []
+for i, e in enumerate(ENVS):
+    ph = fm4ui.photo(e)
+    if ph is None: continue
+    w_ = round(ph.height * 4 / 3); nm = f'{LVL}_preview' + (f'_{i}' if i else '') + '.jpg'
+    fm4ui.fit(ph, (w_, ph.height)).save(LEVEL / nm, quality=92); previews.append(nm)
+ext = np.vstack([R['W'][:, :2] for R in ROADS.values()]) if ROADS else np.zeros((1, 2))
+size = int(np.ceil((np.abs(ext).max() * 2 + 400) / 100) * 100)
 (LEVEL / 'info.json').write_text(json.dumps({
-    'title': f'FM4 {TRACK}' + (f' (layout {RIB})' if RIB else ''),
-    'description': 'Personal conversion of a Forza Motorsport 4 (2011) track from your own copy. Not for redistribution.',
-    'authors': 'Turn 10 (original); converted locally', 'size': [2000, 2000],
-    'spawnPoints': [{'objectname': 'spawn_grid', 'translationId': 'Grid'}], 'defaultSpawnPointName': 'spawn_grid'}, indent=2))
-beamng.write_notice(ROOT, f'Forza Motorsport 4, {TRACK}', 'Turn 10 Studios / Microsoft', LVL)
+    'title': f'{venue} (FM4)',
+    'description': f'{desc}\n\nLayouts: {layouts}.\n\nForza Motorsport 4 (2011), converted from your own copy. Not for redistribution.',
+    'authors': 'Turn 10 Studios (original); converted locally', 'size': [size, size], 'previews': previews,
+    'spawnPoints': points, 'defaultSpawnPointName': points[0]['objectname'] if points else None}, indent=2, ensure_ascii=False), encoding='utf8')
+beamng.write_notice(ROOT, f'Forza Motorsport 4, {venue}', 'Turn 10 Studios / Microsoft', LVL)
 lap(f'done -> {LEVEL}')
