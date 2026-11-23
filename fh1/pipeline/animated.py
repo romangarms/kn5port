@@ -671,13 +671,17 @@ for kind, model in {**RIDES, **STANDALONE}.items():
     root = max((sk for sk in parts if moving_(Ts[sk])), key=size_, default=None) if kind in MOVERS else None
     for (s, k), pieces in sorted(parts.items()):
         T0 = Ts[(s, k)]; T = np.linalg.inv(Ts[root]) @ T0 if root else T0
+        # Each part's node pivots on its bone's origin, its vertices given from there. Held in model space, a part turned about the model's origin, and
+        # Collada interpolates a node's location in a straight line between keys, so the crop duster's propeller, 32 m from it at 55 degrees a
+        # sample, swung a median 3.6 m off its hub between keys (user, 2026-11-22). From its bone's origin it stays on its hub
+        pv = S[:3, :3] @ B_[s][k][:3, 3]; T = T.copy(); T[:, :3, 3] += T[:, :3, :3] @ pv
         own = []
         for mat, m, t_ in pieces:
-            used, inv = np.unique(t_, return_inverse=True); q = (S[:3, :3] @ m['pos'][used].T).T; t_ = inv.reshape(-1, 3)[:, ::-1]
+            used, inv = np.unique(t_, return_inverse=True); q = (S[:3, :3] @ m['pos'][used].T).T - pv; t_ = inv.reshape(-1, 3)[:, ::-1]
             own.append(((mat, (0, 1, FARCUT)), q, granny.smooth_normals(q, t_), m['uv'][used], t_.ravel(), np.zeros((len(q), 2))))
         p = np.concatenate([g[1] for g in own])
         if len(p) > len(route) and moving_(T0):
-            route = p.mean(0) @ T0[:, :3, :3].transpose(0, 2, 1) + T0[:, :3, 3]
+            route = (p.mean(0) + pv) @ T0[:, :3, :3].transpose(0, 2, 1) + T0[:, :3, 3]
         moves = moving_(T)
         if not moves or (np.ptp(p, 0).max() < TINY and kind not in SMALL_PARTS):
             groups += [(g[0], (T[0, :3, :3] @ g[1].T).T + T[0, :3, 3], (T[0, :3, :3] @ g[2].T).T) + g[3:] for g in own]
