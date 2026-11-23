@@ -21,6 +21,7 @@ import fm4col
 import fm4mesh
 import fm4pvs
 import fm4rmb
+import fm4sky
 import fm4zip
 import dds
 import tex
@@ -42,10 +43,8 @@ T0 = time.time()
 # game mesh frame (x east, y up, z south) -> BeamNG (x, -z, y); a draw's frame has z flipped, so draw space -> BeamNG is (x, z, y)
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); P = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0.]])
 NOUSE = re.compile(r'occluder|shadow|^SKY_|proxy|collision|_CAGE|reflect', re.I)
-NODRAW = re.compile(r'^(clr_0|sun_contribution|add_anim_camera_flash|flare_)')
-# The backdrop is the sky dome (sky_diff_1, an 8 km dome round the origin): its 8192 x 1024 panorama paints Mount Tsukuba, the treeline and the
-# fields on its horizon. Unlit, as the game draws it: black base colour and the panorama as an emissive map, SKY_NITS by eye
-SKY_NITS = float(os.environ.get('FM4_SKY_NITS', '4000'))
+# The sky dome (sky_*) isn't placed: fm4sky.py bakes it, with the backdrop painted into it, into the level's SkyBox
+NODRAW = re.compile(r'^(clr_0|sun_contribution|add_anim_camera_flash|flare_|sky_)')
 NOCOLLIDE = re.compile(r'^(grass|bush|tree|anim_flag|rdline|flare|sky|chain_diff_opac_2)')
 NOCOLLIDE_NAME = re.compile(r'^VEG_|^OBJ_Flag|crowd|spectator|_Tree|Bush|Grass|^RCEDAY_CameraFlash', re.I)
 # FM4's track collision (<track>_track_NN.col) is the drivable surface and barriers. Its surface ids index Media/physics/surfaceTypes.xml;
@@ -188,19 +187,6 @@ def material(shader, slots, rec):
     return key
 
 
-def sky_material(slots, rec):
-    tid = TT[rec['tex'][slots[0]]][0] if slots and slots[0] < len(rec['tex']) else None
-    t = texture(tid) if tid is not None else None
-    if t is None: return None
-    key = f"fm4_{t['name'][4:]}_sky"
-    if key not in MATS:
-        tp = f"{REL}/art/textures/{t['name']}.color.dds"
-        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'materialTag0': 'beamng', 'castShadows': False,
-                     'Stages': [{'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': 1, 'metallicFactor': 0, 'emissive': True,
-                                 'emissiveMap': tp, 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': SKY_NITS}, {}, {}, {}]}
-    return key
-
-
 # Ground shaders blend layers by the green of a Blend_Value mask (docs/fm4.md, Ground blending). Every UV set goes through the section's
 # UV box. Per family: (layer UV set, A's scale, B's scale, mask UV set, mask scale), the scales as (constant row, first component) of c360:
 #   road_*         colour = B(world x, z * c0.x) * mask.g(texcoord2 * c0.yz)        no A: B is layer 0, then a black layer at 1 - mask.g
@@ -283,11 +269,8 @@ def shape(no):
     for m in p['meshes']:
         if NOUSE.search(m['name']): continue
         lay = fm4mesh.mesh_layout(m, shs, FETCH)
-        if lay is None or 'normal0' not in lay and not all(x.startswith('sky_') for x in shs):
-            stats['meshes without layout or normals'] += 1; continue
-        pos = fm4mesh.attr(m, lay, 'position0') @ B.T
-        # the sky dome has no normals: facing its centre (unlit, so they only need to be sane)
-        nrm = fm4mesh.attr(m, lay, 'normal0') @ B.T if 'normal0' in lay else -pos / np.maximum(np.linalg.norm(pos, axis=1, keepdims=True), 1e-6)
+        if lay is None or 'normal0' not in lay: stats['meshes without layout or normals'] += 1; continue
+        pos = fm4mesh.attr(m, lay, 'position0') @ B.T; nrm = fm4mesh.attr(m, lay, 'normal0') @ B.T
         uvn = next((k for k in ('texcoord0', 'texcoord2', 'texcoord1') if k in lay), None)
         for s in m['secs']:
             mi = s['ints'][2]
@@ -310,8 +293,6 @@ def shape(no):
                         cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
                         uv1 = np.c_[uv1, cb[:, 1:4].mean(1) / 255 * plan['vcolor']]
                     stats['ground sections'] += 1
-            if mat is None and shader.startswith('sky_'):
-                mat = sky_material(slots, rec); stats['sky sections'] += 1
             if mat is None:
                 mat = material(shader, slots, rec)
             collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader
@@ -379,12 +360,28 @@ for g in grid[:1] or [(0, 0, 0)]:
                    'position': [float(x) for x in pt], 'rotationMatrix': [c_, -s_, 0, s_, c_, 0, 0, 0, 1], 'radius': 1})
 lap(f'spawn at {spawns[0]["position"]}, start waypoint {i0} of {len(W)}')
 
+# ---- sky: the dome baked into a SkyBox cubemap through FM4's post (fm4sky.py), the sun from TrackSettings' ShadowLightDirection
+TS = fm4sky.settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml')
+SKYNO = next(d['mesh'] for d in PV['draws'] if any(x.startswith('sky_') for x in mesh_file(d['mesh'])[2]))
+sky_slot = fm4sky.dome(str(WORK), STEM, SKYNO, FETCH)[3]
+SKYMATS, skyinfo = fm4sky.bake(str(WORK), STEM, SKYNO, FETCH, TT[MR[SKYNO]['tex'][sky_slot]][0], TS, LEVEL / 'art' / 'skies' / 'fm4_sky', f'{REL}/art/skies/fm4_sky')
+(LEVEL / 'art' / 'skies' / 'fm4_sky' / 'main.materials.json').write_text(json.dumps(SKYMATS, indent=1))
+# ShadowLightDirection is the light's travel in the draw frame (x east, y up, z north): checked against the sun painted in the dome, at
+# azimuth 306 where the light gives 307.5 (FM4 lights from 40.7 degrees up, the painted sun is at 20.5)
+sl = np.array([TS['ShadowLightDirection'][k] for k in 'xyz']); sl = -sl / np.linalg.norm(sl)
+SUN_AZ = float(np.degrees(np.arctan2(sl[0], sl[2])) % 360); SUN_EL = float(np.degrees(np.arcsin(sl[1])))
+lap(f'sky: dome mesh {SKYNO}, key {skyinfo["key"]:.3f}, EV {skyinfo["ev"]:.2f}; sun azimuth {SUN_AZ:.1f}, elevation {SUN_EL:.1f}')
+
 # ---- level files
 main = LEVEL / 'main'; mg = main / 'MissionGroup'; (mg / 'fm4').mkdir(parents=True, exist_ok=True)
 (main / 'items.level.json').write_text(json.dumps({'name': 'MissionGroup', 'class': 'SimGroup', 'enabled': '1'}) + '\n')
-obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup', 'visibleDistance': 6000, 'gravity': -9.81, 'canvasClearColor': [.5, .6, .7, 1]},
-       {'class': 'TimeOfDay', 'name': 'tod', '__parent': 'MissionGroup', 'time': .1, 'play': False, 'azimuthOverride': 0, 'startTime': .1},
-       {'class': 'ScatterSky', 'name': 'sunsky', '__parent': 'MissionGroup', 'position': [0, 0, 0], 'shadowDistance': 1600, 'shadowSoftness': .2, 'brightness': 1.0},
+# No TimeOfDay: FM4's tracks have one fixed sun, so ScatterSky keeps the azimuth and elevation set here. shadowDistance is TrackSettings'
+# ShadowEnds InGameShadowEnd. The SkyBox draws FM4's sky over ScatterSky's, as FH1's does; the bake is also the reflection cubemap
+obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup', 'visibleDistance': 6000, 'gravity': -9.81,
+        'globalEnviromentMap': 'fm4_sky_cubemap'},
+       {'class': 'ScatterSky', 'name': 'sunsky', '__parent': 'MissionGroup', 'position': [0, 0, 0], 'azimuth': SUN_AZ, 'elevation': SUN_EL,
+        'shadowDistance': TS['ShadowEnds']['InGameShadowEnd']},
+       {'name': 'fm4_skybox', 'class': 'SkyBox', '__parent': 'MissionGroup', 'material': 'fm4_sky'},
        *spawns, {'name': 'fm4', 'class': 'SimGroup', '__parent': 'MissionGroup'}]
 (mg / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in obj))
 (mg / 'fm4' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in items))

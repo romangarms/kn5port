@@ -84,11 +84,40 @@ The surface id indexes the children of `SurfaceTypes` in `Media/physics/surfaceT
 
 `fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Object materials are the diffuse texture only (`Diffuse_TextureSampler`); ground shaders are layered, see Ground blending. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is FM4's `.col` (see Collision) plus each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky, flares, and the ground families the `.col` covers. The spawn is grid slot 1 off the AI line.
 
-The backdrop is the sky dome, `<TRACK>_SKY_001` (shader `sky_diff_1`, position and texcoord0 only, no normals): an 8 km dome round the origin, up to 2.7 km high, whose 8192 x 1024 panorama paints the distant scenery on its horizon (Mount Tsukuba, the treeline, fields) under the sky and clouds. FM4 has no other far geometry. It's built as an unlit shape: black base colour, the panorama as an emissive map at `FM4_SKY_NITS` (default 4000, not yet tuned in-game), no shadows, no collision, normals facing the centre.
+The sky and backdrop are baked into a SkyBox cubemap, see Sky. The sun is TrackSettings' `ShadowLightDirection`, and there's no TimeOfDay.
 
 Build through FH1's queue, from `fh1/pipeline`: `python buildq.py submit --chunk fm4_tsukuba -m "..." --by <name>`. An `fm4_<track>` lane runs `fm4build.py <track>` in place (no snapshot), waiting as the others do for BeamNG to close, since a build rewrites the level folder.
 
 Tsukuba, 2026-11-22: 1,470 placed shapes plus 19 collision cells (18,453 `.col` triangles without the invisible walls), 444 materials (180 layered ground), 251 textures, 437k triangles, built in 31 s. Seen in-game: track, ground and collision good; the sky dome (added after) not yet seen.
+
+## Executable (`default.xex`)
+
+`fm4xex.py` writes `fm4/default.pe`, the plain image (gitignored). The xex is XEX2 with encryption 1 and basic compression: AES-128-CBC with a zero IV over the whole image, its key the security info's (+0x150) decrypted with the retail key, then (data size, zero size) blocks. The image is laid out at its virtual addresses, base 0x82000000. `fm4code.py refs <string>` finds the code that loads a string's address (lis/addi), and `fm4code.py dis <addr> [n]` disassembles PowerPC with capstone, annotating strings and float literals. VMX128 instructions don't decode.
+
+FH1's `xshader.py` reads the image: 247 Xenos shaders, almost all unnamed, found by their constant tables. The post shaders are FH1's, line for line: `filmicParams*`, `tonemapAdaptiveLuminanceKeys`/`Exposure`, `colorGradingTex*`, `colorTransform[3]`.
+
+**TrackSettings parsing** (around 0x82914000) stores each tag at a fixed offset of the settings object, for example `SkyboxHeightOffset` +0x70, `skyGain` +0x2C4, `skyScale` +0x2C8. A renderer object then sets the pixel shader constants through the D3D device's constant mirror: vertex constants at device +0x780, pixel constants at +0x1780, 16 bytes a register, with a dirty bit per four registers in qwords at +0 (vertex) and +8 (pixel). The dirty masks confirm the base: c214 is mask 0x400, c222 0x100, c242 and c240 8, c249 2. `c242` is `FogColor`.
+
+## Textures: gamma
+
+A `.bix` header's word at 0x1A8 is the Xbox 360 `D3DFORMAT`: format in bits 0 to 5, endian 6 to 7, tiled 8, then two sign bits each for X, Y, Z and W. `0x1A207F52` is tiled DXT1 with `GPUSIGN_GAMMA` on RGB, so the GPU degammas on fetch. That's every colour texture. `0x1A200152`-style words (signs 0) are data: every normal map, and masks. Xenos gamma is piecewise linear, with segments at 64, 96 and 192 of 255 (`fm4sky.xenos_degamma`).
+
+## Sky (`fm4sky.py`)
+
+FM4 has no far geometry: the backdrop (Mount Tsukuba, treeline, fields) is painted into the sky dome's 8192 x 1024 panorama.
+- **Dome.** `<TRACK>_SKY_001`, shader `sky_diff_1`, position and boxed texcoord0 only. Radius 4.1 km, from the ground ring at y 0 to 2.7 km up, drawn lowered by `SkyboxHeightOffset` (-100.1). That's taken as camera-relative, since the engine sets the draw matrix. It covers down to 1.4 degrees below the horizon; below that FM4 shows its own ground, or else its clear colour.
+- **Pixel shader.** `colour = tex.rgb * (tex.a * TimeGain.y + SkyScale.x)`, written as sqrt, as every FM4 pass is.
+  - `SkyScale` (c222) is taken as TrackSettings' `skyScale` (0.95). It's matched by name and not traced: the renderer builds c222 from its own fields through a VMX128 transform.
+  - `TimeGain` (c249) comes from renderer fields not traced either. Its y is taken as 0, as Tsukuba's `skyGain` is 0.
+- **Check.** The painted sun's peak is at azimuth 306 and elevation 20.5. `ShadowLightDirection` in the draw frame gives azimuth 307.5, elevation 40.7, so FM4 lights from higher than its painted sun. That fixes both the dome's mapping and the light's frame.
+- **Bake.** Rays from the camera hit the dome exactly (ray against triangle plane, perspective-correct). The panorama is degammaed and scaled, then passed through FM4's post:
+  - Exposure: `ToneMapAdaptiveExposure` keys / 255 against a key, plus `filmicTone.exposure`. The key is the sky's own mean linear luminance from the horizon to 30 degrees, FH1 `sky.py`'s assumption (0.22, so EV 0.31).
+  - Tone map: Hable with `filmicTone`, over its value at white.
+  - Grade: identity LUT (no track ships `colorgradinglookup.dds`), then FH1's colorTransform order: `DesaturateAmount` with `DesatLuminosity`, times `DesatPostMod`. The order and the use of all three B values are inferred.
+  - Output: sqrt, stored as the face's bytes, as FH1's bake.
+  - Directions the dome misses take `WorldClear`, squared, because a clear writes the sqrt-encoded framebuffer.
+- **Not reproduced.** Bloom (`bloomCutoff`, `bloomScale`, `bloomWeights`), `CameraExposureRange`, exposure adaptation.
+- **Level.** SkyBox `fm4_sky`, also the level's `globalEnviromentMap`. ScatterSky stays for the light, its `azimuth` and `elevation` set from `ShadowLightDirection`, with `shadowDistance` = `ShadowEnds InGameShadowEnd` (202 m).
 
 ## Not decoded yet
 
