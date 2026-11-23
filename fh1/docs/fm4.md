@@ -131,8 +131,8 @@ A `.bix` header's word at 0x1A8 is the Xbox 360 `D3DFORMAT`: format in bits 0 to
 FM4 has no far geometry: the backdrop (Mount Tsukuba, treeline, fields) is painted into the sky dome's 8192 x 1024 panorama.
 - **Dome.** `<TRACK>_SKY_001`, shader `sky_diff_1`, position and boxed texcoord0 only. Radius 4.1 km, from the ground ring at y 0 to 2.7 km up, drawn lowered by `SkyboxHeightOffset` (-100.1). That's taken as camera-relative, since the engine sets the draw matrix. It covers down to 1.4 degrees below the horizon; below that FM4 shows its own ground, or else its clear colour.
 - **Pixel shader.** `colour = tex.rgb * (tex.a * TimeGain.y + SkyScale.x)`, written as sqrt, as every FM4 pass is.
-  - `SkyScale` (c222) is taken as TrackSettings' `skyScale` (0.95). It's matched by name and not traced: the renderer builds c222 from its own fields through a VMX128 transform.
-  - `TimeGain` (c249) comes from renderer fields not traced either. Its y is taken as 0, as Tsukuba's `skyGain` is 0.
+  - `SkyScale` (c222) is TrackSettings' `skyScale`: 0.950001 read live (see Live memory).
+  - `TimeGain` (c249) is (seconds since start, 0, 0, 0) live, so the alpha term is 0.
 - **Check.** The painted sun's peak is at azimuth 306 and elevation 20.5. `ShadowLightDirection` in the draw frame gives azimuth 307.5, elevation 40.7, so FM4 lights from higher than its painted sun. That fixes both the dome's mapping and the light's frame.
 - **Bake.** Rays from the camera hit the dome exactly (ray against triangle plane, perspective-correct). The panorama is degammaed and scaled, then passed through FM4's post:
   - Exposure: `ToneMapAdaptiveExposure` keys / 255 against a key, plus `filmicTone.exposure`. The key is the sky's own mean linear luminance from the horizon to 30 degrees, FH1 `sky.py`'s assumption (0.22, so EV 0.31).
@@ -142,6 +142,41 @@ FM4 has no far geometry: the backdrop (Mount Tsukuba, treeline, fields) is paint
   - Directions the dome misses take `WorldClear`, squared, because a clear writes the sqrt-encoded framebuffer.
 - **Not reproduced.** Bloom (`bloomCutoff`, `bloomScale`, `bloomWeights`), `CameraExposureRange`, exposure adaptation.
 - **Level.** SkyBox `fm4_sky`, also the level's `globalEnviromentMap`. ScatterSky stays for the light, its `azimuth` and `elevation` set from `ShadowLightDirection`, with `shadowDistance` = `ShadowEnds InGameShadowEnd` (202 m).
+
+## Live memory (`fm4mem.py`)
+
+`fm4mem.py` reads FM4's memory while it runs in Xenia Canary, read-only (`PROCESS_VM_READ`). Guest memory sits at host 0x100000000.
+- **The running build is the title update's.** Its image strings sit 0x844 bytes later than the disc xex's, so code addresses from `fm4code.py` don't carry over; struct offsets do.
+- **TrackSettings.** The parsed object is found by its values: `SkyboxHeightOffset` at +0x70, `DesaturateAmount` at +0x7C. On Tsukuba it sits at guest 0x40E5BD80.
+- **Shader constants.** Xenia keeps the GPU's float constants in host memory as little-endian floats, in two 4 KB banks (vertex, then pixel), 16 bytes a register. The banks were found by searching for DarkColor followed by LightColor. They hold whatever the pass being drawn last wrote, so values are sampled many times. On Tsukuba the snapshot is in `fm4/tsukuba/live_consts.json`.
+
+| Register | Name | Live value | Source |
+|---|---|---|---|
+| PS c222 | `SkyScale` | (0.950001, 0.65, 0, 1) | `skyScale`, `cubeSkySaturation` |
+| PS c224 | | (24, 24, 0.408001, 0.85) | `RoadGlossiness`, `RoadGlossiness2`, `RoadLightmapDarkPoint`, `RoadLightmapLightPoint` |
+| PS c247 | `V2LightmapColor1` | (0.01, 0.02, 0.03, 1) | `DarkColor` |
+| PS c248 | `V2LightmapColor2` | (0.850001, 0.85, 0.750001, 1) | `LightColor` |
+| PS c249 | `TimeGain` | (time in seconds, 0, 0, 0) | |
+| PS c250 | `sunDir` | (-0.6018, 0.6519, 0.4614) | `ShadowLightDirection`, negated and normalised |
+| PS c251 | `sunColor` | (0.6, 0.588, 0.564) | not traced |
+| PS c214 | `SunGainScale` | (1.1e-06, 250000, 0, 0) | `sunGainScale` scale, plus an unknown x |
+| VS c241 | `FogConsts` | (80, 3.45e-05, 0, 0.0002), in draws that fog | see Fog |
+| PS c242 | `FogColor` | (0.56, 0.68, 0.8, 1), in draws that fog | Settings0 `Color` |
+
+## Lightmaps
+
+Lit object shaders have no sun term. In `DIFF_1`, `colour = diffuse * lerp(V2LightmapColor1, V2LightmapColor2, lightmap.rgb)`, plus sun specular. The specular is gated by the lightmap's green between c224.z and c224.w, then fogged.
+- **Sampling.** The lightmap is sampled at texcoord2 (the vertex shader's second UV), through the UV box, then `Light_Map_uvOS`. That is the lightmap's texture record's scale and offset: a 1/16 tile in a 1024² atlas, for example, or a 1/128 constant tile. The texture is the record's own file, or else its parent atlas.
+- **Texture format.** Lightmap textures are gamma-encoded, so they're degammaed on fetch.
+- **Build.** An `ambientOcclusionMap` on UV1 (`ambientOcclusionMapUseUV`), as FH1's AO maps: `lum(lerp(DarkColor, LightColor, lightmap)) / lum(LightColor)`. Fully lit is 1, and BeamNG's sun and sky supply the light. The lightmap's tint (warm in sun, blue in shade) is lost to the single channel.
+- **Coverage.** 1,234 of Tsukuba's sections. Not yet: lightmaps the draw supplies (slot 0xFFFFFFFF, 106 sections), and ground shaders, whose UV1 carries the blend mask.
+
+## Fog
+
+The vertex shaders compute `fog = sat(1 - 2^(-FogConsts.w * max(d - FogConsts.x, 0)))`, d being the distance to the camera. The pixel shader lerps to `FogColor` by it.
+- **Live values on Tsukuba.** `FogConsts` is Settings0's (`Near`, `FarDensity / (Far - Near)`, `NearDensity`, 0.0002). The 0.0002 isn't in TrackSettings; another fog record in memory, (125, 5, 0.015, 0.0002), carries it too. y and z aren't used by `DIFF_1`.
+- **Angles.** FM4 picks between enabled settings by camera heading (`Angle`). Tsukuba enables only Settings0.
+- **Build.** BeamNG's fog is `exp(-density * (d - offset))`, so it gets `fogDensity` = 0.0002 ln 2 and `fogDensityOffset` = `Near`, with no height falloff and `fogColor` from the setting. ScatterSky may still tint the fog; not yet checked in-game.
 
 ## Not decoded yet
 

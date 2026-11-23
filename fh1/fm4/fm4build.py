@@ -63,6 +63,15 @@ COLGROUND = [(r'Invisible', None), (r'Cobble', 'COBBLESTONE'), (r'^Dirt', 'DIRT'
              (r'Wood|HayBail', 'WOOD'), (r'SafetyPlastic', 'PLASTIC'), (r'Grasscrete', 'GRASS'), (r'', 'ASPHALT')]
 GROUND = [(re.compile(r'^road_'), 'ASPHALT'), (re.compile(r'^shldr_'), 'ASPHALT'), (re.compile(r'^terr_'), 'GRASS'), (re.compile(r'^rdedg_'), 'DIRT')]
 DIFFUSE = ('Diffuse_TextureSampler', 'DiffuseSampler', 'Blend_ASampler', 'Blend_BSampler')
+# Lightmaps (docs/fm4.md, Lightmaps). Lit objects have no sun term: colour = diffuse * lerp(V2LightmapColor1, V2LightmapColor2, lightmap), the two
+# colours TrackSettings' DarkColor and LightColor (read live from FM4's GPU registers c247, c248 on Tsukuba). The lightmap is sampled at texcoord2
+# through the UV box, then its texture record's scale and offset (Light_Map_uvOS), from the record's own file or else its parent atlas. Here it's
+# an ambientOcclusionMap on UV1, as FH1's AO maps: lum(lerp(Dark, Light, lightmap)) / lum(Light), so fully lit is 1 and BeamNG's light supplies the rest
+LM_SAMPLER = 'Light_MapSampler'
+# Fog (docs/fm4.md, Fog): FM4's vertex shaders fog by 1 - 2^(-FogConsts.w * max(d - FogConsts.x, 0)) towards FogColor. Read live on Tsukuba:
+# FogConsts = (Settings0 Near, FarDensity / (Far - Near), NearDensity, 0.0002), FogColor = Settings0 Color. The 0.0002 isn't a TrackSettings value
+# (another fog record in memory carries it too); it's FOG_W. BeamNG's fog is exp(-density * (d - offset)): density = FOG_W ln 2
+FOG_W = 0.0002
 
 
 def lap(what):
@@ -90,6 +99,7 @@ for f_ in (WORK / 'x').glob('shaders_track_*.fxobj'):
     ps = [s for s in xenos.shaders(f_.read_bytes()) if s['kind'] == 'ps']
     if ps: SAMPLERS[f_.stem[14:].lower()] = {c[0]: c[2] for c in ps[0]['consts'] if c[1] == 3}
 STEM = next((WORK / 'x').glob('*out.00000.rmb.bin')).name.split('.')[0]
+TS = fm4sky.settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml')
 lap(f'{TRACK}: layouts {sorted(PVS)} placed, {len(ROWS)} in gamedb, {len(TG)} table groups; ' +
     ', '.join(f'ribbon {ri} {len(pv["draws"])} draws' for ri, pv in PVS.items()) + f'; {len(SAMPLERS)} shaders')
 
@@ -168,6 +178,32 @@ def half_color(i):
     return f'{REL}/art/textures/{p_.name}'
 
 
+LMAO = {}
+
+
+def lightmap(shader, slots, rec, tt):
+    """-> (texture id, (su, sv, ou, ov)) of a section's lightmap, or None (no sampler, empty slot, or one the draw supplies)"""
+    r = SAMPLERS.get(shader, {}).get(LM_SAMPLER)
+    if r is None or r >= len(slots) or slots[r] >= len(rec['tex']): return None
+    t = tt[rec['tex'][slots[r]]]; tid = t[0] if tex.bix(t[0]) else t[1]
+    b = tex.bix(tid)
+    if not b or b['fmt'] not in (0x52, 0x53, 0x54): return None
+    return tid, t[2:6]
+
+
+def ao_map(tid):
+    """the lightmap texture as an AO data map, see LM_SAMPLER"""
+    if tid not in LMAO:
+        a = decode(tid)
+        if a is None: LMAO[tid] = None
+        else:
+            lm = fm4sky.xenos_degamma(a[..., :3].astype('f8') / 255)
+            dark = np.array([TS['DarkColor'][k] for k in 'rgb']); light = np.array([TS['LightColor'][k] for k in 'rgb'])
+            lum = np.array([.2126, .7152, .0722])
+            LMAO[tid] = data_map(f'fm4_{tid:x}_ao', ((dark + (light - dark) * lm) @ lum) / (light @ lum))
+    return LMAO[tid]
+
+
 def texture(i):
     """write fm4_<id>.color.dds (and _o.data.dds when it has cut-out alpha) -> info or None"""
     if i in TINFO: return TINFO[i]
@@ -197,8 +233,8 @@ def flat_material(ps):
     return key
 
 
-def material(shader, slots, rec, tt):
-    """-> material name for a section, from its shader's diffuse sampler and the mesh record's texture list"""
+def material(shader, slots, rec, tt, lm=None):
+    """-> material name for a section, from its shader's diffuse sampler and the mesh record's texture list. lm: its lightmap's texture id"""
     smp = SAMPLERS.get(shader, {}); reg = next((smp[s] for s in DIFFUSE if s in smp), None)
     tid = None
     if reg is not None and reg < len(slots) and slots[reg] < len(rec['tex']):
@@ -207,7 +243,8 @@ def material(shader, slots, rec, tt):
     ground = next((g for r, g in GROUND if r.match(shader)), None)
     two = '2sd' in shader; alpha = 'opac' in shader and t is not None and t['cut'] > 0.002
     vc = bool(VCLR.search(shader))
-    key = (f"fm4_{t['name'][4:]}" if t else 'fm4_grey') + ('_a' if alpha else '') + ('_2' if two else '') + ('_v' if vc else '') + (f'_{ground}' if ground else '')
+    ao = ao_map(lm) if lm is not None else None
+    key = (f"fm4_{t['name'][4:]}" if t else 'fm4_grey') + ('_a' if alpha else '') + ('_2' if two else '') + ('_v' if vc else '') + (f'_{ground}' if ground else '') + (f'_lm{lm:x}' if ao else '')
     if key not in MATS:
         st = {'roughnessFactor': .85, 'metallicFactor': 0}
         if t: st['baseColorMap'] = f"{REL}/art/textures/{t['name']}.color.dds"
@@ -218,6 +255,7 @@ def material(shader, slots, rec, tt):
         if two or alpha: m['doubleSided'] = True
         if ground: m['groundType'] = ground
         if vc: st['vertColor'] = True
+        if ao: st['ambientOcclusionMap'] = ao; st['ambientOcclusionMapUseUV'] = 1
         MATS[key] = m
     return key
 
@@ -335,7 +373,10 @@ def shape(g, no):
             if mat is None and shader.startswith('clr_'):
                 mat = flat_material(mats[mi][2])
             if mat is None:
-                mat = material(shader, slots, rec, tt)
+                lm = lightmap(shader, slots, rec, tt) if 'texcoord2' in lay else None
+                mat = material(shader, slots, rec, tt, lm[0] if lm else None)
+                if lm and LMAO.get(lm[0]):
+                    su, sv, ou, ov = lm[1]; uv1 = box_uv(m, lay, s, 'texcoord2')[used] * [su, sv] + [ou, ov]; stats['lightmapped sections'] += 1
                 if VCLR.search(shader) and 'color0' in lay:
                     cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
                     uv1 = np.c_[np.zeros((len(used), 2)), cb[:, 1:4].mean(1) / 255]; stats['vertex-coloured sections'] += 1
@@ -474,7 +515,6 @@ for r_ in ROWS:
     lap(f"spawn {obj} {label}: {[round(float(x), 1) for x in pt]}, waypoint {i0} of {len(W)}")
 
 # ---- sky: the dome baked into a SkyBox cubemap through FM4's post (fm4sky.py), the sun from TrackSettings' ShadowLightDirection
-TS = fm4sky.settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml')
 SKYNO = next(d['mesh'] for d in PV['draws'] if any(x.startswith('sky_') for x in mesh_file(d['mesh'])[2]))
 sky_slot = fm4sky.dome(str(WORK), STEM, SKYNO, FETCH)[3]
 SKYMATS, skyinfo = fm4sky.bake(str(WORK), STEM, SKYNO, FETCH, TT[MR[SKYNO]['tex'][sky_slot]][0], TS, LEVEL / 'art' / 'skies' / 'fm4_sky', f'{REL}/art/skies/fm4_sky')
@@ -485,13 +525,20 @@ sl = np.array([TS['ShadowLightDirection'][k] for k in 'xyz']); sl = -sl / np.lin
 SUN_AZ = float(np.degrees(np.arctan2(sl[0], sl[2])) % 360); SUN_EL = float(np.degrees(np.arcsin(sl[1])))
 lap(f'sky: dome mesh {SKYNO}, key {skyinfo["key"]:.3f}, EV {skyinfo["ev"]:.2f}; sun azimuth {SUN_AZ:.1f}, elevation {SUN_EL:.1f}')
 
+# FM4 switches between its enabled fog settings by camera heading (Angle); BeamNG has one fog, so the level takes the first enabled
+fs = next((f for f in fm4sky.fog_settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml') if f['enabled']), None)
+FOG = {}
+if fs is not None:
+    FOG = {'fogDensity': FOG_W * math.log(2), 'fogDensityOffset': fs['near'], 'fogAtmosphereHeight': 0, 'fogColor': [*fs['color'], 1]}
+lap(f'fog: {FOG}')
+
 # ---- level files
 main = LEVEL / 'main'; mg = main / 'MissionGroup'; (mg / 'fm4').mkdir(parents=True, exist_ok=True)
 (main / 'items.level.json').write_text(json.dumps({'name': 'MissionGroup', 'class': 'SimGroup', 'enabled': '1'}) + '\n')
 # No TimeOfDay: FM4's tracks have one fixed sun, so ScatterSky keeps the azimuth and elevation set here. shadowDistance is TrackSettings'
 # ShadowEnds InGameShadowEnd. The SkyBox draws FM4's sky over ScatterSky's, as FH1's does; the bake is also the reflection cubemap
 obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup', 'visibleDistance': 6000, 'gravity': -9.81,
-        'globalEnviromentMap': 'fm4_sky_cubemap'},
+        'globalEnviromentMap': 'fm4_sky_cubemap', **FOG},
        {'class': 'ScatterSky', 'name': 'sunsky', '__parent': 'MissionGroup', 'position': [0, 0, 0], 'azimuth': SUN_AZ, 'elevation': SUN_EL,
         'shadowDistance': TS['ShadowEnds']['InGameShadowEnd']},
        {'name': 'fm4_skybox', 'class': 'SkyBox', '__parent': 'MissionGroup', 'material': 'fm4_sky'},

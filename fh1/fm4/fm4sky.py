@@ -42,6 +42,18 @@ def settings(path):
     return out
 
 
+def fog_settings(path):
+    """TrackSettings' Fog block: [dict(enabled, angle, color (r, g, b), near, near_density, far, far_density)] for Settings0..7"""
+    import xml.etree.ElementTree as ET
+    out = []
+    for e in ET.parse(path).getroot().find('Fog'):
+        if not e.tag.startswith('Settings'): continue
+        v = lambda t, a='value': float(e.find(t).get(a))
+        out.append(dict(enabled=bool(v('Enabled')), angle=v('Angle'), color=tuple(v('Color', k) for k in 'rgb'), near=v('Near'),
+                        near_density=v('NearDensity'), far=v('Far'), far_density=v('FarDensity')))
+    return out
+
+
 def xenos_degamma(c):
     """Xenos texture gamma to linear, c in 0..1: the piecewise-linear curve (segments at 64, 96 and 192 of 255, slopes 1/4 .. 2 in
     10-bit linear units), as the GPU applies it on fetch"""
