@@ -84,7 +84,13 @@ The surface id indexes the children of `SurfaceTypes` in `Media/physics/surfaceT
 
 `fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Object materials are the diffuse texture only (`Diffuse_TextureSampler`); ground shaders are layered, see Ground blending. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is FM4's `.col` (see Collision) plus each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky, flares, and the ground families the `.col` covers. The spawn is grid slot 1 off the AI line.
 
-The sky and backdrop are baked into a SkyBox cubemap, see Sky. The sun is TrackSettings' `ShadowLightDirection`, and there's no TimeOfDay.
+The sky and backdrop are baked into a SkyBox cubemap, see Sky.
+
+**Vertex-coloured shaders and the tree line.** `*_nolm_vclr_*` shaders light by vertex colour where others use a lightmap:
+`tex * lerp(V2LightmapColor1, V2LightmapColor2, vertex colour)`, with alpha from the texture. Vertex colours are ARGB bytes.
+- The circuit's surrounding forest is drawn this way: `VEG_<TRACK>_TreeWall_*` cards, up to 430 m long. They have no normals, because nothing in the shader uses them. They were dropped until 2026-11-22, which left grey below the horizon; they now get up-facing normals and `vertColor` (the grey mean of RGB), with both colours at their shader defaults, 0 and 1.
+- `clr_0` draws only the material's pixel constant c0 plus fog. It's used for power lines and fence wires, built as a flat `baseColorFactor` with no collision.
+ The sun is TrackSettings' `ShadowLightDirection`, and there's no TimeOfDay.
 
 Build through FH1's queue, from `fh1/pipeline`: `python buildq.py submit --chunk fm4_tsukuba -m "..." --by <name>`. An `fm4_<track>` lane runs `fm4build.py <track>` in place (no snapshot), waiting as the others do for BeamNG to close, since a build rewrites the level folder.
 

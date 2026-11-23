@@ -42,10 +42,15 @@ T0 = time.time()
 
 # game mesh frame (x east, y up, z south) -> BeamNG (x, -z, y); a draw's frame has z flipped, so draw space -> BeamNG is (x, z, y)
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); P = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0.]])
-NOUSE = re.compile(r'occluder|shadow|^SKY_|proxy|collision|_CAGE|reflect', re.I)
+NOUSE = re.compile(r'occluder|shadow(?!ed)|^SKY_|proxy|collision|_CAGE|reflect', re.I)      # VEG_*_cluster_shadowed_* are bushes
 # The sky dome (sky_*) isn't placed: fm4sky.py bakes it, with the backdrop painted into it, into the level's SkyBox
-NODRAW = re.compile(r'^(clr_0|sun_contribution|add_anim_camera_flash|flare_|sky_)')
-NOCOLLIDE = re.compile(r'^(grass|bush|tree|anim_flag|rdline|flare|sky|chain_diff_opac_2)')
+NODRAW = re.compile(r'^(sun_contribution|add_anim_camera_flash|flare_|sky_)')
+# *_nolm_vclr_* shaders light by vertex colour where others use a lightmap: tex * lerp(V2LightmapColor1, V2LightmapColor2, vertex colour), the
+# two colours taken at their shader defaults, 0 and 1 (their runtime values aren't read yet). The tree walls that ring the circuit (VEG_*_TreeWall_*,
+# cards up to 430 m long) use one and carry no normals, as nothing in them is lit; they get up-facing normals here. clr_0 draws a flat colour,
+# the material's pixel constant c0 (power lines, wires)
+VCLR = re.compile(r'nolm_vclr')
+NOCOLLIDE = re.compile(r'^(grass|bush|tree|anim_flag|rdline|flare|sky|clr_|chain_diff_opac_2)')
 NOCOLLIDE_NAME = re.compile(r'^VEG_|^OBJ_Flag|crowd|spectator|_Tree|Bush|Grass|^RCEDAY_CameraFlash', re.I)
 # FM4's track collision (<track>_track_NN.col) is the drivable surface and barriers. Its surface ids index Media/physics/surfaceTypes.xml;
 # where it exists, these visual families don't collide, so two coincident surfaces don't disagree on ground type
@@ -164,6 +169,15 @@ def texture(i):
 MATS = {}
 
 
+def flat_material(ps):
+    c = [round(float(x), 3) for x in (ps[0][:3] if len(ps) else (.5, .5, .5))]
+    key = 'fm4_clr_' + '_'.join(f'{int(x * 1000)}' for x in c)
+    if key not in MATS:
+        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'materialTag0': 'beamng',
+                     'Stages': [{'baseColorFactor': c + [1], 'roughnessFactor': .85, 'metallicFactor': 0}, {}, {}, {}]}
+    return key
+
+
 def material(shader, slots, rec):
     """-> material name for a section, from its shader's diffuse sampler and the mesh record's texture list"""
     smp = SAMPLERS.get(shader, {}); reg = next((smp[s] for s in DIFFUSE if s in smp), None)
@@ -173,7 +187,8 @@ def material(shader, slots, rec):
     t = texture(tid) if tid is not None else None
     ground = next((g for r, g in GROUND if r.match(shader)), None)
     two = '2sd' in shader; alpha = 'opac' in shader and t is not None and t['cut'] > 0.002
-    key = (f"fm4_{t['name'][4:]}" if t else 'fm4_grey') + ('_a' if alpha else '') + ('_2' if two else '') + (f'_{ground}' if ground else '')
+    vc = bool(VCLR.search(shader))
+    key = (f"fm4_{t['name'][4:]}" if t else 'fm4_grey') + ('_a' if alpha else '') + ('_2' if two else '') + ('_v' if vc else '') + (f'_{ground}' if ground else '')
     if key not in MATS:
         st = {'roughnessFactor': .85, 'metallicFactor': 0}
         if t: st['baseColorMap'] = f"{REL}/art/textures/{t['name']}.color.dds"
@@ -183,6 +198,7 @@ def material(shader, slots, rec):
             st['opacityMap'] = f"{REL}/art/textures/{t['name']}_o.data.dds"; m['alphaTest'] = True; m['alphaRef'] = 90
         if two or alpha: m['doubleSided'] = True
         if ground: m['groundType'] = ground
+        if vc: st['vertColor'] = True
         MATS[key] = m
     return key
 
@@ -269,8 +285,10 @@ def shape(no):
     for m in p['meshes']:
         if NOUSE.search(m['name']): continue
         lay = fm4mesh.mesh_layout(m, shs, FETCH)
-        if lay is None or 'normal0' not in lay: stats['meshes without layout or normals'] += 1; continue
-        pos = fm4mesh.attr(m, lay, 'position0') @ B.T; nrm = fm4mesh.attr(m, lay, 'normal0') @ B.T
+        if lay is None: stats['meshes without layout'] += 1; continue
+        pos = fm4mesh.attr(m, lay, 'position0') @ B.T
+        if 'normal0' in lay: nrm = fm4mesh.attr(m, lay, 'normal0') @ B.T
+        else: nrm = np.tile([0., 0., 1.], (len(pos), 1)); stats['meshes without normals (up)'] += 1
         uvn = next((k for k in ('texcoord0', 'texcoord2', 'texcoord1') if k in lay), None)
         for s in m['secs']:
             mi = s['ints'][2]
@@ -293,8 +311,13 @@ def shape(no):
                         cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
                         uv1 = np.c_[uv1, cb[:, 1:4].mean(1) / 255 * plan['vcolor']]
                     stats['ground sections'] += 1
+            if mat is None and shader.startswith('clr_'):
+                mat = flat_material(mats[mi][2])
             if mat is None:
                 mat = material(shader, slots, rec)
+                if VCLR.search(shader) and 'color0' in lay:
+                    cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
+                    uv1 = np.c_[np.zeros((len(used), 2)), cb[:, 1:4].mean(1) / 255]; stats['vertex-coloured sections'] += 1
             collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader
                            or COLFILE and COLFAMILY.match(shader))
             out.append(((mat, (0, COLL) if collide else (0,)), pos[used], nrm[used], uv, remap[tri].ravel(), uv1))
