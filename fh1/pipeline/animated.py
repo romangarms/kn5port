@@ -88,6 +88,10 @@ STANDALONE_AT = {'planebanner': [at(-702.284, 44.836, -1351.944, .455)], 'cablec
 # Kinds that travel: their placement is lifted if the largest part's route passes under the ground samples, to FLIGHT_CLEARANCE metres above them
 FLIGHTS = {'cropduster', 'planebanner'}; FLIGHT_CLEARANCE = 5.0
 SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
+# Metres from its edge at which a kind stops drawing. A ride's one detail is sized from its parts, but the engine measures the shape's bounds, which
+# span its whole motion: the birds' 25 m flight drew a 12-bird flock to about 5 km, and their 117 flocks, 1,400 animated nodes and 1,500 draws, cost
+# about 10 fps (user, 2026-11-22: hiding fh1_anim gained 10 fps, the movers and particles nothing). PX as build3.py's, which this can't import
+RIDE_FAR = {'birds': 300, 'sprinkler': 300, 'sprinklersmall': 250}; PX = 1250.0
 # Left out: ANIM_FRGND_InflatableSprayGun. FH1's only three (sets clrd_festival_plns_animated_objects_004_1 to _3) stand under the ground 5 km
 # out, 3.7 km west of the plains festival site, hidden in FH1 too. Stood on the ground they are an untextured balloon on a pole, not a ride
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
@@ -693,6 +697,10 @@ for kind, model in {**RIDES, **STANDALONE}.items():
         curves.update({len(groups) + n: c for n in range(len(own))}); groups += own
     swept = np.concatenate(swept); c = (swept.min(0) + swept.max(0)) / 2
     sizes_ = ride_sizes(np.linalg.norm(np.concatenate([g[1] for g in groups]) - c, axis=1).max())
+    if kind in RIDE_FAR:        # the radius the engine sees: the bounds node's, swept and 2 m each side
+        R_ = np.linalg.norm(np.ptp(swept, 0) + 4) / 2; s_ = int(np.ceil(R_ * PX / (RIDE_FAR[kind] + R_)))
+        sizes_ = (max(sizes_[0], s_ + 1), max(sizes_[1], s_), sizes_[2])
+        print('  ', kind, 'drawn to', RIDE_FAR[kind], 'm: detail size', s_, 'for radius', round(float(R_), 1))
     # A light rig's beams and glows (the '_add' sprites) go in their own shape, kind_beams, standing in fh1_rig_beams, which fh1Extras.lua hides by day as it
     # hides the night overlays: drawn by day, they showed as pale rays over the main stage although their emissive was off
     beams = [n for n, g_ in enumerate(groups) if kind in RIGS and g_[0][0].endswith('_add')]
