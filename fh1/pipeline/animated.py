@@ -91,7 +91,11 @@ SMALL_PARTS = {'sprinkler', 'sprinklersmall', 'birds'}
 # Metres from its edge at which a kind stops drawing. A ride's one detail is sized from its parts, but the engine measures the shape's bounds, which
 # span its whole motion: the birds' 25 m flight drew a 12-bird flock to about 5 km, and their 117 flocks, 1,400 animated nodes and 1,500 draws, cost
 # about 10 fps (user, 2026-11-22: hiding fh1_anim gained 10 fps, the movers and particles nothing). PX as build3.py's, which this can't import
-RIDE_FAR = {'birds': 300, 'sprinkler': 300, 'sprinklersmall': 250}; PX = 1250.0
+# With the birds cut, each other kind still cost about 0.1 ms of render from 0.8 to 1.7 km (measured 2026-11-22 from (-1604, 1130)), so the light rigs
+# (their beams too, which share the bounds) and the smaller festival rides stop as well. The Ferris wheel, balloons, blimp, cable cars, windmills and
+# turbines are landmarks and cost under 0.15 ms each, and keep their distance
+RIDE_FAR = {'birds': 300, 'sprinkler': 300, 'sprinklersmall': 250, 'stagelights': 600, 'substagelights': 600, 'autoshowlights': 600, 'lasers': 600,
+            'activation': 600, 'booster': 1000, 'fan': 1000, 'nofear': 1000, 'roundup': 1000, 'zipper': 1000}; PX = 1250.0
 # Left out: ANIM_FRGND_InflatableSprayGun. FH1's only three (sets clrd_festival_plns_animated_objects_004_1 to _3) stand under the ground 5 km
 # out, 3.7 km west of the plains festival site, hidden in FH1 too. Stood on the ground they are an untextured balloon on a pole, not a ride
 KEY_ERROR = .01; KEY_ERROR_MIN = .05; KEY_MIN = 1 / 30; STILL = (.05, .5); TINY = 1.0
