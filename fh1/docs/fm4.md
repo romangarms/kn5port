@@ -84,7 +84,11 @@ The surface id indexes the children of `SurfaceTypes` in `Media/physics/surfaceT
 
 `fm4build.py` writes one shape per mesh file (`art/shapes/fm4/m<no>.dae`, through FH1's `daewrite.write_lod`), one TSStatic per draw, keeping each object's most detailed LOD. Object materials are the diffuse texture only (`Diffuse_TextureSampler`); ground shaders are layered, see Ground blending. They are alpha-tested on `*opac*` shaders whose texture has cut-out alpha, and double-sided on `*2sd*`. Textures are written as DXT1 `.color.dds`, keeping FM4's own DXT1 blocks, plus an `_o.data.dds` opacity map; format 0x7B (BC4) decodes through `tex.bc4`. Collision is FM4's `.col` (see Collision) plus each shape's own geometry, except vegetation, flags, road-line decals, cut-out `opac` shaders (barriers aside), sky, flares, and the ground families the `.col` covers. The spawn is grid slot 1 off the AI line.
 
-Tsukuba, 2026-11-22: 1,470 placed shapes plus 19 collision cells (18,453 `.col` triangles without the invisible walls), 444 materials (180 layered ground), 251 textures, 437k triangles, built in 31 s. Not yet seen in-game.
+The backdrop is the sky dome, `<TRACK>_SKY_001` (shader `sky_diff_1`, position and texcoord0 only, no normals): an 8 km dome round the origin, up to 2.7 km high, whose 8192 x 1024 panorama paints the distant scenery on its horizon (Mount Tsukuba, the treeline, fields) under the sky and clouds. FM4 has no other far geometry. It's built as an unlit shape: black base colour, the panorama as an emissive map at `FM4_SKY_NITS` (default 4000, not yet tuned in-game), no shadows, no collision, normals facing the centre.
+
+Build through FH1's queue, from `fh1/pipeline`: `python buildq.py submit --chunk fm4_tsukuba -m "..." --by <name>`. An `fm4_<track>` lane runs `fm4build.py <track>` in place (no snapshot), waiting as the others do for BeamNG to close, since a build rewrites the level folder.
+
+Tsukuba, 2026-11-22: 1,470 placed shapes plus 19 collision cells (18,453 `.col` triangles without the invisible walls), 444 materials (180 layered ground), 251 textures, 437k triangles, built in 31 s. Seen in-game: track, ground and collision good; the sky dome (added after) not yet seen.
 
 ## Not decoded yet
 

@@ -31,6 +31,7 @@ from kn5port import beamng
 FM4 = Path(os.environ.get('FM4_DUMP', r'D:\Roms\Xbox 360\Xenia\FM4XeniaFix'))
 MEDIA = FM4 / 'Media'
 TRACK = sys.argv[1] if len(sys.argv) > 1 else 'Tsukuba'
+TRACK = next((d.name for d in (MEDIA / 'Tracks').iterdir() if d.name.lower() == TRACK.lower()), TRACK)     # the build queue's lane gives it in lower case
 RIB = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 LVL = f'fm4_{TRACK.lower()}' + (f'_{RIB:02d}' if RIB else '')
 WORK = HERE / TRACK.lower()
@@ -41,7 +42,10 @@ T0 = time.time()
 # game mesh frame (x east, y up, z south) -> BeamNG (x, -z, y); a draw's frame has z flipped, so draw space -> BeamNG is (x, z, y)
 B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); P = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0.]])
 NOUSE = re.compile(r'occluder|shadow|^SKY_|proxy|collision|_CAGE|reflect', re.I)
-NODRAW = re.compile(r'^(clr_0|sun_contribution|add_anim_camera_flash|flare_|sky_)')
+NODRAW = re.compile(r'^(clr_0|sun_contribution|add_anim_camera_flash|flare_)')
+# The backdrop is the sky dome (sky_diff_1, an 8 km dome round the origin): its 8192 x 1024 panorama paints Mount Tsukuba, the treeline and the
+# fields on its horizon. Unlit, as the game draws it: black base colour and the panorama as an emissive map, SKY_NITS by eye
+SKY_NITS = float(os.environ.get('FM4_SKY_NITS', '4000'))
 NOCOLLIDE = re.compile(r'^(grass|bush|tree|anim_flag|rdline|flare|sky|chain_diff_opac_2)')
 NOCOLLIDE_NAME = re.compile(r'^VEG_|^OBJ_Flag|crowd|spectator|_Tree|Bush|Grass|^RCEDAY_CameraFlash', re.I)
 # FM4's track collision (<track>_track_NN.col) is the drivable surface and barriers. Its surface ids index Media/physics/surfaceTypes.xml;
@@ -184,6 +188,19 @@ def material(shader, slots, rec):
     return key
 
 
+def sky_material(slots, rec):
+    tid = TT[rec['tex'][slots[0]]][0] if slots and slots[0] < len(rec['tex']) else None
+    t = texture(tid) if tid is not None else None
+    if t is None: return None
+    key = f"fm4_{t['name'][4:]}_sky"
+    if key not in MATS:
+        tp = f"{REL}/art/textures/{t['name']}.color.dds"
+        MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'materialTag0': 'beamng', 'castShadows': False,
+                     'Stages': [{'baseColorFactor': [0, 0, 0, 1], 'roughnessFactor': 1, 'metallicFactor': 0, 'emissive': True,
+                                 'emissiveMap': tp, 'emissiveFactor': [1, 1, 1], 'emissiveIntensityNits': SKY_NITS}, {}, {}, {}]}
+    return key
+
+
 # Ground shaders blend layers by the green of a Blend_Value mask (docs/fm4.md, Ground blending). Every UV set goes through the section's
 # UV box. Per family: (layer UV set, A's scale, B's scale, mask UV set, mask scale), the scales as (constant row, first component) of c360:
 #   road_*         colour = B(world x, z * c0.x) * mask.g(texcoord2 * c0.yz)        no A: B is layer 0, then a black layer at 1 - mask.g
@@ -266,8 +283,11 @@ def shape(no):
     for m in p['meshes']:
         if NOUSE.search(m['name']): continue
         lay = fm4mesh.mesh_layout(m, shs, FETCH)
-        if lay is None or 'normal0' not in lay: stats['meshes without layout or normals'] += 1; continue
-        pos = fm4mesh.attr(m, lay, 'position0') @ B.T; nrm = fm4mesh.attr(m, lay, 'normal0') @ B.T
+        if lay is None or 'normal0' not in lay and not all(x.startswith('sky_') for x in shs):
+            stats['meshes without layout or normals'] += 1; continue
+        pos = fm4mesh.attr(m, lay, 'position0') @ B.T
+        # the sky dome has no normals: facing its centre (unlit, so they only need to be sane)
+        nrm = fm4mesh.attr(m, lay, 'normal0') @ B.T if 'normal0' in lay else -pos / np.maximum(np.linalg.norm(pos, axis=1, keepdims=True), 1e-6)
         uvn = next((k for k in ('texcoord0', 'texcoord2', 'texcoord1') if k in lay), None)
         for s in m['secs']:
             mi = s['ints'][2]
@@ -290,6 +310,8 @@ def shape(no):
                         cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
                         uv1 = np.c_[uv1, cb[:, 1:4].mean(1) / 255 * plan['vcolor']]
                     stats['ground sections'] += 1
+            if mat is None and shader.startswith('sky_'):
+                mat = sky_material(slots, rec); stats['sky sections'] += 1
             if mat is None:
                 mat = material(shader, slots, rec)
             collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader

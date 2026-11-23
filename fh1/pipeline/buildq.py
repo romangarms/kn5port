@@ -81,12 +81,19 @@ def history(n=None):
     return rows[-n:] if n else rows
 
 
-def files():
-    return [p for p in PIPE.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ('.tmp', '.pyc')]
+# An FM4 track's lane, fm4_<track> (fh1/fm4, docs/fm4.md), runs fm4build.py <track> in place: it loads every module, its own and
+# pipeline/'s, as it starts, so it needs no snapshot. It also waits for fm4/*.py to settle
+FM4 = FH1 / 'fm4'
 
 
-def manifest():
-    return {str(p.relative_to(PIPE)).replace('\\', '/'): hashlib.sha1(p.read_bytes()).hexdigest()[:12] for p in files()}
+def files(chunk=''):
+    out = [p for p in PIPE.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ('.tmp', '.pyc')]
+    return out + list(FM4.glob('*.py')) if chunk.startswith('fm4_') else out
+
+
+def manifest(chunk=''):
+    base = FH1 if chunk.startswith('fm4_') else PIPE
+    return {str(p.relative_to(base)).replace('\\', '/'): hashlib.sha1(p.read_bytes()).hexdigest()[:12] for p in files(chunk)}
 
 
 class PROCESSENTRY32W(ctypes.Structure):
@@ -164,7 +171,7 @@ def run(chunk):
                 group = [r for r in pending() if key(r) == k]                 # all cancelled: let the next kind go, rather than wait on BeamNG
                 if not group:
                     break
-                quiet = time.time() - max(p.stat().st_mtime for p in files())
+                quiet = time.time() - max(p.stat().st_mtime for p in files(chunk))
                 if quiet < SETTLE:
                     set_state(cur, why=f'pipeline/ changed {quiet:.0f} s ago, waiting for {SETTLE} s of quiet')
                 elif beamng_open() and not any(r.get('beamng_ok') for r in group):          # cheap, so before the PowerShell check
@@ -178,9 +185,11 @@ def run(chunk):
             if not group:
                 continue
             rid = 'b' + time.strftime('%Y%m%d-%H%M%S')
-            shutil.rmtree(SNAP, ignore_errors=True)
-            shutil.copytree(PIPE, SNAP, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.tmp'))
-            man = manifest(); prev = next((h for h in reversed(history()) if h['chunk'] == k[0] and h.get('manifest')), None)
+            fm4 = chunk.startswith('fm4_')
+            if not fm4:
+                shutil.rmtree(SNAP, ignore_errors=True)
+                shutil.copytree(PIPE, SNAP, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.tmp'))
+            man = manifest(chunk); prev = next((h for h in reversed(history()) if h['chunk'] == k[0] and h.get('manifest')), None)
             changed = (sorted(f for f in man if prev['manifest'].get(f) != man[f]) + sorted(f'{f} (deleted)' for f in prev['manifest'] if f not in man)) if prev                 else [f'first queued build of {k[0]}']
             for r in group:
                 (PENDING / f"{r['id']}.json").unlink(missing_ok=True)
@@ -189,7 +198,7 @@ def run(chunk):
             env['PYTHONPATH'] = os.pathsep.join([str(FH1.parent)] + [p_ for p_ in [os.environ.get('PYTHONPATH')] if p_])     # the repo root, for kn5port: the scripts' ../.. misses it from a deeper work folder (WORKS)
             t0 = time.time()
             with open(out, 'w', encoding='utf8') as f_:
-                p_ = subprocess.Popen([sys.executable, '-u', BUILD], cwd=SNAP, env=env, stdout=f_, stderr=subprocess.STDOUT, creationflags=NOWIN)
+                p_ = subprocess.Popen([sys.executable, '-u', str(FM4 / 'fm4build.py'), chunk[4:]] if fm4 else [sys.executable, '-u', BUILD], cwd=FM4 if fm4 else SNAP, env=env, stdout=f_, stderr=subprocess.STDOUT, creationflags=NOWIN)
                 set_state(cur, state='running', why='', run=rid, pid=p_.pid, started=now(), out=str(out), changed=changed, requests=group)
                 code = p_.wait()
             text = out.read_text(encoding='utf8', errors='replace').splitlines()
@@ -295,7 +304,7 @@ def stop(a):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sp = ap.add_subparsers(dest='cmd', required=True)
     s = sp.add_parser('submit'); s.add_argument('-m', '--message', required=True, help='what changed, for the other sessions')
-    s.add_argument('--by', default='unnamed', help='who is asking: a short session or task name'); s.add_argument('--chunk', default='colorado')
+    s.add_argument('--by', default='unnamed', help='who is asking: a short session or task name'); s.add_argument('--chunk', default='colorado', help='redrock, colorado, clearsprings, coloradodirt, or fm4_<track> (fh1/fm4)')
     s.add_argument('--env', action='append', default=[], help='extra FH1_* flags, KEY=VALUE'); s.add_argument('--beamng-ok', action='store_true', help="build even while BeamNG is open")
     s = sp.add_parser('status'); s.add_argument('-n', type=int, default=5, help='recent builds to show')
     s = sp.add_parser('wait'); s.add_argument('id')

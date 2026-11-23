@@ -75,6 +75,7 @@ python buildq.py stop [chunk]        # kill a chunk's running build, or every ru
 - Pending requests with the same chunk and `--env` flags fold into one build of the newest code, which covers them all. The oldest request's kind goes first. A request made during a build waits for the next one, and a running build is never restarted for it.
 - Before starting, the runner waits for 15 s with no change in `pipeline/` (so it doesn't catch a multi-file edit halfway), for any `build3.py` started by hand to finish, and for BeamNG to close, as a build wipes the level it may have loaded. `--beamng-ok` skips the BeamNG wait: use it only when the game has another level loaded, as files of the open level can't be replaced (`grade.py` fails on them).
 - It copies `pipeline/` to `fh1/build_snapshot_<chunk>/` and builds there. That folder sits one level under `fh1/` like `pipeline/`, so the scripts' `../` paths still reach the data, and edits made during a build can't leak into it. Don't edit the snapshot.
+- An `fm4_<track>` lane (`--chunk fm4_tsukuba`) builds a Forza Motorsport 4 track: it runs `fh1/fm4/fm4build.py <track>` in place, without a snapshot, as the script loads all its modules when it starts, and also waits for `fm4/*.py` to settle. See `docs/fm4.md`, Build.
 - `BUILDQ_DIR`, `BUILDQ_SNAP`, `BUILDQ_CMD` and `BUILDQ_SETTLE` point the queue at a scratch folder and a fake build, for testing the queue itself.
 
 ## `build3.py` sections
