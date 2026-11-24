@@ -26,7 +26,7 @@ from . import fh1 as F
 
 REPO_FM4 = F.REPO_FH1 / "fm4"
 # the circuits that have been built and driven in BeamNG; the rest build, but nobody has looked at them in the game yet
-CHECKED = {"Tsukuba"}
+CHECKED = set()
 # the circuits fm4build.py builds to the end (all 24, 2026-11-23); others would be listed as not building yet
 WORKING = {"Alps", "AmalfiGP", "Autopark", "Catalunya", "CrownJewel", "FujimiKaido", "Hockenheim", "Indi", "Infin", "LagunaSeca", "LeMans", "MapleValley", "Motegi",
            "Mugello", "Nurburgring", "NurburgringF1", "RoadAmerica", "RoadAtlanta", "Sebring", "Silverstone", "SunsetInfield", "Suzuka",
