@@ -71,6 +71,16 @@ The lightmap (s7) reads the mask's UV set through `Light_Map_uvOS` and is tinted
 
 Most of Tsukuba's grass is not ground-blended: it is `grass_*` and `diff_*` object shaders. Only 2 sections use `terr_blnd`.
 
+## Other colour samplers (working)
+
+28 shaders on 17 tracks name their colour texture something other than `Diffuse_TextureSampler`, `DiffuseSampler` or `Blend_A`/`B`, and drew grey until 2026-11-24 (100 of the Alps' 1,719 materials: its rock, shoulders and road edges). Read from the ucode, interpolators traced to the vertex shader's fetches (each texcoord through the UV box). Built through `ground_plan` as one layer; the parts marked "not yet" are left out:
+- `diff_spec_deposit_4`, `diff_spec_deposit_uv2_4`, `shldr_diff_spec_deposit_uv2_5`: colour = lerp(Base(tc0 × `c360_0.yz`), Deposit(tc0 × `c360_1.xy`), w) × vertex colour × `c360_0.x`, then the lightmap at tc2. w = 1 / (1 + 2^(-`c360_0.w` × h)), h from the vertex alpha and the height map (tc0 × `c360_2.xy`; one `adds_prev` operand isn't certain). Not yet: the Deposit layer. `c360_0.x` is 1 on all 758 materials of Alps, Crown Jewel, Maple Valley, Amalfi and Top Gear.
+- `shldr_4clr_blnd_mask_2`: D = sat(Diff_Spec(world x, z × `c360_1.x`) + paint × `c360_2`), the paint mask at tc1 × `c360_3.xy`, channel x or y by `c360_1.y`; colour = lerp(D × `c360_0`, D + `c360_4`, Blend_Value.rgb(tc2 × `c360_5.xy`)). `c360_0` and `c360_4` are 0 on every Alps material, so D × Blend_Value. World x, z is the world matrix times position (o5). `c360_1.x` is 0 on some materials, a single texel: a flat colour in FM4 too. Not yet: the paint and the Blend_Value multiply.
+- `rdedg_blnd_diff_spec_bump_4`/`_5`: the shoulder texture at tc0 × `c360_0.xy`, the road texture at world x, z × `c360_0.z`, blended through `BumpBlend` fetches and the skids layer. Not yet: the road layer and the blend; the shoulder alone.
+- `sign_spec_refl_norm_4`: `DiffOpac` at tc0 × `c360_1.xy`.
+
+Still grey: water (`lake_*`, `river_*`, `ocean_*`: normal maps and reflection, no colour texture), `rdedg_blnd_diff_opac_3`, `rdedg_blnd_diff_spec_ovly_blur_4`, `road_blnd_diff_*` with `RoadSampler`, `road_diff_spec_ovly*` and `shldr_diff_spec_ovly_vendor_2` (`Diff_Spec02Sampler`), `road_2blnd_uv3_3`, `sign_spec_opac_refl_norm_4`, `diff_spec_refl_nolm_vclr_2` (`TextureMap_4425Sampler`), `add_diff_opac_rgba`. After this, grey materials per track: Alps 5 (the lake, and one texture `bin.zip` lacks), Maple Valley 4, Top Gear 10, Crown Jewel 21, Amalfi 52, Tsukuba 25 (as before).
+
 ## Collision, `<track>_track_NN.col` (proven)
 
 Read by `fm4col.py`. A 7 × 4 grid of 100 m cells on Tsukuba, with 19 occupied. The header gives the counts, bounds and cell size, then from 0x58 one 24-byte entry per occupied cell: index, cell, offset, size, 0, end. A cell block is a 0x40 header (vertex count, triangle count, vertex offset 0x40, triangle offset, a 12 × 12 sub-grid of 10 m with its origin and offset), then 32-byte vertices (float3 position, a packed word, padding) and 32-byte triangles (u16 surface id, three vertex byte offsets within the cell, float3 face normal). The 10 m sub-grid lists after the triangles and isn't read. Tsukuba: 28,907 vertices, 22,073 triangles. The stored normals agree with the winding on every triangle.

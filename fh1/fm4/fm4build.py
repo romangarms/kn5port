@@ -294,6 +294,19 @@ def ground_plan(shader, slots, rec, ps, tt):
         sA = c(0, 1) if 'decal' in shader else c(0, 0)
         return dict(layers=[(A, sA), (Bt, c(1, 0))], uv0=('texcoord1', sA), mask=(V, 'texcoord0', np.ones(2)), road=False, tint=None,
                     vcolor=float(c(0, 0 if 'decal' in shader else 2, 1)[0]))
+    # Families whose colour sampler has another name, read from their ucode (docs/fm4.md, Other colour samplers). One layer each, for now
+    one = lambda t, uv, tint=None, vcolor=False: dict(layers=[(t, np.ones(2))], uv0=uv, mask=(None, 'texcoord0', np.ones(2)), road=False,
+                                                     tint=tint, vcolor=vcolor)
+    if 'deposit' in shader and (t := tid('BaseTextureSampler')) is not None:
+        return one(t, ('texcoord0', c(0, 1)), vcolor=float(c(0, 0, 1)[0]))       # lerp(Base, Deposit, w) * vertex colour * c0.x: Deposit not yet
+    if shader.startswith('shldr_4clr_blnd_mask') and (t := tid('Diff_SpecSampler')) is not None:
+        # lerp(D * c0, D + c4, Blend_Value.rgb), D = sat(Diff + paint mask * c2): c0 and c4 are 0 on every Alps material, so D * Blend_Value.
+        # The paint (c2 where the mask is set) and the Blend_Value multiply aren't reproduced yet
+        return one(t, ('world', np.full(2, c(1, 0, 1)[0])))
+    if shader.startswith('rdedg_blnd_diff_') and 'bump' in shader and (t := tid('ShoulderSampler')) is not None:
+        return one(t, ('texcoord0', c(0, 0)))                                     # the road layer (world x, z * c0.z) and its blend not yet
+    if shader.startswith('sign_spec_refl_norm') and (t := tid('DiffOpacSampler')) is not None:
+        return one(t, ('texcoord0', c(1, 0)))
     return None
 
 
@@ -302,7 +315,8 @@ def ground_material(plan, ground):
     from layer 0's), roads a black layer at 1 - mask.g"""
     (t0, s0) = plan['layers'][0]; mt = plan['mask'][0]
     key = f'fm4_g{t0:x}_' + '_'.join(f'{t:x}x{s[0]:g}' for t, s in plan['layers'][1:]) + (f'_m{mt:x}' if mt is not None else '') + \
-        ('_r' if plan['road'] else '') + ('_v' if plan['vcolor'] else '') + (f'_{ground}' if ground else '')
+        ('_r' if plan['road'] else '') + ('_v' if plan['vcolor'] else '') + (f'_{ground}' if ground else '') + \
+        ('_t' + '_'.join(f'{int(round(float(v) * 1000))}' for v in plan['tint']) if plan['tint'] is not None else '')
     if key in MATS: return key
     if texture(t0) is None: return None
     st = [{'baseColorMap': f"{REL}/art/textures/{texture(t0)['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}]
