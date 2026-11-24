@@ -287,7 +287,10 @@ def ground_plan(shader, slots, rec, ps, tt):
     c = lambda row, k, n=2: np.array(ps[row][k:k + n]) if row < len(ps) else np.ones(n)
     A, Bt, V = tid('Blend_ASampler'), tid('Blend_BSampler'), tid('Blend_ValueSampler')
     if shader.startswith('road_blnd') and Bt is not None:
-        return dict(layers=[(Bt, np.ones(2))], uv0=('world', np.full(2, c(0, 0, 1)[0])), mask=(V, 'texcoord2', c(0, 1)), road=True, tint=None, vcolor=False)
+        # the _4 variants (Tsukuba, Indianapolis, Infineon) scale B by c0.x and the mask by c0.yz; road_blnd_2 and road_blnd_trilin_2
+        # (17 tracks) by c1.x and c1.yz, their c0 the colour weight, 0 (docs/fm4.md, road_blnd)
+        r = 1 if shader.endswith('_2') else 0
+        return dict(layers=[(Bt, np.ones(2))], uv0=('world', np.full(2, c(r, 0, 1)[0])), mask=(V, 'texcoord2', c(r, 1)), road=True, tint=None, vcolor=False)
     if shader.startswith('terr_blnd') and A is not None and Bt is not None:
         return dict(layers=[(A, c(1, 0)), (Bt, c(2, 0))], uv0=('texcoord0', c(1, 0)), mask=(V, 'texcoord2', np.ones(2)), road=False,
                     tint=c(0, 0, 3), vcolor=False)
