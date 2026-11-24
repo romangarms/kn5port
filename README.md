@@ -100,8 +100,7 @@ scenery, its baked lighting and sky, and a spawn on each layout's grid. The leve
 photo, names and layout maps.
 
 Point it at a Games on Demand folder, an image of the first disc (`.iso`, which holds every track) or extracted
-files. A circuit builds in about a minute and a half. This is a beta: 21 of FM4's 24 circuits build so far (all but the Bernese Alps, Amalfi and Maple
-Valley), and only Tsukuba has been looked over in BeamNG. See
+files. A circuit builds in about a minute and a half. This is a beta: 22 of FM4's 24 circuits build so far (all but the Bernese Alps and Maple Valley), and only Tsukuba has been looked over in BeamNG. See
 [`fh1/docs/fm4.md`](fh1/docs/fm4.md) for how it works.
 
 ## Install

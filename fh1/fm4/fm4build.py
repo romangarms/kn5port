@@ -99,7 +99,7 @@ SAMPLERS = {}
 for f_ in (WORK / 'x').glob('shaders_track_*.fxobj'):
     ps = [s for s in xenos.shaders(f_.read_bytes()) if s['kind'] == 'ps']
     if ps: SAMPLERS[f_.stem[14:].lower()] = {c[0]: c[2] for c in ps[0]['consts'] if c[1] == 3}
-STEM = next((WORK / 'x').glob('*out.00000.rmb.bin')).name.split('.')[0]
+STEM = next((WORK / 'x').glob('*out.*.rmb.bin')).name.split('.')[0]      # the mesh files' prefix; AmalfiGP's start at 00001
 TS = fm4sky.settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml')
 lap(f'{TRACK}: layouts {sorted(PVS)} placed, {len(ROWS)} in gamedb, {len(TG)} table groups; ' +
     ', '.join(f'ribbon {ri} {len(pv["draws"])} draws' for ri, pv in PVS.items()) + f'; {len(SAMPLERS)} shaders')
