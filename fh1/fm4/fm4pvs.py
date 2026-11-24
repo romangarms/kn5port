@@ -5,16 +5,28 @@
 - draws: u32 count, 68-byte records: u16 mesh (the Tsukubaout.<mesh>.rmb.bin file) at 0, float3 position at 38, 3x3 float16 rotation at 50
 - meshes: u32 count, records of (u32 n, n texture keys, u32 m, m keys, 80 bytes holding a matrix). A material slot indexes the first key
   list; a key indexes the texture table."""
+import math
 import struct
 
 import numpy as np
 
 
+def _plausible(b, o, n):
+    """n texture records from o + 4 look real: kind under 256, and scales and offsets 0 or between 1e-6 and 1e6 in size"""
+    for k in range(n):
+        r = struct.unpack_from('>2I4fI', b, o + 4 + 28 * k)
+        if r[6] > 255 or any(not math.isfinite(f) or (f != 0 and not 1e-6 <= abs(f) <= 1e6) for f in r[2:6]):
+            return False
+    return True
+
+
 def tables(b):
     i = b.find(b'shaders' + bytes([92]) + b'track') - 8
     ns = struct.unpack_from('>I', b, i)[0]
+    # the count sits before its n records, so look back for a word equal to n; other data can match too (MapleValley_00 has a false 7680,
+    # whose first record holds a denormal float), so keep the largest n whose records are all plausible
     fits = [n for n in range(1, i // 28) if struct.unpack_from('>I', b, i - 4 - 28 * n)[0] == n]
-    nt = max(fits); o = i - 4 - 28 * nt
+    nt = max(n for n in fits if _plausible(b, i - 4 - 28 * n, n)); o = i - 4 - 28 * nt
     T = [struct.unpack_from('>2I4fI', b, o + 4 + 28 * k) for k in range(nt)]
     o = i + 4; S = []
     for _ in range(ns):

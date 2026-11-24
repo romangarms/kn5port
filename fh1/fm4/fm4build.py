@@ -88,6 +88,12 @@ tex.X = str(WORK / 'x')
 ROWS = fm4ui.layouts(TRACK)
 RDIRS = {int(d.name[7:]): d for d in sorted((MEDIA / 'Tracks' / TRACK).glob('Ribbon_*'))}
 PVS = {ri: fm4pvs.tables(next(d.glob('*.pvs')).read_bytes()) for ri, d in RDIRS.items() if any(d.glob('*.pvs'))}
+# A ribbon whose FPVS places meshes bin.zip doesn't have was made against other data: Alps' reverse ribbons 3 and 4 have 1,502 mesh records
+# to bin.zip's 1,301 and place 88 missing meshes. Their FPVS and .col are left out, so those layouts take their geometry from the other
+# ribbons, as a layout with no FPVS does; their spawns and AI lines stay
+HAVE = {int(f_.name.split('.')[1]) for f_ in (WORK / 'x').glob('*out.*.rmb.bin')}
+STALE = {ri: n for ri, pv in PVS.items() for n in [len({d['mesh'] for d in pv['draws']} - HAVE)] if n}
+for ri in STALE: del PVS[ri]
 TG = []; RG = {}
 for ri, pv in PVS.items():
     sig = (pv['textures'], pv['shaders'], [m['tex'] for m in pv['meshes']])
@@ -101,6 +107,7 @@ for f_ in (WORK / 'x').glob('shaders_track_*.fxobj'):
     if ps: SAMPLERS[f_.stem[14:].lower()] = {c[0]: c[2] for c in ps[0]['consts'] if c[1] == 3}
 STEM = next((WORK / 'x').glob('*out.*.rmb.bin')).name.split('.')[0]      # the mesh files' prefix; AmalfiGP's start at 00001
 TS = fm4sky.settings(MEDIA / 'Tracks' / TRACK / 'TrackSettings.xml')
+if STALE: lap('ribbons left out, placing meshes bin.zip lacks: ' + ', '.join(f'{ri} ({n})' for ri, n in STALE.items()))
 lap(f'{TRACK}: layouts {sorted(PVS)} placed, {len(ROWS)} in gamedb, {len(TG)} table groups; ' +
     ', '.join(f'ribbon {ri} {len(pv["draws"])} draws' for ri, pv in PVS.items()) + f'; {len(SAMPLERS)} shaders')
 
@@ -326,7 +333,7 @@ def box_uv(m, lay, s, name):
     fl = s['fl']; return np.array(fl[4:6]) + fm4mesh.attr(m, lay, name) * np.array(fl[6:8])
 
 
-COLFILES = {ri: f for ri, d in RDIRS.items() for f in [next(d.glob('*_track_*.col'), None)] if f}
+COLFILES = {ri: f for ri, d in RDIRS.items() if ri not in STALE for f in [next(d.glob('*_track_*.col'), None)] if f}
 COLFILE = bool(COLFILES)
 
 # ---- shapes

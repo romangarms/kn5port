@@ -27,9 +27,8 @@ from . import fh1 as F
 REPO_FM4 = F.REPO_FH1 / "fm4"
 # the circuits that have been built and driven in BeamNG; the rest build, but nobody has looked at them in the game yet
 CHECKED = {"Tsukuba"}
-# the circuits fm4build.py builds to the end (tried 2026-11-23 on all 24); the others stop partway, and are listed as not
-# building yet: Alps and MapleValley
-WORKING = {"AmalfiGP", "Autopark", "Catalunya", "CrownJewel", "FujimiKaido", "Hockenheim", "Indi", "Infin", "LagunaSeca", "LeMans", "Motegi",
+# the circuits fm4build.py builds to the end (all 24, 2026-11-23); others would be listed as not building yet
+WORKING = {"Alps", "AmalfiGP", "Autopark", "Catalunya", "CrownJewel", "FujimiKaido", "Hockenheim", "Indi", "Infin", "LagunaSeca", "LeMans", "MapleValley", "Motegi",
            "Mugello", "Nurburgring", "NurburgringF1", "RoadAmerica", "RoadAtlanta", "Sebring", "Silverstone", "SunsetInfield", "Suzuka",
            "TopGear", "Tsukuba"}
 COMMON_GB = 0.45        # the files every track needs, copied out of an ISO or GOD package
