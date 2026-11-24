@@ -971,9 +971,23 @@ $("#fh").addEventListener("toggle", (e) => { if (e.target.id === "fhAdv") fh.adv
 $("#howtoOk").addEventListener("click", () => $("#howto").close());
 
 // ---- Forza Motorsport 4 tab (beta) ------------------------------------------------------------------------
-const fm = { s: null, job: null, track: null, adv: false, polling: false, loading: false, listed: false };
+const fm = { s: null, job: null, track: null, adv: false, polling: false, loading: false, listed: false, queued: null };
 const FM_STAGES = { python: "Set up Python", extract: "Copy game files", tracks: "Read track list", build: "Build level" };
 const fmBusy = () => fm.job && fm.job.status === "running";
+// reading the track list runs by itself when a game copy is picked: it doesn't lock the track choice, and a build asked for meanwhile waits for it
+const fmListing = () => fmBusy() && fm.job.task === "tracks";
+const fmBuilding = () => fmBusy() && !fmListing();
+
+function fmListHtml(j) {
+  if (!j || j.task !== "tracks") return "";
+  if (j.status === "running") {
+    const what = j.stage === "extract" ? `Copying the game files the list needs out of the ${fm.s?.source.kind === "god" ? "GOD package" : "disc image"}` : "Reading FM4's track names and photos";
+    return `<div class="muted" style="margin-bottom:8px" id="fmList">${what}…${j.progress != null ? ` <span id="fmListPct">${Math.round(j.progress * 100)}%</span>` : ""}</div>
+      ${j.progress != null ? `<div class="bar" style="margin-bottom:10px"><i id="fmListBar" style="width:${(j.progress * 100).toFixed(1)}%"></i></div>` : ""}`;
+  }
+  if (j.status === "failed") return `<div class="alert bad" style="margin-bottom:10px">Couldn't read the track list: ${esc((j.lines || []).slice(-1)[0] || "see the log")}</div>`;
+  return "";
+}
 const fmPhoto = (m) => `/api/fm4/photo/${encodeURIComponent(m)}?t=${encodeURIComponent(TOKEN)}`;
 
 async function fmRefresh() {
@@ -1023,7 +1037,7 @@ function fmChecks(s, t) {
 }
 
 function fmJobHtml(j) {
-  if (!j) return "";
+  if (!j || j.task === "tracks") return "";      // shown with the track list instead (fmListHtml)
   const steps = (j.stages || []).map((k, i) => {
     const cur = j.stages.indexOf(j.stage);
     const cls = j.status === "done" || cur > i || j.stage === "done" ? "done" : (k === j.stage && j.status === "running" ? "active" : "");
@@ -1047,9 +1061,9 @@ function fmJobHtml(j) {
 function fmRender() {
   const s = fm.s; if (!s) return;
   const top = $("#fm4View").scrollTop;
-  const src = s.source, srcOk = !!src.kind, busy = fmBusy(), dis = busy ? "disabled" : "";
+  const src = s.source, srcOk = !!src.kind, busy = fmBusy(), building = fmBuilding(), listing = fmListing(), dis = busy ? "disabled" : "";
   const t = s.tracks.find((x) => x.media === fm.track);
-  const card = (x) => `<button class="choice ${x.media === fm.track ? "on" : ""}" data-fmtrack="${esc(x.media)}" ${busy || !x.working ? "disabled" : ""}>
+  const card = (x) => `<button class="choice ${x.media === fm.track ? "on" : ""}" data-fmtrack="${esc(x.media)}" ${building || !x.working ? "disabled" : ""}>
       ${x.photo ? `<img class="tp" src="${fmPhoto(x.media)}" alt="" loading="lazy">` : ""}
       <span class="ct"><i>${esc(x.name)}</i>${x.checked ? '<span class="rec">Checked in game</span>' : ""}</span>
       <span class="pc">${x.location ? `<span>${esc(x.location)}</span>` : ""}${x.layouts.length ? `<span>${x.layouts.length} layout${x.layouts.length > 1 ? "s" : ""}: ${esc([...new Set(x.layouts)].join(", "))}</span>` : ""}
@@ -1070,8 +1084,8 @@ function fmRender() {
       </div></section>
 
     <section><h2 class="numh"><span class="num ${t ? "ok" : ""}">2</span>Which circuit</h2>
-      <div class="og">${!srcOk ? '<div class="muted">Pick your copy of the game first.</div>'
-        : !s.tracks.length ? `<div class="muted">${fmBusy() ? "Reading the track list…" : "No circuits found in this copy."}</div>`
+      <div class="og">${fmListHtml(fm.job)}${!srcOk ? '<div class="muted">Pick your copy of the game first.</div>'
+        : !s.tracks.length ? (listing ? "" : '<div class="muted">No circuits found in this copy.</div>')
         : `<div class="choices">${ok.map(card).join("")}</div>
           ${later.length ? `<details style="margin-top:10px"><summary class="muted">${later.length} more that don’t build yet</summary><div class="choices" style="margin-top:8px">${later.map(card).join("")}</div></details>` : ""}`}
       </div></section>
@@ -1080,10 +1094,11 @@ function fmRender() {
 
     <section><h2 class="numh"><span class="num">4</span>Build</h2>
       <div class="actions">
-        <button class="primary" id="fmGo" ${busy || !srcOk || !t || (s.runtime.needed && !s.runtime.ready) ? "disabled" : ""}>${t ? `${t.installed ? "Build again" : "Build"}: ${esc(t.name)}` : "Build"}</button>
-        ${busy ? '<button class="secondary" id="fmCancel">Cancel</button>' : ""}
+        <button class="primary" id="fmGo" ${building || fm.queued || !srcOk || !t || (s.runtime.needed && !s.runtime.ready) ? "disabled" : ""}>${t ? `${t.installed ? "Build again" : "Build"}: ${esc(t.name)}` : "Build"}</button>
+        ${building ? '<button class="secondary" id="fmCancel">Cancel</button>' : ""}
         ${!busy && t?.installed ? '<button class="secondary" data-fmopen="level">Open level folder</button>' : ""}
-        <span class="muted">${busy ? "Working… you can switch tabs; closing kn5port stops the build." : ""}</span>
+        <span class="muted">${building ? "Working… you can switch tabs; closing kn5port stops the build."
+          : fm.queued ? `${esc(s.tracks.find((x) => x.media === fm.queued)?.name || fm.queued)} starts building once the track list is read.` : ""}</span>
       </div>
       <div class="muted" style="margin-top:8px">BeamNG has to be closed while building: the build replaces the level's files.</div>
       <div id="fmProblems"></div>
@@ -1112,6 +1127,11 @@ async function fmPoll() {
       const changed = u.stage !== fm.job.stage || u.status !== fm.job.status || JSON.stringify(u.stages) !== JSON.stringify(fm.job.stages);
       fm.job.lines.push(...u.lines); Object.assign(fm.job, { status: u.status, stage: u.stage, stages: u.stages, progress: u.progress, elapsed: u.elapsed });
       if (state.tab !== "fm4") continue;
+      if (fm.job.task === "tracks") {
+        if (changed || !$("#fmList")) fmRender();
+        else if (u.progress != null && $("#fmListBar")) { $("#fmListBar").style.width = (u.progress * 100).toFixed(1) + "%"; $("#fmListPct").textContent = Math.round(u.progress * 100) + "%"; }
+        continue;
+      }
       const log = $("#fmlog");
       if (!changed && log) {
         const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
@@ -1121,6 +1141,20 @@ async function fmPoll() {
     }
   } finally { fm.polling = false; }
   await fmRefresh();
+  if (fm.queued && !fmBusy()) {      // a build asked for while the track list was read
+    const tr = fm.queued; fm.queued = null;
+    if (fm.job?.status === "done") { fm.track = tr; await fmBuild(tr); } else fmRender();
+  }
+}
+
+async function fmBuild(track) {
+  try {
+    const p = await api("/api/fm4/check", { track });
+    if (p.problems.length) { fmRender(); $("#fmProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${p.problems.map(esc).join("<br>")}</div>`; return; }
+    const j = await api("/api/fm4/build", { track });
+    fm.job = { ...j, lines: j.lines || [] };
+    fmRender(); fmPoll();
+  } catch (err) { $("#fmProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${esc(err.message)}</div>`; }
 }
 
 $("#fm").addEventListener("click", async (e) => {
@@ -1139,14 +1173,13 @@ $("#fm").addEventListener("click", async (e) => {
   if (open) { api("/api/fm4/open", { what: open, track: open === "level" && fm.job?.status === "done" && fm.job.track ? fm.job.track : fm.track }).catch((err) => alert(err.message)); return; }
   if (t.id === "fmFolders") { $("#settingsBtn").click(); return; }
   if (t.id === "fmCancel") { api("/api/fm4/cancel", {}).catch((err) => alert(err.message)); return; }
-  const setup = !!t.closest("[data-fmsetup]");
-  if (setup || t.id === "fmGo") {
+  if (t.id === "fmGo") {
+    if (fmListing()) { fm.queued = fm.track; fmRender(); return; }      // starts once the track list is read (fmPoll)
+    await fmBuild(fm.track); return;
+  }
+  if (t.closest("[data-fmsetup]")) {
     try {
-      if (!setup) {
-        const p = await api("/api/fm4/check", { track: fm.track });
-        if (p.problems.length) { $("#fmProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${p.problems.map(esc).join("<br>")}</div>`; return; }
-      }
-      const j = await api(setup ? "/api/fm4/install" : "/api/fm4/build", setup ? {} : { track: fm.track });
+      const j = await api("/api/fm4/install", {});
       fm.job = { ...j, lines: j.lines || [] };
       fmRender(); fmPoll();
     } catch (err) { $("#fmProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${esc(err.message)}</div>`; }
