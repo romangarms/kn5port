@@ -83,6 +83,7 @@ def lap(what):
 if not (WORK / 'x').exists():
     fm4zip.main(str(MEDIA / 'Tracks' / TRACK / 'bin.zip'), str(WORK))
 tex.X = str(WORK / 'x')
+tex.STX = True      # textures found only in <Track>.stx.bin (texture-table kind 1), docs/fm4.md, Texture pack
 # Every layout (ribbon) goes into the one level. A ribbon's FPVS places what is visible from that layout, so the level places the union of
 # their draws. Layouts whose texture, shader and mesh tables are equal share a table group (all but some of Alps' and Maple Valley's).
 ROWS = fm4ui.layouts(TRACK)

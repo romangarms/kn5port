@@ -75,11 +75,67 @@ def bix(i):
 def _bix(i):
     n=f'_0x{i:08X}'
     p=f'{X}/{n}.bix'
-    if not os.path.exists(p): return caff(i,n)
+    if not os.path.exists(p): return caff(i,n) or (stx().get(i) if STX else None)
     h=open(p,'rb').read(); mag,w,hh,mips,fw,tot,top=struct.unpack('>4sIIIIII',h[:28])
     return dict(w=w,h=hh,mips=mips,fw=fw,fmt=fw&0xff,top=top,tot=tot,path=p,bpath=f'{X}/{n}_B.bix',off=0)
+# <Track>.stx.bin, the track's texture pack (fh1/docs/fm4.md, Texture pack): the resident part of every texture, and the only copy of
+# those with no .bix or .bin (FM4's texture-table kind 1). Off unless STX is set: FM4's build reads it, FH1's doesn't yet
+STX=False
+def stx_index(f):
+    """{texture id: header dict} from a pack's bytes. Records of 128 bytes from 0x190 ('texture\\0'), one source path each in record
+    order (..._0x<id>_s.bin). A texture with no mip chain is at its relocation entry's value (the entry numbered record + 1 whose value
+    isn't the record's own .data offset); one with mips at its base field plus the mip region's start (the 01 0C entry numbered
+    records + 1). A level whose smaller side is 16 or less sits packed in its tile: at texel (16, 0) when at least as tall as wide,
+    else (0, 16)"""
+    gs=struct.unpack_from('>I',f,0x88)[0]; g0=len(f)-gs
+    n=0
+    while f[0x190+128*n:0x190+128*n+8]==b'texture\0': n+=1
+    sep=b'compiled'+bytes([92]); paths=[]; at=f.find(sep)
+    while at>=0:
+        e=f.index(b'\0',at+len(sep)); paths.append(f[at+len(sep):e].decode('latin1')); at=f.find(sep,e)
+    s=f.find(b'texture pairs')
+    if s<0 or len(paths)<n: return {}
+    rel={}; at=s
+    while True:
+        at=min([x for x in (f.find(b'\x74\x01\x05\x00',at),f.find(b'\x70\x01\x05\x00',at)) if x>=0],default=-1)
+        if at<0: break
+        rel.setdefault(int.from_bytes(f[at+4:at+7],'big'),[]).append(struct.unpack_from('>I',f,at+7)[0]); at+=4
+    j=f.find(b'\x01\x0c\x00\x00'+(n+1).to_bytes(2,'big'),s); mip0=struct.unpack_from('>I',f,j+6)[0] if j>=0 else None
+    out={}
+    for k in range(n):
+        if not paths[k].endswith('_s.bin'): continue
+        fw,kind,_,wh,base,mip,_=struct.unpack_from('>IIIIIII',f,0x190+128*k+0x18); w,hh=wh>>16,wh&0xffff
+        if kind!=0 or fw&0xff not in (0x52,0x53,0x54,0x71,0x7b): continue
+        if mip==0xffffffff:
+            c=[v for v in rel.get(k+1,[]) if v!=0x80*k]
+            if not c: continue
+            off=c[0]
+        elif mip0 is None: continue
+        else: off=base+mip0
+        if min(w,hh)>=32: pack=(0,0)
+        elif max(w,hh) in (16,32): pack=(4,0) if hh>=w else (0,4)       # in blocks
+        else: continue                                                 # smaller squares: their placement isn't measured
+        out[int(paths[k][3:11],16)]=dict(w=w,h=hh,mips=0,fw=fw,fmt=fw&0xff,top=0,tot=0,path='stx',bpath='stx',off=g0+off,pack=pack)
+    return out
+@functools.lru_cache(maxsize=None)
+def _stx(x):
+    p=next((os.path.join(x,q) for q in os.listdir(x) if q.endswith('.stx.bin')),None) if os.path.isdir(x) else None
+    if not p: return {},None
+    idx=stx_index(open(p,'rb').read())
+    for t in idx.values(): t['path']=t['bpath']=p
+    return idx,p
+def stx():
+    return _stx(X)[0]
 def top_mip(t):
-    return open(t['bpath'],'rb').read()[t['off']:]
+    d=open(t['bpath'],'rb').read()[t['off']:]
+    if t.get('pack',(0,0))==(0,0): return d
+    # a packed level: move its blocks to the tile's origin, so the plain untile reads it
+    bpb={0x52:8,0x53:16,0x54:16,0x71:16,0x7b:8}[t['fmt']]; lb={8:3,16:4}[bpb]; bw=(t['w']+3)//4; bh=(t['h']+3)//4; x0,y0=t['pack']
+    ys,xs=np.mgrid[0:bh,0:bw]; src=tiled_offset((xs+x0).astype(np.int64),(ys+y0).astype(np.int64),bw,lb).ravel()
+    dst=tiled_offset(xs.astype(np.int64),ys.astype(np.int64),bw,lb).ravel()
+    a=np.frombuffer(d[:int(src.max())+bpb],'u1'); out=np.zeros(int(max(dst.max(),src.max()))+bpb,'u1'); k=np.arange(bpb)
+    out[dst[:,None]+k]=a[src[:,None]+k]
+    return out.tobytes()
 def blocks(i):
     # the top mip as plain little-endian DXT blocks, ready for a .dds
     t=bix(i); bpb={0x52:8,0x53:16,0x54:16,0x71:16}[t['fmt']]; bw=(t['w']+3)//4; bh=(t['h']+3)//4
