@@ -148,6 +148,7 @@ Protected or encrypted tracks are skipped.
 ## More
 
 - [How it works](docs/how-it-works.md) and [what broke along the way](docs/learnings.md)
-- Build the exe: `packaging\build.ps1`. Release: `python packaging/release.py [patch|minor|major]` bumps the
+- Build the exe: double-click `build.cmd` (or run `packaging\build.ps1`). It finds Python, keeps its own build Python
+  in `%LOCALAPPDATA%\kn5port`, and writes `dist\kn5port.exe`. Release: `python packaging/release.py [patch|minor|major]` bumps the
   version, tags it and pushes; GitHub Actions then builds `kn5port.exe` and publishes it on the releases page.
 - License: MIT for the code. It grants no rights to the tracks you convert or to BeamNG content.
