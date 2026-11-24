@@ -2,7 +2,8 @@
 ground materials, FM4's collision, a spawn on each layout's grid, and FM4's own menu art and text. Most detailed LOD only, no lightmaps or
 paint palettes. See docs/fm4.md.
 python fm4build.py Tsukuba [output mod folder]
-Work data (bin.zip extracted) goes in fh1/fm4/<track>/; the level goes to mods/unpacked/fm4_<track>."""
+Work data (bin.zip extracted) goes in fh1/fm4/<track>/ (or $FM4_WORK/<track>/); the level goes to mods/unpacked/fm4_<track>.
+The game folder is $FM4_DUMP, holding Media/."""
 import collections
 import json
 import math
@@ -37,7 +38,7 @@ MEDIA = FM4 / 'Media'
 TRACK = sys.argv[1] if len(sys.argv) > 1 else 'Tsukuba'
 TRACK = next((d.name for d in (MEDIA / 'Tracks').iterdir() if d.name.lower() == TRACK.lower()), TRACK)     # the build queue's lane gives it in lower case
 LVL = f'fm4_{TRACK.lower()}'
-WORK = HERE / TRACK.lower()
+WORK = Path(os.environ.get('FM4_WORK') or HERE) / TRACK.lower()       # FM4_WORK: the app's work folder
 ROOT = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(beamng.find_mods()) / 'unpacked' / LVL
 LEVEL = ROOT / 'levels' / LVL; REL = f'/levels/{LVL}'
 T0 = time.time()

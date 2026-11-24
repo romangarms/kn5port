@@ -105,6 +105,30 @@ def test_detect_folder():
         (Path(tmp) / "media" / "tracks" / "colorado").mkdir(parents=True)
         (Path(tmp) / "media" / "tracks" / "colorado" / "bin.zip").write_bytes(b"PK")
         assert xbox.detect(tmp)["kind"] == "folder"
+        assert xbox.detect(tmp, title=xbox.FM4)["kind"] is None
+
+
+def test_detect_fm4_folder():
+    """FM4 needs its gamedb and the Top Gear track, which FM3 and FH1 lack; picking Media itself finds the folder above"""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "Media" / "db"
+        db.mkdir(parents=True); (db / "gamedb.slt").write_bytes(b"SQLite")
+        d = xbox.detect(tmp, title=xbox.FM4)
+        assert d["kind"] is None and "topgear" in d["why"].lower()      # FM3 has a gamedb.slt too
+        tg = Path(tmp) / "Media" / "Tracks" / "TopGear"
+        tg.mkdir(parents=True); (tg / "bin.zip").write_bytes(b"PK")
+        for p in (tmp, Path(tmp) / "Media"):
+            d = xbox.detect(p, title=xbox.FM4)
+            assert d["kind"] == "folder" and Path(d["path"]) == Path(tmp), p
+        assert xbox.detect(tmp)["kind"] is None                         # not Forza Horizon
+
+
+def test_fm4_iso_is_not_fh1():
+    part, files = make_image()
+    with tempfile.TemporaryDirectory() as tmp:
+        iso = Path(tmp) / "game.iso"
+        iso.write_bytes(part)
+        assert "not Forza Motorsport 4" in xbox.detect(iso, title=xbox.FM4)["why"]
 
 
 # ---- STFS ---------------------------------------------------------------------------------------------------

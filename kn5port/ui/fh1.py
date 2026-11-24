@@ -78,6 +78,26 @@ def interpreter():
     return runtime.python() if runtime.needed() else Path(sys.executable)
 
 
+def converter(work, **extra):
+    """(command prefix, environment) to run a pipeline script with the converter's Python: kn5port importable, ffmpeg
+    on PATH, numba's cache in the work folder, plus extra variables"""
+    py_exe = interpreter()
+    if not py_exe:
+        raise RuntimeError("Python for the converter isn't set up yet.")
+    if runtime.needed():      # the private Python imports kn5port from a copy of the exe's bundled sources
+        pkg_root = str(runtime.app_sources(Path(sys._MEIPASS) / "kn5port_src" / "kn5port"))
+    else:
+        pkg_root = str(Path(__file__).resolve().parents[2])
+    ff = find_ffmpeg()
+    path = os.pathsep.join([str(Path(ff).parent)] * bool(ff) + [os.environ.get("PATH", "")])
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONSTARTUP")}
+    env.update(PATH=path, PYTHONIOENCODING="utf8", PYTHONUNBUFFERED="1", NUMBA_CACHE_DIR=str(Path(work) / "numbacache"),
+               PYTHONPATH=os.pathsep.join([pkg_root] + [p for p in [os.environ.get("PYTHONPATH")] if p]), **extra)
+    if runtime.needed():
+        env["PYTHONNOUSERSITE"] = "1"      # the private Python sees only its own packages
+    return [str(py_exe), "-u"], env
+
+
 def missing_packages():
     if runtime.needed():
         return []                       # the private Python comes with all of them
@@ -514,6 +534,25 @@ class Job:
         if rc:
             raise RuntimeError(f"{Path(args[2] if len(args) > 2 else args[0]).name} failed (exit code {rc})")
 
+    def _prog(self, done, total, path):
+        """progress of a copy: the bar, and a log line every 2 s"""
+        self.progress = done / max(total, 1)
+        if time.time() - getattr(self, "_said", 0) > 2:
+            self._said = time.time()
+            self.say(f"  {self.progress * 100:4.0f}%  {path}")
+
+    def _extract(self, det, dest, want):
+        """copy the files want(path) accepts out of an ISO or GOD package (xbox.detect's det) into dest; -> files copied"""
+        self.say(f"Copying the game files the converter needs out of the {det['kind'].upper()} into {dest}")
+        g = xbox.open_game(det["path"])
+        try:
+            n = g.extract(dest, want, self._prog, lambda: self._cancel)
+        finally:
+            g.close()
+            self.progress = None
+        self.say(f"Copied {n} files.")
+        return n
+
     def _check_ffmpeg(self, py, cwd, env):
         """start ffmpeg the way the build's scripts do (their Python, folder and PATH), so a broken one stops here and not at the end of the build"""
         test = "import subprocess; subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True)"
@@ -568,35 +607,21 @@ class Job:
         self.stages = (["extract"] if not game else []) + (["dlc"] if rally and dsrc["package"] and not dsrc["copied"] else []) + \
             (["prepare"] if not prepared else []) + (["rally"] if rally and not rally_prepared else []) + ["build"] + \
             (["radio"] if self.opts.get("radio") else [])
-        last = [0.0]
-
-        def prog(done, total, path):
-            self.progress = done / max(total, 1)
-            if time.time() - last[0] > 2:
-                last[0] = time.time()
-                self.say(f"  {self.progress * 100:4.0f}%  {path}")
 
         if not game:
             self.stage = "extract"
             game = work / "game"
-            self.say(f"Copying the game files the converter needs out of the {det['kind'].upper()} into {game}")
-            g = xbox.open_game(det["path"])
-            try:
-                n = g.extract(game, lambda p: bool(WANT.match(p)), prog, lambda: self._cancel)
-            finally:
-                g.close()
+            self._extract(det, game, lambda p: bool(WANT.match(p)))
             if not (game / "media/tracks/colorado/bin.zip").exists():
                 raise RuntimeError("This copy has no media/tracks/colorado/bin.zip, so it isn't Forza Horizon (2012), "
                                    "or it's incomplete.")
             (game / ".kn5port-source.json").write_text(json.dumps({"key": _source_key(det)}))
-            self.progress = None
-            self.say(f"Copied {n} files.")
 
         if "dlc" in self.stages:
             self.stage = "dlc"
             self.say(f"Copying the Rally Expansion's files out of {dsrc['package']} into {work / DLC_DIR}, "
                      "checking every block's hash")
-            dlc, n = f.copy_dlc(dsrc["package"], prog, lambda: self._cancel)
+            dlc, n = f.copy_dlc(dsrc["package"], self._prog, lambda: self._cancel)
             self.progress = None
             self.say(f"Copied {n} files.")
 
@@ -606,22 +631,7 @@ class Job:
             shutil.rmtree(snap)
         shutil.copytree(src, snap, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.o", "*.lib", "*.exp"))
         (work / "dump_path.txt").write_text(str(game).replace("\\", "/") + "\n", encoding="utf8")
-        py_exe = interpreter()
-        if not py_exe:
-            raise RuntimeError("Python for the converter isn't set up yet.")
-        if runtime.needed():      # the private Python imports kn5port from a copy of the exe's bundled sources
-            pkg_root = str(runtime.app_sources(Path(sys._MEIPASS) / "kn5port_src" / "kn5port"))
-        else:
-            pkg_root = str(Path(__file__).resolve().parents[2])
-        ff = find_ffmpeg()
-        path = os.pathsep.join([str(Path(ff).parent)] * bool(ff) + [os.environ.get("PATH", "")])
-        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONSTARTUP")}
-        env.update(PATH=path, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), BEAMNG_PATH=str(f.beamng() or ""), PYTHONIOENCODING="utf8",
-                   PYTHONUNBUFFERED="1", NUMBA_CACHE_DIR=str(work / "numbacache"),
-                   PYTHONPATH=os.pathsep.join([pkg_root] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
-        if runtime.needed():
-            env["PYTHONNOUSERSITE"] = "1"      # the private Python sees only its own packages
-        py = [str(py_exe), "-u"]
+        py, env = converter(work, FH1_DUMP=str(game), KN5PORT_MODS=str(f.mods()), BEAMNG_PATH=str(f.beamng() or ""))
         self._check_ffmpeg(py, snap, env)
 
         if "prepare" in self.stages:

@@ -160,8 +160,8 @@ dialog input[type=text] { width: 100%; background: var(--panel2); border: 1px so
 .tabs button { background: none; border: 0; border-radius: 6px; padding: 5px 12px; color: var(--dim); font-size: 13px; font-weight: 600; }
 .tabs button.on { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
 .tabs button:hover:not(.on) { color: var(--text); }
-#fh1View { flex: 1; overflow: auto; min-height: 0; }
-#fh1View[hidden], main[hidden], .chips[hidden] { display: none; }
+#fh1View, #fm4View { flex: 1; overflow: auto; min-height: 0; }
+#fm4View[hidden], #fh1View[hidden], main[hidden], .chips[hidden] { display: none; }
 .fh { max-width: 940px; margin: 0 auto; padding: 22px 22px 60px; display: flex; flex-direction: column; gap: 18px; }
 .fh .lead { color: var(--dim); max-width: 75ch; margin-top: 4px; }
 .fh h1 small { font-size: 13px; font-weight: 600; color: var(--faint); margin-left: 8px; }
@@ -203,13 +203,16 @@ a.lnk:hover, button.lnk:hover { text-decoration: underline; }
 .err { color: var(--bad); font-size: 13px; }
 dialog.wide { width: min(760px, 94vw); }
 dialog.wide .db { max-height: 70vh; overflow: auto; }
+.choice .tp { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 5px; background: var(--bg); display: block; }
+.choice:disabled { opacity: .55; cursor: default; }
+.tabs .rec { font-size: 9px; margin-left: 4px; vertical-align: 1px; }
 @media (max-width: 900px) { .tabs button { padding: 5px 8px; } main { grid-template-columns: 1fr; } #list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; } .subopts { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
   <div class="brand"><img src="/favicon.png" alt=""><span>kn5<b>port</b></span></div>
-  <nav class="tabs" id="tabs"><button data-tab="ac" class="on">Assetto Corsa</button><button data-tab="fh1">Forza Horizon 1</button></nav>
+  <nav class="tabs" id="tabs"><button data-tab="ac" class="on">Assetto Corsa</button><button data-tab="fh1">Forza Horizon 1</button><button data-tab="fm4">Forza Motorsport 4 <span class="rec beta">Beta</span></button></nav>
   <div class="chips" id="chips"></div>
   <div class="spacer"></div>
   <button class="updbtn" id="updBtn" hidden></button>
@@ -225,6 +228,7 @@ dialog.wide .db { max-height: 70vh; overflow: auto; }
   <div id="detail"><div class="empty">Pick a track to inspect and convert it.</div></div>
 </main>
 <div id="fh1View" hidden><div class="fh" id="fh"></div></div>
+<div id="fm4View" hidden><div class="fh" id="fm"></div></div>
 
 <dialog id="howto" class="wide">
   <div class="dh">Getting your Forza Horizon files</div>
@@ -729,7 +733,9 @@ function setTab(tab) {
   $("#chips").hidden = tab !== "ac";
   $("#acView").hidden = tab !== "ac";
   $("#fh1View").hidden = tab !== "fh1";
+  $("#fm4View").hidden = tab !== "fm4";
   if (tab === "fh1") fhRefresh();
+  if (tab === "fm4") fmRefresh();
 }
 $("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) setTab(b.dataset.tab); });
 
@@ -964,12 +970,200 @@ $("#fh").addEventListener("change", (e) => {
 $("#fh").addEventListener("toggle", (e) => { if (e.target.id === "fhAdv") fh.adv = e.target.open; }, true);
 $("#howtoOk").addEventListener("click", () => $("#howto").close());
 
+// ---- Forza Motorsport 4 tab (beta) ------------------------------------------------------------------------
+const fm = { s: null, job: null, track: null, adv: false, polling: false, loading: false, listed: false };
+const FM_STAGES = { python: "Set up Python", extract: "Copy game files", tracks: "Read track list", build: "Build level" };
+const fmBusy = () => fm.job && fm.job.status === "running";
+const fmPhoto = (m) => `/api/fm4/photo/${encodeURIComponent(m)}?t=${encodeURIComponent(TOKEN)}`;
+
+async function fmRefresh() {
+  if (fm.loading) return;
+  fm.loading = true;
+  try {
+    fm.s = await api("/api/fm4/state");
+    const s = fm.s;
+    if (s.job && (!fm.job || fm.job.id !== s.job.id)) {
+      fm.job = { ...s.job, lines: [] };
+      const full = await api("/api/fm4/job?since=0"); fm.job.lines = full.lines || [];
+    }
+    const ok = s.tracks.filter((t) => t.working);
+    if (!fm.track || !s.tracks.some((t) => t.media === fm.track && t.working))
+      fm.track = s.job?.track || (ok.find((t) => t.checked) || ok[0])?.media || null;
+    fmRender();
+    if (fm.job && fm.job.status === "running") fmPoll();
+    else if (s.source.kind && !s.catalogue && !fm.listed && (!s.runtime.needed || s.runtime.ready) && !s.missing_packages.length) {
+      fm.listed = true;      // FM4's own names and photos for the track list, once per game copy: seconds, plus copying the common files out of a disc
+      try { const j = await api("/api/fm4/build", { task: "tracks" }); fm.job = { ...j, lines: j.lines || [] }; fmRender(); fmPoll(); } catch (_) {}
+    }
+  } catch (e) { $("#fm").innerHTML = `<div class="alert bad">Couldn't read the Forza Motorsport 4 state: ${esc(e.message)}</div>`; }
+  finally { fm.loading = false; }
+}
+
+function fmChecks(s, t) {
+  const row = (st, title, desc, action = "") => `<div class="ck"><span class="ic ${st}">${st === "ok" ? "✓" : st === "warn" ? "!" : "✕"}</span>
+    <div><div class="ct2">${title}</div>${desc ? `<div class="cd">${desc}</div>` : ""}</div><div>${action}</div></div>`;
+  const out = [], dis = fmBusy() ? "disabled" : "";
+  if (s.runtime.needed) out.push(s.runtime.ready ? row("ok", "Python for the converter", `Set up in <code>${esc(s.runtime.dir)}</code>.`)
+    : row("bad", "Python for the converter", `The converter runs on its own copy of Python, shared with the Forza Horizon tab. kn5port downloads Python 3.12 from python.org and numpy, scipy, numba and Pillow from PyPI (${s.runtime.mb} MB, each checked against a fixed checksum) into <code>${esc(s.runtime.dir)}</code>.`,
+        `<button class="primary" data-fmsetup ${dis}>Set up</button>`));
+  else out.push(s.missing_packages.length
+    ? row("bad", "Python packages", `Missing ${s.missing_packages.map(esc).join(", ")}. kn5port can install them into <code>${esc(s.python)}</code> with pip.`,
+        `<button class="primary" data-fmsetup ${dis}>Install</button>`)
+    : row("ok", "Python packages", "numpy, scipy, numba and Pillow are installed."));
+  out.push(s.mods ? row("ok", "BeamNG mods folder", esc(s.mods))
+    : row("bad", "BeamNG mods folder", "Not found. Set it under Folders.", `<button class="secondary" id="fmFolders">Folders</button>`));
+  // the same estimate the server checks before it starts a build (FM4.need_gb)
+  const work = (s.extracted ? 0 : s.need.common) + (!t || t.copied ? 0 : s.need.track) + (t && t.extracted ? 0 : s.need.work), need = work + s.need.level;
+  const free = s.same_drive ? s.free_gb : Math.min(s.free_gb ?? 1e9, s.mods_free_gb ?? 1e9);
+  out.push(row(free == null || free >= need + 2 ? "ok" : free >= need + 0.5 ? "warn" : "bad", "Disk space",
+    `Up to ${gb(need)}: ${work ? `${gb(work)} for the work folder (${[!s.extracted && "game files", t && !t.copied && "the track's files", !(t && t.extracted) && "the track unpacked"].filter(Boolean).join(", ")}), ` : ""}${gb(s.need.level)} for the level. Free: ${gb(s.free_gb)}${s.same_drive ? "" : ` (work folder), ${gb(s.mods_free_gb)} (mods)`}.`));
+  out.push(row("ok", "Work folder", `<code>${esc(s.work)}</code>. Holds the files copied from the game and each track unpacked, so later builds skip those steps.`,
+    `<button class="secondary" data-fmopen="work">Open</button>`));
+  return out.join("");
+}
+
+function fmJobHtml(j) {
+  if (!j) return "";
+  const steps = (j.stages || []).map((k, i) => {
+    const cur = j.stages.indexOf(j.stage);
+    const cls = j.status === "done" || cur > i || j.stage === "done" ? "done" : (k === j.stage && j.status === "running" ? "active" : "");
+    return `<div class="step ${cls}">${esc(FM_STAGES[k] || k)}</div>`;
+  }).join("");
+  let res = "";
+  if (j.status !== "running") {
+    const t = fm.s?.tracks.find((x) => x.media === j.track);
+    const head = j.task ? { done: "Done. The checks above are updated.", failed: "That failed (see the log).", cancelled: "Cancelled." }[j.status]
+      : { done: `Built. Fully restart BeamNG, then pick ${t ? `“${t.name} (FM4)”` : "the track"} from the level list. Each layout is a spawn point.`,
+          failed: "The build failed (see the log).", cancelled: "Cancelled." }[j.status];
+    res = `<div class="box result ${j.status === "done" ? "" : j.status === "cancelled" ? "warn" : "bad"}" style="margin-top:12px"><p><b>${esc(head)}</b></p>
+      <div class="actions" style="margin-top:8px">${j.status === "done" && !j.task ? `<button class="secondary" data-fmopen="level">Open level folder</button>` : ""}
+      <span class="muted">${Math.floor(j.elapsed / 60)} min ${j.elapsed % 60} s</span></div></div>`;
+  }
+  return `<div class="steps" style="grid-template-columns:repeat(${Math.max(1, (j.stages || []).length)},1fr)">${steps}</div>
+    ${j.progress != null && j.status === "running" ? `<div class="bar"><i style="width:${(j.progress * 100).toFixed(1)}%"></i></div>` : ""}
+    <div class="log" id="fmlog">${esc((j.lines || []).join("\n") || "Starting…")}</div>${res}`;
+}
+
+function fmRender() {
+  const s = fm.s; if (!s) return;
+  const top = $("#fm4View").scrollTop;
+  const src = s.source, srcOk = !!src.kind, busy = fmBusy(), dis = busy ? "disabled" : "";
+  const t = s.tracks.find((x) => x.media === fm.track);
+  const card = (x) => `<button class="choice ${x.media === fm.track ? "on" : ""}" data-fmtrack="${esc(x.media)}" ${busy || !x.working ? "disabled" : ""}>
+      ${x.photo ? `<img class="tp" src="${fmPhoto(x.media)}" alt="" loading="lazy">` : ""}
+      <span class="ct"><i>${esc(x.name)}</i>${x.checked ? '<span class="rec">Checked in game</span>' : ""}</span>
+      <span class="pc">${x.location ? `<span>${esc(x.location)}</span>` : ""}${x.layouts.length ? `<span>${x.layouts.length} layout${x.layouts.length > 1 ? "s" : ""}: ${esc([...new Set(x.layouts)].join(", "))}</span>` : ""}
+      <span><code style="font-size:11px">${esc(x.level)}</code></span>
+      ${!x.working ? '<span class="warnline">Doesn’t build yet</span>' : x.installed ? `<span class="inst">Installed, built ${day(x.installed)}</span>` : ""}</span></button>`;
+  const ok = s.tracks.filter((x) => x.working), later = s.tracks.filter((x) => !x.working);
+  $("#fm").innerHTML = `
+    <div><h1>Forza Motorsport 4 <small>Circuits → BeamNG</small> <span class="rec beta">Beta</span></h1>
+      <div class="lead">Turns a circuit from your own copy of Forza Motorsport 4 (2011, Xbox 360) into a BeamNG level: every layout of it, with the track's surfaces and collision, its buildings and scenery, its sky, and a spawn on each layout's grid. Everything happens on this computer.</div>
+      <div class="note warnline" style="margin-top:8px"><b>Beta.</b> Not every circuit converts yet, and the ones that do are missing some of FM4's detail (normal maps, paint tints, cloth flags). Expect changes between kn5port versions.</div></div>
+
+    <section><h2 class="numh"><span class="num ${srcOk ? "ok" : ""}">1</span>Your copy of Forza Motorsport 4</h2>
+      <div class="og">
+        <div class="field"><input type="text" id="fmGame" value="${esc(s.game)}" placeholder="A GOD folder, an .iso file of the first disc, or a folder with default.xex and Media\\" ${dis}>
+          <button class="secondary" data-fmpick="game" ${dis}>Folder…</button><button class="secondary" data-fmpick="iso" ${dis}>ISO file…</button></div>
+        <div class="srcline ${srcOk ? "ok" : s.game ? "bad" : ""}"><span class="k">${srcOk ? "✓ " + esc(src.why) : s.game ? "✕ " + esc(src.why) : "Pick a GOD package, an image of the first disc (it holds every track) or extracted files."}</span>
+          ${srcOk && src.kind !== "folder" ? `<span class="muted">${s.extracted ? "Game files already copied." : `kn5port will copy what it needs into its work folder: about ${gb(s.need.common)} now, then each track's files (up to ${gb(s.need.track)}) when you first build it.`}</span>` : ""}</div>
+      </div></section>
+
+    <section><h2 class="numh"><span class="num ${t ? "ok" : ""}">2</span>Which circuit</h2>
+      <div class="og">${!srcOk ? '<div class="muted">Pick your copy of the game first.</div>'
+        : !s.tracks.length ? `<div class="muted">${fmBusy() ? "Reading the track list…" : "No circuits found in this copy."}</div>`
+        : `<div class="choices">${ok.map(card).join("")}</div>
+          ${later.length ? `<details style="margin-top:10px"><summary class="muted">${later.length} more that don’t build yet</summary><div class="choices" style="margin-top:8px">${later.map(card).join("")}</div></details>` : ""}`}
+      </div></section>
+
+    <section><h2 class="numh"><span class="num">3</span>Before you build</h2><div class="box checks">${fmChecks(s, t)}</div></section>
+
+    <section><h2 class="numh"><span class="num">4</span>Build</h2>
+      <div class="actions">
+        <button class="primary" id="fmGo" ${busy || !srcOk || !t || (s.runtime.needed && !s.runtime.ready) ? "disabled" : ""}>${t ? `${t.installed ? "Build again" : "Build"}: ${esc(t.name)}` : "Build"}</button>
+        ${busy ? '<button class="secondary" id="fmCancel">Cancel</button>' : ""}
+        ${!busy && t?.installed ? '<button class="secondary" data-fmopen="level">Open level folder</button>' : ""}
+        <span class="muted">${busy ? "Working… you can switch tabs; closing kn5port stops the build." : ""}</span>
+      </div>
+      <div class="muted" style="margin-top:8px">BeamNG has to be closed while building: the build replaces the level's files.</div>
+      <div id="fmProblems"></div>
+      <div style="margin-top:14px" id="fmJob">${fmJobHtml(fm.job)}</div>
+      <details class="og" style="margin-top:16px" ${fm.adv ? "open" : ""} id="fmAdv"><summary><span class="og-t">Advanced</span></summary>
+        <div><label class="muted">Work folder (empty for the default: ${esc(s.work_default)})</label>
+          <div class="field" style="margin-top:4px"><input type="text" id="fmWork" value="${esc(s.work === s.work_default ? "" : s.work)}" placeholder="${esc(s.work_default)}" ${dis}><button class="secondary" data-fmpick="work" ${dis}>Browse…</button></div></div>
+      </details>
+    </section>`;
+  $("#fm4View").scrollTop = top;
+  const log = $("#fmlog"); if (log) log.scrollTop = log.scrollHeight;
+}
+
+async function fmSave(body) {
+  try { await api("/api/fm4/settings", body); fm.listed = false; await fmRefresh(); } catch (e) { alert(e.message); }
+}
+
+async function fmPoll() {
+  if (fm.polling) return;
+  fm.polling = true;
+  try {
+    while (fm.job && fm.job.status === "running") {
+      await new Promise((r) => setTimeout(r, 800));
+      let u; try { u = await api(`/api/fm4/job?since=${fm.job.lines.length}`); } catch (_) { continue; }
+      if (!u.id || u.id !== fm.job.id) break;
+      const changed = u.stage !== fm.job.stage || u.status !== fm.job.status || JSON.stringify(u.stages) !== JSON.stringify(fm.job.stages);
+      fm.job.lines.push(...u.lines); Object.assign(fm.job, { status: u.status, stage: u.stage, stages: u.stages, progress: u.progress, elapsed: u.elapsed });
+      if (state.tab !== "fm4") continue;
+      const log = $("#fmlog");
+      if (!changed && log) {
+        const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+        if (u.lines.length) { if (log.textContent === "Starting…") log.textContent = ""; log.textContent += (log.textContent ? "\n" : "") + u.lines.join("\n"); }
+        if (stick) log.scrollTop = log.scrollHeight;
+      } else $("#fmJob").innerHTML = fmJobHtml(fm.job), ($("#fmlog") && ($("#fmlog").scrollTop = 1e9));
+    }
+  } finally { fm.polling = false; }
+  await fmRefresh();
+}
+
+$("#fm").addEventListener("click", async (e) => {
+  const t = e.target;
+  const tr = t.closest("[data-fmtrack]");
+  if (tr && !tr.disabled) { fm.track = tr.dataset.fmtrack; fmRender(); return; }
+  const pick = t.closest("[data-fmpick]")?.dataset.fmpick;
+  if (pick) {
+    try {
+      const r = await api(pick === "iso" ? "/api/pick-file" : "/api/pick-folder", { start: pick === "work" ? $("#fmWork").value || fm.s.work_default : $("#fmGame").value, kind: "disc" });
+      if (r.path) await fmSave(pick === "work" ? { fm4_work: r.path } : { fm4_game: r.path });
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const open = t.closest("[data-fmopen]")?.dataset.fmopen;
+  if (open) { api("/api/fm4/open", { what: open, track: open === "level" && fm.job?.status === "done" && fm.job.track ? fm.job.track : fm.track }).catch((err) => alert(err.message)); return; }
+  if (t.id === "fmFolders") { $("#settingsBtn").click(); return; }
+  if (t.id === "fmCancel") { api("/api/fm4/cancel", {}).catch((err) => alert(err.message)); return; }
+  const setup = !!t.closest("[data-fmsetup]");
+  if (setup || t.id === "fmGo") {
+    try {
+      if (!setup) {
+        const p = await api("/api/fm4/check", { track: fm.track });
+        if (p.problems.length) { $("#fmProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${p.problems.map(esc).join("<br>")}</div>`; return; }
+      }
+      const j = await api(setup ? "/api/fm4/install" : "/api/fm4/build", setup ? {} : { track: fm.track });
+      fm.job = { ...j, lines: j.lines || [] };
+      fmRender(); fmPoll();
+    } catch (err) { $("#fmProblems").innerHTML = `<div class="alert bad" style="margin-top:12px">${esc(err.message)}</div>`; }
+  }
+});
+$("#fm").addEventListener("change", (e) => {
+  if (e.target.id === "fmGame") fmSave({ fm4_game: e.target.value });
+  else if (e.target.id === "fmWork") fmSave({ fm4_work: e.target.value });
+});
+$("#fm").addEventListener("toggle", (e) => { if (e.target.id === "fmAdv") fm.adv = e.target.open; }, true);
+
 (async () => {
   let ack = null; try { ack = localStorage.getItem("kn5port.ack"); } catch (_) {}
   if (!ack) $("#notice").showModal();
   let tab = "ac"; try { tab = localStorage.getItem("kn5port.tab") || "ac"; } catch (_) {}
-  if (location.hash === "#fh1" || location.hash === "#ac") tab = location.hash.slice(1);
-  if (tab === "fh1") setTab("fh1");
+  if (["#fh1", "#fm4", "#ac"].includes(location.hash)) tab = location.hash.slice(1);
+  if (tab === "fh1" || tab === "fm4") setTab(tab);
   if (!TOKEN) { $("#grid").innerHTML = '<div class="muted">Open kn5port through <code>kn5port ui</code> (the link it prints includes an access token).</div>'; return; }
   updRefresh().catch(() => {});
   try {

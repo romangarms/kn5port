@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 from .. import __version__, beamng, update, xbox
 from ..cli import is_kunos
 from .fh1 import FH1, pick_tk
+from .fm4 import FM4
 
 STATIC = Path(__file__).parent / "static"
 
@@ -314,6 +315,7 @@ class App:
         self.pick_folder = None       # set by the desktop app (native dialog)
         self.pick_file = None
         self.fh1 = FH1(self.settings, save_settings)
+        self.fm4 = FM4(self.settings, save_settings, self.fh1)
         self.palettes = {}            # level -> summary dict
         self.palettes_running = False
         self.start_palettes()
@@ -324,7 +326,7 @@ class App:
             self.updater.check()
 
     def busy(self):
-        return any(j.thread.is_alive() for j in self.jobs.values()) or self.fh1.busy()
+        return any(j.thread.is_alive() for j in self.jobs.values()) or self.fh1.busy() or self.fm4.busy()
 
     def start_palettes(self):
         inst = self.settings.get("beamng")
@@ -438,6 +440,15 @@ def make_handler(app, port_ref):
                 if u.path == "/api/fh1/job":
                     j = app.fh1.job
                     return self._send(200, j.view(int((q.get("since") or ["0"])[0])) if j else {})
+                if u.path == "/api/fm4/state":
+                    return self._send(200, app.fm4.state())
+                if u.path == "/api/fm4/job":
+                    j = app.fm4.job
+                    return self._send(200, j.view(int((q.get("since") or ["0"])[0])) if j else {})
+                m = re.match(r"^/api/fm4/photo/([A-Za-z0-9_]+)$", u.path)
+                if m:
+                    p = app.fm4.photo(m.group(1))
+                    return self._send(200, p.read_bytes(), "image/jpeg") if p else self._send(404, {"error": "no photo"})
                 m = re.match(r"^/api/jobs/([0-9a-f]+)$", u.path)
                 if m:
                     j = app.jobs.get(m.group(1))
@@ -509,6 +520,8 @@ def make_handler(app, port_ref):
                 if u.path == "/api/fh1/check":
                     return self._send(200, {"problems": app.fh1.problems(body), "folders": app.fh1.missing_folders()})
                 if u.path in ("/api/fh1/build", "/api/fh1/install"):
+                    if app.fm4.busy():
+                        return self._send(409, {"error": "Wait for the Forza Motorsport 4 job to finish."})
                     try:
                         j = app.fh1.start(body) if u.path == "/api/fh1/build" else app.fh1.setup_task(body.get("what"))
                     except RuntimeError as e:
@@ -528,6 +541,43 @@ def make_handler(app, port_ref):
                         target = app.fh1.game_dir() or Path(xbox.detect(app.settings.get("fh1_game"))["path"] or ".")
                     elif what == "level" and body.get("chunk") in CHUNK:
                         lvl = CHUNK[body["chunk"]][1]
+                        target = app.fh1.mods() / "unpacked" / lvl / "levels" / lvl
+                    else:
+                        return self._send(400, {"error": "bad request"})
+                    if not target.exists():
+                        return self._send(404, {"error": "not found"})
+                    if sys.platform == "win32":
+                        os.startfile(str(target))          # noqa: S606 (local, fixed paths only)
+                    else:
+                        subprocess.Popen(["xdg-open", str(target)])
+                    return self._send(200, {"ok": True})
+                if u.path == "/api/fm4/settings":
+                    if app.fm4.busy():
+                        return self._send(409, {"error": "wait for the running job to finish"})
+                    app.fm4.update(body)
+                    return self._send(200, app.fm4.state())
+                if u.path == "/api/fm4/check":
+                    return self._send(200, {"problems": app.fm4.problems(body)})
+                if u.path in ("/api/fm4/build", "/api/fm4/install"):
+                    if u.path == "/api/fm4/build" and app.fh1.busy():
+                        return self._send(409, {"error": "Wait for the Forza Horizon job to finish."})
+                    try:
+                        j = app.fm4.start(body) if u.path == "/api/fm4/build" else app.fm4.setup_task()
+                    except RuntimeError as e:
+                        return self._send(409, {"error": str(e)})
+                    return self._send(200, j.view())
+                if u.path == "/api/fm4/cancel":
+                    if app.fm4.job:
+                        app.fm4.job.cancel()
+                    return self._send(200, {"ok": True})
+                if u.path == "/api/fm4/open":
+                    # opens only the FM4 work folder or a built FM4 level
+                    what, tr = body.get("what"), str(body.get("track") or "")
+                    names = {t["media"] for t in app.fm4.state()["tracks"]}
+                    if what == "work":
+                        target = app.fm4.work()
+                    elif what == "level" and tr in names:
+                        lvl = f"fm4_{tr.lower()}"
                         target = app.fh1.mods() / "unpacked" / lvl / "levels" / lvl
                     else:
                         return self._send(400, {"error": "bad request"})
@@ -630,6 +680,7 @@ def serve(port=0, open_browser=True):
     finally:
         for j in app.jobs.values():
             j.cancel()
-        if app.fh1.job:
-            app.fh1.job.cancel()
+        for f in (app.fh1, app.fm4):
+            if f.job:
+                f.job.cancel()
         httpd.server_close()

@@ -117,19 +117,30 @@ def _god_header(path):
     return None
 
 
-NEEDED = "media/tracks/colorado/bin.zip"
+class Title:
+    """what a game copy must hold to be this game: needed, paths in lower case with '/', all of them there"""
+    def __init__(self, name, short, *needed):
+        self.name, self.short, self.needed = name, short, needed
 
 
-def _checked(kind, path, why):
-    """an ISO or GOD result, after looking inside it for Forza Horizon's map"""
+FH1 = Title("Forza Horizon (2012)", "Forza Horizon", "media/tracks/colorado/bin.zip")
+# FM3 has a gamedb.slt too, and most of the same tracks; the Top Gear test track is FM4's (and on its first disc)
+FM4 = Title("Forza Motorsport 4 (2011)", "Forza Motorsport 4", "media/db/gamedb.slt", "media/tracks/topgear/bin.zip")
+NEEDED = FH1.needed[0]
+
+
+def _checked(kind, path, why, title=FH1):
+    """an ISO or GOD result, after looking inside it for the game's needed file"""
     try:
         g = Game(_IsoSource(path) if kind == "iso" else _GodSource(str(path) + ".data"))
     except (OSError, XboxError) as e:
         return {"kind": None, "path": str(path), "why": f"Couldn't read it: {e}"}
     try:
-        if not any(p.lower() == NEEDED for p, _, _ in g.files()):
+        have = {p.lower() for p, _, _ in g.files()}
+        miss = next((n for n in title.needed if n not in have), None)
+        if miss:
             return {"kind": None, "path": str(path),
-                    "why": "An Xbox 360 game, but not Forza Horizon (2012): it has no media/tracks/colorado."}
+                    "why": f"An Xbox 360 game, but not {title.name}: it has no {miss.rsplit('/', 1)[0]}."}
     except (OSError, XboxError, struct.error) as e:
         return {"kind": None, "path": str(path), "why": f"Couldn't read its files: {e}"}
     finally:
@@ -137,29 +148,29 @@ def _checked(kind, path, why):
     return {"kind": kind, "path": str(path), "why": why}
 
 
-def detect(path, look_inside=True):
-    """{'kind': 'folder'|'iso'|'god'|None, 'path': the folder/file to use, 'why': text}.
-    look_inside checks that an ISO or GOD package holds Forza Horizon (reads its directories, under a second)."""
-    d = _detect(path)
+def detect(path, look_inside=True, title=FH1):
+    """{'kind': 'folder'|'iso'|'god'|None, 'path': the folder/file to use, 'why': text}, for the game title (FH1, FM4).
+    look_inside checks that an ISO or GOD package holds that game (reads its directories, under a second)."""
+    d = _detect(path, title)
     if look_inside and d["kind"] in ("iso", "god"):
-        return _checked(d["kind"], d["path"], d["why"])
+        return _checked(d["kind"], d["path"], d["why"], title)
     return d
 
 
-def _detect(path):
+def _detect(path, title=FH1):
     p = Path(str(path or "").strip().strip('"'))
     if not str(path or "").strip():
         return {"kind": None, "path": "", "why": "Nothing picked yet."}
     if not p.exists():
         return {"kind": None, "path": str(p), "why": "That path doesn't exist."}
     if p.is_dir():
-        for d in (p, p / "Content"):
-            if (d / "media" / "tracks" / "colorado" / "bin.zip").exists():
+        for d in (p, p / "Content") + ((p.parent,) if p.name.lower() == "media" else ()):
+            if all((d / n).exists() for n in title.needed):
                 return {"kind": "folder", "path": str(d), "why": "Extracted game files."}
         if (p / "default.xex").exists() or (p / "media").is_dir():
             return {"kind": None, "path": str(p),
-                    "why": "This looks like an Xbox 360 game folder, but not Forza Horizon's: "
-                           "media/tracks/colorado/bin.zip is missing."}
+                    "why": f"This looks like an Xbox 360 game folder, but not {title.short}'s: "
+                           f"{next(n for n in title.needed if not (p / n).exists())} is missing."}
     if p.is_file() and p.suffix.lower() in (".iso", ".xiso"):
         return {"kind": "iso", "path": str(p), "why": "A disc image (ISO)."}
     g = _god_header(p)
@@ -167,7 +178,7 @@ def _detect(path):
         return {"kind": "god", "path": str(g[0]), "why": "A Games on Demand (GOD) package."}
     if p.is_dir() and list(p.glob("*.iso")):
         return {"kind": "iso", "path": str(sorted(p.glob("*.iso"))[0]), "why": "A disc image (ISO)."}
-    return {"kind": None, "path": str(p), "why": "No Forza Horizon game files, ISO or GOD package found here."}
+    return {"kind": None, "path": str(p), "why": f"No {title.short} game files, ISO or GOD package found here."}
 
 
 # ---- XDVDFS ------------------------------------------------------------------------------------------------

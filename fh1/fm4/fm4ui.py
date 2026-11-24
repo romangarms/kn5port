@@ -4,7 +4,10 @@
 - Media/StringTables/<lang>.zip holds .str tables (LSB2): at 0x28 a big-endian count n, then n (u16 key, u32 offset) pairs sorted by key, a
   (0xFFFF, 0, u16) sentinel, then UTF-16BE strings, zero-terminated; an offset counts UTF-16 units from the strings' start. A gamedb
   reference '_&<id>' is the entry keyed by id's low 16 bits.
-python fm4ui.py Tsukuba                 prints the layouts and saves the images to fm4/ui/"""
+python fm4ui.py Tsukuba                 prints the layouts and saves the images to fm4/ui/
+python fm4ui.py --list <out folder> [Track ...]    every track the app can build: tracks.json and a photo per track (kn5port's
+                                                  FM4 tab). Tracks named are on the disc but not copied out yet"""
+import json
 import os
 import sqlite3
 import struct
@@ -121,7 +124,35 @@ def fit(im, size, pad=None):
     return im.resize(size, Image.LANCZOS)
 
 
-if __name__ == '__main__':
+def tracks(have=()):
+    """the tracks to offer: gamedb's active ones whose Media/Tracks folder has a bin.zip (or named in have), by venue. Each is
+    {media, name, location, layouts}, from the first venue its layouts use"""
+    have = {h.lower() for h in have}
+    db = sqlite3.connect(MEDIA / 'db' / 'gamedb.slt')
+    names = [m for (m,) in db.execute('select distinct MediaName from Tracks where Active=1 and IsHomespace=0 order by MediaName')]
+    out = []
+    for m in names:
+        if m.lower() not in have and not (MEDIA / 'Tracks' / m / 'bin.zip').exists(): continue
+        rows = layouts(m); envs = environments(rows)
+        out.append({'media': m, 'name': ' / '.join(e['DisplayName'] for e in envs) or m,
+                    'location': envs[0]['Location'] if envs else '', 'layouts': [r['name'] for r in rows], 'envs': envs})
+    return out
+
+
+def catalogue(out, have=()):
+    """tracks() as out/tracks.json, with each track's first photo as out/<media>.jpg (240 x 180), for the app"""
+    out = Path(out); out.mkdir(parents=True, exist_ok=True); T = tracks(have)
+    for t in T:
+        ph = next((p for p in map(photo, t.pop('envs')) if p is not None), None)
+        if ph is not None:
+            fit(ph, (240, 180)).save(out / f"{t['media']}.jpg", quality=88); t['photo'] = f"{t['media']}.jpg"
+    (out / 'tracks.json').write_text(json.dumps({'dump': str(FM4), 'tracks': T}, indent=1, ensure_ascii=False), encoding='utf8')
+    return T
+
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--list']:
+    for t in catalogue(sys.argv[2], sys.argv[3:]): print(t['media'], '|', t['name'], '|', t['location'], '|', ', '.join(t['layouts']))
+elif __name__ == '__main__':
     t = sys.argv[1] if len(sys.argv) > 1 else 'Tsukuba'; out = HERE / 'ui'; out.mkdir(exist_ok=True)
     rows = layouts(t)
     for r in rows:

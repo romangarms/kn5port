@@ -22,8 +22,8 @@ kn5port-app = "kn5port.app:main"
 version = { attr = "kn5port.__version__" }   # bumped by packaging/release.py
 
 [tool.setuptools]
-packages = ["kn5port", "kn5port.ui", "kn5port.fh1_pipeline"]
-package-dir = { "kn5port" = "kn5port", "kn5port.fh1_pipeline" = "fh1/pipeline" }
+packages = ["kn5port", "kn5port.ui", "kn5port.fh1_pipeline", "kn5port.fh1_fm4"]
+package-dir = { "kn5port" = "kn5port", "kn5port.fh1_pipeline" = "fh1/pipeline", "kn5port.fh1_fm4" = "fh1/fm4" }
 
 [tool.setuptools.package-data]
 "kn5port.ui" = ["static/*"]

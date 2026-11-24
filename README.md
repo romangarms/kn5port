@@ -11,6 +11,8 @@ Turn maps from other racing games you already own into BeamNG.drive levels, with
 - **[Forza Horizon 1's Colorado](#forza-horizon-1)**: the whole 16 km open world from your own copy of the
   Xbox 360 game, with its towns, roads, water, night lights, ambient sound and moving scenery, its races as time
   trials, and its radio as a separate mod.
+- **[Forza Motorsport 4's circuits](#forza-motorsport-4-beta)** (beta): one circuit at a time, every layout of it in
+  one level, with a spawn on each layout's grid.
 
 <table>
 <tr>
@@ -89,6 +91,19 @@ FH1's moving scenery comes across too: wind turbines, windmills, the festival's 
 the blimp.
 
 <p align="center"><img src="docs/screenshots/fh1/turbines.webp" alt="Wind turbines turning near Route 4" width="540"></p>
+
+## Forza Motorsport 4 (beta)
+
+The **Forza Motorsport 4** tab turns a circuit from your own copy of Forza Motorsport 4 (2011, Xbox 360) into a
+BeamNG level: every layout of the circuit in one level, with FM4's track surfaces and collision, its buildings and
+scenery, its baked lighting and sky, and a spawn on each layout's grid. The level selector shows FM4's own track
+photo, names and layout maps.
+
+Point it at a Games on Demand folder, an image of the first disc (`.iso`, which holds every track) or extracted
+files. A circuit builds in about a minute and a half. This is a beta: 10 of FM4's 24 circuits build so far (Tsukuba, Sedona, Fujimi Kaido,
+Indianapolis, Motegi, Mugello, the Nürburgring GP circuit, Road Atlanta, Sunset Peninsula and the Iberian venues), and
+only Tsukuba has been looked over in BeamNG. See
+[`fh1/docs/fm4.md`](fh1/docs/fm4.md) for how it works.
 
 ## Install
 

@@ -114,6 +114,14 @@ Build through FH1's queue, from `fh1/pipeline`: `python buildq.py submit --chunk
 
 Tsukuba, 2026-11-22: 1,470 placed shapes plus 19 collision cells (18,453 `.col` triangles without the invisible walls), 444 materials (180 layered ground), 251 textures, 437k triangles, built in 31 s. Seen in-game: track, ground and collision good; the sky dome (added after) not yet seen.
 
+## In the app (`kn5port/ui/fm4.py`)
+
+The Forza Motorsport 4 tab (beta) takes the game as the FH1 tab does (`xbox.detect(path, title=xbox.FM4)`): a disc image, a GOD package or a folder holding `Media/`. FM4 is recognised by `Media/db/gamedb.slt` plus `Media/Tracks/TopGear/bin.zip`, since FM3's disc has a gamedb and most of the same tracks but not Top Gear. FM4's first disc holds all 32 track folders. From an image, files are copied into `<work>/game` as needed: the database, string tables, `UI/Textures.zip` and `physics/` (0.43 GB) with the track list, then a track's `Media/Tracks/<Track>/` and `Media/AI/Tracks/<track>_*` before its first build. `<work>/game/.kn5port-source.json` records the image, the tracks on it and those copied. A Tsukuba level built from the ISO is byte-identical to one built from Xenia's folder. Then, with the converter's Python:
+- `fm4ui.py --list <work>/catalogue [Track ...]` once per game copy: `tracks.json` (gamedb's active, non-homespace tracks with a `bin.zip`, or named on the command line as on the disc, with their venue, location and layout names) and a 240 x 180 photo per track, for the track cards.
+- `fm4build.py <Track> <mods>/unpacked/fm4_<track>`, with `FM4_DUMP` the game folder and `FM4_WORK` the work folder (`<work>/<track>/x` holds the extracted `bin.zip`).
+
+In a checkout the work folder defaults to `fh1/fm4` and the scripts run in place; otherwise (the exe bundles them as `fh1_fm4`) they're copied with the pipeline into `<work>/app_scripts/{fm4,pipeline}`, since they import `../pipeline`. Only tracks in `fm4.WORKING`, those `fm4build.py` builds to the end, can be picked; `CHECKED` marks the ones looked at in BeamNG. Update both as tracks are fixed.
+
 ## Executable (`default.xex`)
 
 `fm4xex.py` writes `fm4/default.pe`, the plain image (gitignored). The xex is XEX2 with encryption 1 and basic compression: AES-128-CBC with a zero IV over the whole image, its key the security info's (+0x150) decrypted with the retail key, then (data size, zero size) blocks. The image is laid out at its virtual addresses, base 0x82000000. `fm4code.py refs <string>` finds the code that loads a string's address (lis/addi), and `fm4code.py dis <addr> [n]` disassembles PowerPC with capstone, annotating strings and float literals. VMX128 instructions don't decode.

@@ -71,8 +71,9 @@ def main():
     finally:
         for j in app.jobs.values():
             j.cancel()
-        if app.fh1.job:
-            app.fh1.job.cancel()
+        for f in (app.fh1, app.fm4):
+            if f.job:
+                f.job.cancel()
         httpd.shutdown()
 
 
