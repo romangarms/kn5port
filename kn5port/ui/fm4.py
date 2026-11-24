@@ -28,13 +28,14 @@ REPO_FM4 = F.REPO_FH1 / "fm4"
 # the circuits that have been built and driven in BeamNG; the rest build, but nobody has looked at them in the game yet
 CHECKED = {"Tsukuba"}
 # the circuits fm4build.py builds to the end (tried 2026-11-23 on all 24); the others stop partway, and are listed as not
-# building yet. 11 of those stop in the sky bake (TrackSettings without WorldClear); Alps, AmalfiGP and MapleValley elsewhere
-WORKING = {"Autopark", "CrownJewel", "FujimiKaido", "Indi", "Motegi", "Mugello", "NurburgringF1", "RoadAtlanta",
-           "SunsetInfield", "Tsukuba"}
+# building yet: Alps, AmalfiGP and MapleValley
+WORKING = {"Autopark", "Catalunya", "CrownJewel", "FujimiKaido", "Hockenheim", "Indi", "Infin", "LagunaSeca", "LeMans", "Motegi",
+           "Mugello", "Nurburgring", "NurburgringF1", "RoadAmerica", "RoadAtlanta", "Sebring", "Silverstone", "SunsetInfield", "Suzuka",
+           "TopGear", "Tsukuba"}
 COMMON_GB = 0.45        # the files every track needs, copied out of an ISO or GOD package
 TRACK_GB = 0.25         # a track's own files, likewise (at most)
 WORK_GB = 0.7           # a track's unpacked bin.zip and caches (Nurburgring's 0.64 GB is the most)
-LEVEL_GB = 0.7          # a built level: 0.14 to 0.46 GB for those that build, Nurburgring's partial one 0.67 GB
+LEVEL_GB = 0.8          # a built level: 0.14 GB (Top Gear) to 0.68 GB (Nurburgring)
 # what fm4ui.py and fm4build.py open, besides the track's own files
 COMMON = re.compile(r"^media/(db/.*|stringtables/.*|ui/textures\.zip|physics/.*)$", re.I)
 SOURCE_MARK = ".kn5port-source.json"

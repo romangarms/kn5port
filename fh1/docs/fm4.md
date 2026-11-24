@@ -148,6 +148,7 @@ FM4 has no far geometry: the backdrop (Mount Tsukuba, treeline, fields) is paint
   - Grade: identity LUT (no track ships `colorgradinglookup.dds`), then FH1's colorTransform order: `DesaturateAmount` with `DesatLuminosity`, times `DesatPostMod`. The order and the use of all three B values are inferred.
   - Output: sqrt, stored as the face's bytes, as FH1's bake.
   - Directions the dome misses take `WorldClear`, squared, because a clear writes the sqrt-encoded framebuffer.
+  - `WorldClear` is only in TrackSettings version 60 (12 tracks, all 0.26 grey). FM4's parser reads it only from version 60 on (`cmplwi r18, 0x3c` at 0x82914714, disc xex) and otherwise keeps the settings object's value at +0xB0..+0xB8, whose initialisation isn't found yet. The 11 tracks at versions 58 and 59 (Laguna Seca, Silverstone, Suzuka and others) take 0.26 too (`fm4sky.WORLD_CLEAR`), the user's call; a live read on one of them would settle FM4's own value.
 - **Not reproduced.** Bloom (`bloomCutoff`, `bloomScale`, `bloomWeights`), `CameraExposureRange`, exposure adaptation.
 - **Level.** SkyBox `fm4_sky`, also the level's `globalEnviromentMap`. ScatterSky stays for the light, its `azimuth` and `elevation` set from `ShadowLightDirection`, with `shadowDistance` = `ShadowEnds InGameShadowEnd` (202 m).
 

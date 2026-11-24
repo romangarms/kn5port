@@ -13,7 +13,8 @@ DesatLuminosity, then DesatPostMod, in FH1's order), sqrt. EV: ToneMapAdaptiveEx
 plus filmicTone's exposure; a bake has no scene, so the key is the sky's own mean from the horizon to 30 degrees, as FH1's sky.py (an assumption).
 Not reproduced: bloom (bloomCutoff, bloomScale, bloomWeights), CameraExposureRange, exposure adaptation over time.
 Directions the dome doesn't cover (below -1.4 degrees, where FM4 shows its own ground or else its clear colour) take TrackSettings'
-WorldClear, squared as the post squares the framebuffer."""
+WorldClear, squared as the post squares the framebuffer. TrackSettings before version 60 have no WorldClear (FM4 reads it only from 60 on,
+keeping the settings object's value otherwise, which isn't traced yet): they take WORLD_CLEAR, the 0.26 grey every version 60 file sets."""
 import hashlib
 import os
 import re
@@ -33,6 +34,10 @@ FACE = 1024
 KEY_TOP = 30.0
 LUM = np.array([.2126, .7152, .0722])
 
+
+# WorldClear for TrackSettings older than version 60, which lack it: the value all 12 version 60 files set (Tsukuba and the rest). FM4's own
+# fallback is whatever the settings object already holds, not found yet in default.xex; a live read on a version 58 or 59 track would settle it
+WORLD_CLEAR = {'r': 0.26, 'g': 0.26, 'b': 0.26}
 
 def settings(path):
     """TrackSettings.xml as {tag: {attribute: float}} (single-valued tags as {'value': v})"""
@@ -165,8 +170,9 @@ def bake(work, stem, no, F, tid, S, out_dir, rel, name='fm4_sky', n=FACE):
     dk = np.stack([np.sin(az) * np.cos(el), np.cos(az) * np.cos(el), np.sin(el)], -1).reshape(-1, 3)
     key = float((sample(lin, ray_uv(P, U, T, dk)) @ LUM).mean()); ev = exposure(key, S)
     # the clear colour is written into the framebuffer, which holds sqrt-encoded colour: the post squares it
-    clear = np.array([S['WorldClear'][k] for k in 'rgb']) ** 2
-    h = hashlib.md5(Path(__file__).read_bytes() + raw.tobytes()[:1 << 20] + repr(sorted(S['WorldClear'].items())).encode() + repr((ev, n)).encode()).hexdigest()[:10]
+    wc = S.get('WorldClear', WORLD_CLEAR)
+    clear = np.array([wc[k] for k in 'rgb']) ** 2
+    h = hashlib.md5(Path(__file__).read_bytes() + raw.tobytes()[:1 << 20] + repr(sorted(wc.items())).encode() + repr((ev, n)).encode()).hexdigest()[:10]
     faces = []
     out_dir.mkdir(parents=True, exist_ok=True)
     todo = [k for k in range(6) if not (out_dir / f'{name}_{h}_{k + 1}.color.dds').exists()]
