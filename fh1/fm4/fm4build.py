@@ -295,8 +295,10 @@ def ground_plan(shader, slots, rec, ps, tt):
         return dict(layers=[(A, sA), (Bt, c(1, 0))], uv0=('texcoord1', sA), mask=(V, 'texcoord0', np.ones(2)), road=False, tint=None,
                     vcolor=float(c(0, 0 if 'decal' in shader else 2, 1)[0]))
     # Families whose colour sampler has another name, read from their ucode (docs/fm4.md, Other colour samplers). One layer each, for now
-    one = lambda t, uv, tint=None, vcolor=False: dict(layers=[(t, np.ones(2))], uv0=uv, mask=(None, 'texcoord0', np.ones(2)), road=False,
-                                                     tint=tint, vcolor=vcolor)
+    def one(t, uv, tint=None, vcolor=False, opacity=None):
+        """one layer at uv0 = (UV set or 'world', scale); opacity = (texture id, UV set, scale): its alpha, on UV1"""
+        return dict(layers=[(t, np.ones(2))], uv0=uv, mask=(None, opacity[1], opacity[2]) if opacity else (None, 'texcoord0', np.ones(2)),
+                    road=False, tint=tint, vcolor=vcolor, opacity=opacity[0] if opacity else None)
     if 'deposit' in shader and (t := tid('BaseTextureSampler')) is not None:
         return one(t, ('texcoord0', c(0, 1)), vcolor=float(c(0, 0, 1)[0]))       # lerp(Base, Deposit, w) * vertex colour * c0.x: Deposit not yet
     if shader.startswith('shldr_4clr_blnd_mask') and (t := tid('Diff_SpecSampler')) is not None:
@@ -307,6 +309,23 @@ def ground_plan(shader, slots, rec, ps, tt):
         return one(t, ('texcoord0', c(0, 0)))                                     # the road layer (world x, z * c0.z) and its blend not yet
     if shader.startswith('sign_spec_refl_norm') and (t := tid('DiffOpacSampler')) is not None:
         return one(t, ('texcoord0', c(1, 0)))
+    # road_blnd_diff_* without Blend_B (Crown Jewel, Fujimi Kaido, Top Gear): Road at world x, z * c2.x, (Road + c1.rgb) then mixed with a
+    # term weighted by c0 (0 or 0.012); the small c1 add, the bump blend and the skids aren't reproduced yet
+    if shader.startswith('road_blnd_diff') and (t := tid('RoadSampler')) is not None:
+        return one(t, ('world', np.full(2, c(2, 0, 1)[0])))
+    # rdedg_blnd_diff_opac_3: an overlay strip; DetailGrain at world x, z * c1.x, its alpha the Opacity texture's at texcoord0 * c3.xy
+    if shader.startswith('rdedg_blnd_diff_opac') and (t := tid('Diff_Texture_DetailGrainSampler')) is not None and (o := tid('OpacitySampler')) is not None:
+        return one(t, ('world', np.full(2, c(1, 0, 1)[0])), opacity=(o, 'texcoord0', c(3, 0)))
+    # road_2blnd_uv3_3: Color at texcoord2 * c1.yz, a detail grain at world x, z * c1.x and Blend_Value (texcoord2 * c3.xy) not yet
+    if shader.startswith('road_2blnd_uv3') and (t := tid('Diff_Texture_ColorSampler')) is not None:
+        return one(t, ('texcoord2', c(1, 1)))
+    # *_ovly*: Photoshop overlay of a second texture on this base (2 B O where B < 1/2, else 1 - 2 (1 - B)(1 - O)), the overlay not yet
+    if shader.startswith('road_diff_spec_ovly_detailscale') and (t := tid('Diff_Spec02Sampler')) is not None:
+        return one(t, ('texcoord2', c(0, 1)))
+    if shader.startswith('road_diff_spec_ovly') and (t := tid('Diff_Spec02Sampler')) is not None:
+        return one(t, ('texcoord2', c(1, 0)))
+    if shader.startswith('shldr_diff_spec_ovly_vendor') and (t := tid('Diff_specSampler')) is not None:
+        return one(t, ('world', np.full(2, c(0, 2, 1)[0])))
     return None
 
 
@@ -316,7 +335,8 @@ def ground_material(plan, ground):
     (t0, s0) = plan['layers'][0]; mt = plan['mask'][0]
     key = f'fm4_g{t0:x}_' + '_'.join(f'{t:x}x{s[0]:g}' for t, s in plan['layers'][1:]) + (f'_m{mt:x}' if mt is not None else '') + \
         ('_r' if plan['road'] else '') + ('_v' if plan['vcolor'] else '') + (f'_{ground}' if ground else '') + \
-        ('_t' + '_'.join(f'{int(round(float(v) * 1000))}' for v in plan['tint']) if plan['tint'] is not None else '')
+        ('_t' + '_'.join(f'{int(round(float(v) * 1000))}' for v in plan['tint']) if plan['tint'] is not None else '') + \
+        (f"_o{plan['opacity']:x}" if plan.get('opacity') is not None else '')
     if key in MATS: return key
     if texture(t0) is None: return None
     st = [{'baseColorMap': f"{REL}/art/textures/{texture(t0)['name']}.color.dds", 'roughnessFactor': .9, 'metallicFactor': 0}]
@@ -336,9 +356,15 @@ def ground_material(plan, ground):
                    'opacityMapUseUV': 1})
     if plan['vcolor']:
         for l in st: l['vertColor'] = True
+    blend = {'translucentBlendOp': 'None'}
+    if plan.get('opacity') is not None:        # a strip laid over another surface: its alpha, on UV1
+        a = decode(plan['opacity'])
+        if a is not None:
+            st[0].update(opacityMap=data_map(f"fm4_{plan['opacity']:x}_a", a[..., 3] / 255), opacityMapUseUV=1)
+            blend = {'translucent': True, 'translucentBlendOp': 'LerpAlpha', 'translucentZWrite': False}
     n = len(st)
     MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st + [{}] * (4 - n), 'activeLayers': n,
-                 'materialTag0': 'beamng', 'translucentBlendOp': 'None', **({'groundType': ground} if ground else {})}
+                 'materialTag0': 'beamng', **blend, **({'groundType': ground} if ground else {})}
     stats['ground materials'] += 1
     return key
 
@@ -382,12 +408,14 @@ def shape(g, no):
             uv = box_uv(m, lay, s, uvn)[used] if uvn else np.zeros((len(used), 2)); uv1 = None
             ground = next((g for r, g in GROUND if r.match(shader)), None)
             plan = ground_plan(shader, slots, rec, mats[mi][2], tt); mat = None
-            if plan and all(k in lay for k in (plan['uv0'][0], plan['mask'][1]) if k != 'world'):
+            # UV1 carries the mask or the opacity; a plan with neither needs no UV set for it
+            uses1 = plan is not None and (plan['mask'][0] is not None or plan.get('opacity') is not None)
+            if plan and all(k in lay for k in (plan['uv0'][0], plan['mask'][1] if uses1 else 'world') if k != 'world'):
                 mat = ground_material(plan, ground)
                 if mat:
                     st_, sc_ = plan['uv0']
                     uv = (fm4mesh.attr(m, lay, 'position0')[used][:, [0, 2]] if st_ == 'world' else box_uv(m, lay, s, st_)[used]) * sc_
-                    uv1 = box_uv(m, lay, s, plan['mask'][1])[used] * plan['mask'][2]
+                    uv1 = box_uv(m, lay, s, plan['mask'][1])[used] * plan['mask'][2] if uses1 else np.zeros((len(used), 2))
                     if plan['vcolor'] and 'color0' in lay:
                         cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8')
                         uv1 = np.c_[uv1, cb[:, 1:4].mean(1) / 255 * plan['vcolor']]

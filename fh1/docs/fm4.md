@@ -79,7 +79,21 @@ Most of Tsukuba's grass is not ground-blended: it is `grass_*` and `diff_*` obje
 - `rdedg_blnd_diff_spec_bump_4`/`_5`: the shoulder texture at tc0 × `c360_0.xy`, the road texture at world x, z × `c360_0.z`, blended through `BumpBlend` fetches and the skids layer. Not yet: the road layer and the blend; the shoulder alone.
 - `sign_spec_refl_norm_4`: `DiffOpac` at tc0 × `c360_1.xy`.
 
-Still grey: water (`lake_*`, `river_*`, `ocean_*`: normal maps and reflection, no colour texture), `rdedg_blnd_diff_opac_3`, `rdedg_blnd_diff_spec_ovly_blur_4`, `road_blnd_diff_*` with `RoadSampler`, `road_diff_spec_ovly*` and `shldr_diff_spec_ovly_vendor_2` (`Diff_Spec02Sampler`), `road_2blnd_uv3_3`, `sign_spec_opac_refl_norm_4`, `diff_spec_refl_nolm_vclr_2` (`TextureMap_4425Sampler`), `add_diff_opac_rgba`. After this, grey materials per track: Alps 5 (the lake, and one texture `bin.zip` lacks), Maple Valley 4, Top Gear 10, Crown Jewel 21, Amalfi 52, Tsukuba 25 (as before).
+- `road_blnd_diff_spec_3`, `_localspec_3`, `_unlit_3`, `_trilin_3` (no `Blend_B`; Crown Jewel, Fujimi Kaido, Top Gear): `RoadSampler` at world x, z × `c360_2.x`, colour (Road + `c360_1.rgb`) then mixed with a term weighted by `c360_0` (0 or 0.012). Not yet: the small `c360_1` add, the bump blend and skids.
+- `rdedg_blnd_diff_opac_3` (Catalunya, Nürburgring GP, Suzuka): a strip over the road; `Diff_Texture_DetailGrain` at world x, z × `c360_1.x`, its alpha the `Opacity` texture's at tc0 × `c360_3.xy` (built translucent, the opacity on UV1); `Blend_Value` at tc2 × `c360_1.yz` not yet.
+- `road_2blnd_uv3_3` (Road America): `Diff_Texture_Color` at tc2 × `c360_1.yz`. Not yet: the detail grain (world × `c360_1.x`) and `Blend_Value` (tc2 × `c360_3.xy`).
+- `road_diff_spec_ovly_2`, `_detailscale_2`, `shldr_diff_spec_ovly_vendor_2` (Amalfi): Photoshop overlay, 2BO where the base B < 1/2, else 1 - 2(1 - B)(1 - O). Base `Diff_Spec02` at tc2 × `c360_1.xy` (`_detailscale`: × `c360_0.yz`), the overlay `TextureMap_4903` at tc0 or world; the vendor shoulder's base is `Diff_spec` at world × `c360_0.z`, its overlay `Diff_Spec02` at tc1. The overlay isn't reproduced yet.
+
+Still grey: water (`lake_*`, `river_*`, `ocean_*`: normal maps and reflection, no colour texture), `rdedg_blnd_diff_spec_ovly_blur_4`, `sign_spec_opac_refl_norm_4`, `diff_spec_refl_nolm_vclr_2` (`TextureMap_4425Sampler`), `add_diff_opac_rgba`, and the pack-only textures below. Grey materials per track after this: Alps 5, Amalfi 6, Fujimi Kaido 6, Top Gear 9, Crown Jewel 20, Tsukuba 25, Suzuka 54, Road America 58; most of the rest are pack-only textures.
+
+## Pack-only textures, `<Track>.stx.bin` (in progress)
+
+Texture records of kind 1 (`fm4pvs` textures, the last field) have no `.bix` or `.bin`: about 1,200 sections over all tracks draw grey for this (buildings, bleachers, chain-link and guard posts on Nürburgring GP, for example). They live only in `<Track>.stx.bin` in `bin.zip`, a CAFF file (`tex.caff`'s container) holding every texture's resident part:
+- `.data` at 0x190 (size at 0x60), then `.gpu` (size at 0x88), which ends the file.
+- From 0x190, 128-byte records, as many as there are textures ("texture\0" "04.05.05.0032"): +0x18 the Xenos format word, +0x1C kind (0 2D, 2 cube), +0x24 width and height (u16 each), +0x28 the top mip's offset in `.gpu`, +0x2C the mip chain's offset (0xFFFFFFFF none), +0x30 the mip count in its top byte.
+- Then one source path per record, in record order, `...\compiled\_0x<id>_s.bin` (a few `_a.bin`), giving each record's texture id. 1,015 records on Nürburgring GP; every kind-1 texture is there.
+- For a texture that also has a `.bix`, the top level here is empty (zeros) and only the mip chain is filled: the top level streams in from the `.bix`. Kind-1 textures (mostly 32 × 32 DXT5) have their top level filled.
+- **Not solved:** decoded with `tex.decode` at the top mip's offset, about half come out right and half as a patchwork of other textures' blocks. Small textures sit 8 KB apart though a 32 × 32-block DXT5 tile is 16 KB, so they interleave, and the address of a small texture's blocks must differ from `tex.tiled_offset`'s. The pitch alignment isn't it (a 32 × 32 texture stays in one tile column). Next to check: Xenia's packed-mip and small-texture tiling rules.
 
 ## Collision, `<track>_track_NN.col` (proven)
 
