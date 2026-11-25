@@ -303,8 +303,16 @@ def ground_plan(shader, slots, rec, ps, tt):
         """one layer at uv0 = (UV set or 'world', scale); opacity = (texture id, UV set, scale): its alpha, on UV1"""
         return dict(layers=[(t, np.ones(2))], uv0=uv, mask=(None, opacity[1], opacity[2]) if opacity else (None, 'texcoord0', np.ones(2)),
                     road=False, tint=tint, vcolor=vcolor, opacity=opacity[0] if opacity else None)
+    # diff_spec_deposit_4 / _uv2_4: lerp(Base(tc0 * c0.yz), Deposit(D * c1.xy), w) * vertex colour * c0.x, D = tc1 for _uv2, else tc0;
+    # w = 1 / (1 + 2^(-c0.w * (vertex alpha - height.g(tc0 * c2.xy)))). Built by deposit_parts, cut into bands of vertex alpha
+    if shader.startswith('diff_spec_deposit') and (t := tid('BaseTextureSampler')) is not None:
+        d, h = tid('DepositTextureSampler'), tid('heightMapSampler')
+        if d is not None and h is not None:
+            return dict(deposit=True, layers=[(t, c(0, 1))], dep=d, height=h, sdep=c(1, 0), sh=c(2, 0), k=float(c(0, 3, 1)[0]),
+                        uv0=('texcoord0', c(2, 0)), mask=(None, 'texcoord1' if '_uv2' in shader else 'texcoord0', c(1, 0)), road=False,
+                        tint=None, vcolor=float(c(0, 0, 1)[0]))
     if 'deposit' in shader and (t := tid('BaseTextureSampler')) is not None:
-        return one(t, ('texcoord0', c(0, 1)), vcolor=float(c(0, 0, 1)[0]))       # lerp(Base, Deposit, w) * vertex colour * c0.x: Deposit not yet
+        return one(t, ('texcoord0', c(0, 1)), vcolor=float(c(0, 0, 1)[0]))       # the shoulder deposits: Deposit not yet
     if shader.startswith('shldr_4clr_blnd_mask') and (t := tid('Diff_SpecSampler')) is not None:
         # lerp(D * c0, D + c4, Blend_Value.rgb), D = sat(Diff + paint mask * c2): c0 and c4 are 0 on every Alps material, so D * Blend_Value.
         # The paint (c2 where the mask is set) and the Blend_Value multiply aren't reproduced yet
@@ -373,6 +381,84 @@ def ground_material(plan, ground):
     return key
 
 
+# The deposit weight needs the vertex alpha per pixel, and a BeamNG layer's opacity comes only from textures (shaders/common/material/
+# shadergen/defaultMat.hlsl). So deposit sections are cut along lines of equal vertex alpha into bands, each band drawn with one
+# representative alpha a: its deposit layer's opacity map is w = 1 / (1 + 2^(-c0.w (a - height.g))), exact for that a. Representatives
+# j / (BANDS - 1), cuts halfway between: alpha 0 and 1 (about half the Alps' vertices) come out exact, others within 1 / (2 (BANDS - 1))
+BANDS = 8
+
+
+def deposit_material(plan, b, ground):
+    """the BeamNG material for a deposit plan's band b: UV0 = tc0 * c2.xy (the height map's), UV1 = the deposit's UV * c1.xy.
+    Layer 0 the base (a detail map when its scale isn't the height map's), layer 1 the deposit, its opacity the band's weight"""
+    (t0, sb) = plan['layers'][0]; r = sb / plan['sh']
+    key = f"fm4_dep{t0:x}_{plan['dep']:x}_{plan['height']:x}_k{plan['k']:g}_s{r[0]:g}x{r[1]:g}_b{b}" + (f'_{ground}' if ground else '')
+    if key in MATS: return key
+    if texture(t0) is None or texture(plan['dep']) is None: return None
+    hm = decode(plan['height'])
+    if hm is None: return None
+    a = b / (BANDS - 1); w = 1 / (1 + np.exp2(-plan['k'] * (a - hm[..., 1] / 255)))
+    st = [{'roughnessFactor': .9, 'metallicFactor': 0}]
+    if np.allclose(r, 1): st[0]['baseColorMap'] = f"{REL}/art/textures/{texture(t0)['name']}.color.dds"
+    else: st[0].update(detailMap=half_color(t0), detailBaseColorMapStrength=1, detailScale=[round(float(v), 4) for v in r])
+    if w.max() > .5 / 255:          # a band with no deposit anywhere keeps the base alone
+        st.append({'baseColorMap': f"{REL}/art/textures/{texture(plan['dep'])['name']}.color.dds", 'diffuseMapUseUV': 1,
+                   'roughnessFactor': .9, 'metallicFactor': 0,
+                   'opacityMap': data_map(f"fm4_dep{plan['height']:x}_k{plan['k']:g}_b{b}", w)})
+    if plan['vcolor']:
+        for l in st: l['vertColor'] = True
+    n = len(st)
+    MATS[key] = {'name': key, 'mapTo': key, 'class': 'Material', 'version': 1.5, 'Stages': st + [{}] * (4 - n), 'activeLayers': n,
+                 'materialTag0': 'beamng', 'translucentBlendOp': 'None', **({'groundType': ground} if ground else {})}
+    stats['deposit materials'] += 1
+    return key
+
+
+def _clip(poly, v):
+    """the part of a polygon (list of vertex rows, the last column alpha) where alpha >= v"""
+    out = []
+    for i, p in enumerate(poly):
+        q = poly[(i + 1) % len(poly)]; fp, fq = p[-1] - v, q[-1] - v
+        if fp >= 0: out.append(p)
+        if (fp >= 0) != (fq >= 0): out.append(p + (q - p) * (fp / (fp - fq)))
+    return out
+
+
+def deposit_parts(m, lay, s, used, tri, remap, pos, nrm, plan, ground):
+    """a deposit section cut into alpha bands -> [(material, pos, nrm, uv, idx, uv1)] or None"""
+    cb = fm4mesh.attr(m, lay, 'color0')[used].astype('f8') / 255
+    V = np.c_[pos[used], nrm[used], box_uv(m, lay, s, 'texcoord0')[used] * plan['sh'], box_uv(m, lay, s, plan['mask'][1])[used] * plan['sdep'],
+              cb[:, 1:4].mean(1) * plan['vcolor'], cb[:, 0]]         # 0-2 position, 3-5 normal, 6-7 UV0, 8-9 UV1, 10 grey, 11 alpha
+    T = remap[tri]; cut = (np.arange(BANDS - 1) + .5) / (BANDS - 1)
+    band = np.searchsorted(cut, V[:, 11], side='right')                # each vertex's band
+    tb = band[T]; whole = tb.min(1) == tb.max(1)
+    rows = {b: [] for b in range(BANDS)}; tris = {b: [] for b in range(BANDS)}
+    for b in range(BANDS):          # triangles inside one band keep their vertices
+        sel = T[whole & (tb[:, 0] == b)]
+        if len(sel): rows[b].append(V); tris[b].append(sel)
+    for t in T[~whole]:             # the rest are clipped to each band they cross
+        poly0 = [V[i] for i in t]
+        for b in range(band[t].min(), band[t].max() + 1):
+            poly = _clip(poly0, cut[b - 1]) if b > 0 else poly0
+            if b < BANDS - 1 and poly:      # alpha <= cut[b]: the same clip on negated alpha
+                flip = lambda ps: [np.r_[p[:-1], -p[-1]] for p in ps]
+                poly = flip(_clip(flip(poly), -cut[b]))
+            if len(poly) < 3: continue
+            P = np.array(poly); base = sum(len(r) for r in rows[b])
+            rows[b].append(P); tris[b].append(base + np.array([[0, k, k + 1] for k in range(1, len(P) - 1)]))
+            stats['deposit triangles cut'] += 1
+    out = []
+    for b in range(BANDS):
+        if not tris[b]: continue
+        mat = deposit_material(plan, b, ground)
+        if mat is None: return None
+        R = np.vstack(rows[b]); I = np.vstack(tris[b])
+        keep, I = np.unique(I, return_inverse=True); R = R[keep]; I = I.reshape(-1, 3)      # only the vertices this band uses
+        n_ = R[:, 3:6]; n_ = n_ / np.maximum(np.linalg.norm(n_, axis=1, keepdims=True), 1e-9)
+        out.append((mat, R[:, 0:3], n_, R[:, 6:8], I.ravel(), R[:, 8:11]))
+    return out
+
+
 def box_uv(m, lay, s, name):
     fl = s['fl']; return np.array(fl[4:6]) + fm4mesh.attr(m, lay, name) * np.array(fl[6:8])
 
@@ -411,7 +497,13 @@ def shape(g, no):
             used = np.unique(tri); remap = np.full(m['nv'], -1); remap[used] = np.arange(len(used))
             uv = box_uv(m, lay, s, uvn)[used] if uvn else np.zeros((len(used), 2)); uv1 = None
             ground = next((g for r, g in GROUND if r.match(shader)), None)
-            plan = ground_plan(shader, slots, rec, mats[mi][2], tt); mat = None
+            plan = ground_plan(shader, slots, rec, mats[mi][2], tt); mat = None; parts = None
+            if plan and plan.get('deposit'):
+                if all(k in lay for k in ('texcoord0', plan['mask'][1], 'color0')):
+                    parts = deposit_parts(m, lay, s, used, tri, remap, pos, nrm, plan, ground)
+                if parts: mat = parts[0][0]; plan = None; stats['deposit sections'] += 1
+                else:       # the base alone, as before
+                    plan = {**plan, 'deposit': False, 'uv0': ('texcoord0', plan['layers'][0][1]), 'mask': (None, 'texcoord0', np.ones(2))}
             # UV1 carries the mask or the opacity; a plan with neither needs no UV set for it
             uses1 = plan is not None and (plan['mask'][0] is not None or plan.get('opacity') is not None)
             if plan and all(k in lay for k in (plan['uv0'][0], plan['mask'][1] if uses1 else 'world') if k != 'world'):
@@ -436,7 +528,8 @@ def shape(g, no):
                     uv1 = np.c_[np.zeros((len(used), 2)), cb[:, 1:4].mean(1) / 255]; stats['vertex-coloured sections'] += 1
             collide = not (NOCOLLIDE.match(shader) or NOCOLLIDE_NAME.search(m['name']) or 'opac' in shader and 'barr' not in shader
                            or COLFILE and COLFAMILY.match(shader))
-            out.append(((mat, (0, COLL) if collide else (0,)), pos[used], nrm[used], uv, remap[tri].ravel(), uv1))
+            for mat_, *geo in parts or [(mat, pos[used], nrm[used], uv, remap[tri].ravel(), uv1)]:
+                out.append(((mat_, (0, COLL) if collide else (0,)), *geo))
             if collide and not ground: cpts.append(fm4mesh.attr(m, lay, 'position0')[used])
             stats['sections'] += 1; stats['triangles'] += len(tri)
     COLPTS[(g, no)] = np.vstack(cpts) if cpts else np.zeros((0, 3))
