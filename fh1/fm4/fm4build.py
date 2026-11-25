@@ -48,6 +48,9 @@ B = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0.]]); P = np.array([[1, 0, 0], [0, 
 NOUSE = re.compile(r'occluder|shadow(?!ed)|^SKY_|proxy|collision|_CAGE|reflect', re.I)      # VEG_*_cluster_shadowed_* are bushes
 # The sky dome (sky_*) isn't placed: fm4sky.py bakes it, with the backdrop painted into it, into the level's SkyBox
 NODRAW = re.compile(r'^(sun_contribution|add_anim_camera_flash|flare_|sky_)')
+# Lakes and rivers become BeamNG River objects, as FH1's water.py makes them (docs/fm4.md, Water); their meshes aren't drawn. The sea
+# (ocean_*, Amalfi) isn't decoded yet and stays a mesh
+WATERFX = re.compile(r'^(lake|river)_')
 # *_nolm_vclr_* shaders light by vertex colour where others use a lightmap: tex * lerp(V2LightmapColor1, V2LightmapColor2, vertex colour), the
 # two colours taken at their shader defaults, 0 and 1 (their runtime values aren't read yet). The tree walls that ring the circuit (VEG_*_TreeWall_*,
 # cards up to 430 m long) use one and carry no normals, as nothing in them is lit; they get up-facing normals here. clr_0 draws a flat colour,
@@ -501,6 +504,22 @@ COLL = 5        # a level number no detail level uses: groups carrying it go int
 stats = collections.Counter()
 
 
+WATSEC = collections.defaultdict(list)       # (g, mesh no) -> [(water_kind, draw-space vertices, triangles)]
+
+
+def water_kind(shader, slots, rec, tt, ps):
+    """(colour, ripple normal map id) of a water section. Its colour seen from straight above, FM4's linear value as BeamNG's 0-255, the
+    displayed value being its square root (the shader's last step): lake_* lerp(c1, c2, sat(c0.y (1 - |N.V|))), so c1; river_* lerp(c0, c1,
+    |N.V| c2.x), so lerp(c0, c1, c2.x)"""
+    c = lambda r: np.array(ps[r][:3]) if r < len(ps) else np.zeros(3)
+    lin = c(1) if shader.startswith('lake') else c(0) + (c(1) - c(0)) * (float(ps[2][0]) if len(ps) > 2 else 0)
+    smp = SAMPLERS.get(shader, {}); nt = None
+    for name in sorted(n for n in smp if 'Normal' in n):        # NormalMapA / NormalA first
+        r = smp[name]
+        if r < len(slots) and slots[r] < len(rec['tex']) and tex.bix(i := tt[rec['tex'][slots[r]]][0]): nt = i; break
+    return tuple(int(round(255 * math.sqrt(max(float(v), 0)))) for v in lin), nt
+
+
 def shape(g, no):
     """art/shapes/fm4/m<no>[_<g>].dae, mesh file no with table group g's textures -> (path, collides) or None. COLPTS[(g, no)] gets the
     game-frame vertices of its colliding sections that aren't ground (road, shoulder, terrain, verge), for the layout test below."""
@@ -523,6 +542,9 @@ def shape(g, no):
             tri = fm4rmb.tris(s['ib'], m['nv'], s['ints'][1])
             if not len(tri): continue
             used = np.unique(tri); remap = np.full(m['nv'], -1); remap[used] = np.arange(len(used))
+            if WATERFX.match(shader):       # traced into Rivers below, per draw
+                WATSEC[(g, no)].append((water_kind(shader, slots, rec, tt, mats[mi][2]), fm4mesh.attr(m, lay, 'position0')[used].astype('f8'), remap[tri]))
+                stats['water sections'] += 1; continue
             uv = box_uv(m, lay, s, uvn)[used] if uvn else np.zeros((len(used), 2)); uv1 = None
             ground = next((g for r, g in GROUND if r.match(shader)), None)
             plan = ground_plan(shader, slots, rec, mats[mi][2], tt); mat = None; parts = None
@@ -600,9 +622,11 @@ def on_road(pts, ri):
 # A draw that some layouts don't place is left out when it stands on one of those layouts' roads: it closes that layout off (Tsukuba's
 # full-circuit barriers across the short circuit's link, and the jersey barrier the short circuit puts across the full one). Ground pieces
 # never block. Every layout stays drivable, the way free roam needs it.
-items = []; blocked = collections.Counter()
+items = []; blocked = collections.Counter(); WATER = collections.defaultdict(list)
 for k, d in enumerate(DRAWS):
     sh = shape(d['g'], d['mesh'])
+    for kind, raw, T in WATSEC.get((d['g'], d['mesh']), ()):        # BeamNG-frame triangles, the way COLPTS go below
+        WATER[kind].append(((raw @ d['rot'] + d['pos'])[:, [0, 2, 1]])[T])
     if sh is None: continue
     if len(d['ribs']) < len(PVS) and len(COLPTS[(d['g'], d['mesh'])]):
         w = (COLPTS[(d['g'], d['mesh'])] @ d['rot'] + d['pos'])[:, [0, 2, 1]]
@@ -659,6 +683,25 @@ if COLFILES:
                       'position': [0, 0, 0], 'collisionType': 'Collision Mesh', 'decalType': 'Collision Mesh'})
     lap(f'collision from {len(COLFILES)} layouts: {len(TRI)} distinct triangles, {nwall} walls on another layout\'s road left out, {len(tiles)} tiles: '
         + ', '.join(f'{k} {v}' for k, v in ncol.most_common()))
+
+# ---- water: each body of lake or river water (one colour and ripple map) traced into Rivers by FH1's water.trace, the bed from FM4's
+# collision where the track has one. Pieces under water.MIN_AREA (150 m2, the Alps' infield fountain) are dropped, as FH1's are
+RIVERS = []
+if WATER:
+    import water as fh1water
+    _bed = np.array([t for t, _, _ in keep]) if COLFILES and keep else np.zeros((0, 3, 3))
+    for i, ((colour, nt), parts) in enumerate(sorted(WATER.items(), key=lambda kv: str(kv[0]))):
+        rv = fh1water.trace(np.concatenate(parts), lambda lo, hi: [_bed])
+        if not rv: continue
+        rip = '/core/art/water/ripple_nm.normal.dds'
+        if nt is not None:
+            t_ = tex.bix(nt)
+            if t_['fmt'] == 0x71: rg = tex.normal(nt)[0].astype('f8') / 127.5 - 1
+            else: rg = (decode(nt)[..., :2].astype('f8') / 127.5 - 1) if decode(nt) is not None else None
+            if rg is not None: rip = fh1water.ripple_textures([(f'{nt:x}', rg)], TEXD, REL, 'fm4w')[0]
+        RIVERS += fh1water.river_rows(rv, 'fm4_water', f'fm4_river_{i}_', rip, baseColor=[*colour, 255], cubemap='fm4_sky_cubemap')
+        stats['water bodies'] += 1
+    lap(f'water: {len(RIVERS)} Rivers from {sum(len(v) for v in WATER.values())} placed water sections')
 
 lap(f'{len(items)} TSStatics, {sum(1 for v in SHAPE.values() if v)} shapes, {len(MATS)} materials, {sum(1 for v in TINFO.values() if v)} textures; {dict(stats)}')
 
@@ -717,9 +760,12 @@ obj = [{'class': 'LevelInfo', 'name': 'theLevelInfo', '__parent': 'MissionGroup'
        {'class': 'ScatterSky', 'name': 'sunsky', '__parent': 'MissionGroup', 'position': [0, 0, 0], 'azimuth': SUN_AZ, 'elevation': SUN_EL,
         'shadowDistance': TS['ShadowEnds']['InGameShadowEnd']},
        {'name': 'fm4_skybox', 'class': 'SkyBox', '__parent': 'MissionGroup', 'material': 'fm4_sky'},
-       *spawns, {'name': 'fm4', 'class': 'SimGroup', '__parent': 'MissionGroup'}]
+       *spawns, {'name': 'fm4', 'class': 'SimGroup', '__parent': 'MissionGroup'}] + \
+      ([{'name': 'fm4_water', 'class': 'SimGroup', '__parent': 'MissionGroup'}] if RIVERS else [])
 (mg / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in obj))
 (mg / 'fm4' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in items))
+if RIVERS:
+    (mg / 'fm4_water').mkdir(exist_ok=True); (mg / 'fm4_water' / 'items.level.json').write_text(''.join(json.dumps(o) + '\n' for o in RIVERS))
 (LEVEL / 'art' / 'shapes' / 'fm4' / 'main.materials.json').write_text(json.dumps(MATS, indent=1))
 # ---- the freeroam menu: FM4's venue name, location and description (gamedb Environments, Environments.str), its photo
 # (UI4/Track_Images) as the level's preview, and each layout's map (UI4/Logos/Track_Ribbons_LG) as its spawn's
