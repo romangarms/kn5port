@@ -143,6 +143,34 @@ for v in groups.values():
     d = min(v, key=lambda x: x[0])[1]; d['ribs'] = set().union(*(x[1]['ribs'] for x in v)); DRAWS.append(d)
 lap(f'{len(UNION)} draws over all layouts, {len(DRAWS)} after keeping LOD0, {sum(len(d["ribs"]) < len(PVS) for d in DRAWS)} in only some layouts')
 
+# Stand-ins: a mesh named ..LOD_<n> (not _LODnn) can be a whole copy of finer meshes, which FM4 never draws with them but nothing
+# decoded says so (its draw's LOD bits are clear, like any mesh's): the Alps' ROAD_Alps_InfieldLOD_003 is the infield road again, at the
+# same height, and z-fought it. One is left out when nearly all its vertices (STANDIN_SHARED, to 1 cm) are other draws' vertices; one
+# that stands alone stays (Laguna Seca's only bleacher is BLDG_LGNA_Blcher_LOD_001)
+STANDIN = re.compile(r'LOD_\d+$'); STANDIN_SHARED = .95
+
+
+def draw_verts(d):
+    """a draw's vertices in draw space, rows of (x, y, z)"""
+    _, p, shs, _ = mesh_file(d['mesh']); out = []
+    for m in p['meshes']:
+        lay = fm4mesh.mesh_layout(m, shs, FETCH)
+        if lay is not None: out.append(fm4mesh.attr(m, lay, 'position0').astype('f8') @ d['rot'] + d['pos'])
+    return np.vstack(out) if out else np.zeros((0, 3))
+
+
+_si = [d for d in DRAWS if STANDIN.search(mesh_file(d['mesh'])[1]['meshes'][0]['name'])]
+if _si:
+    _keys = set()
+    _ids = {id(d) for d in _si}
+    for d in DRAWS:
+        if id(d) not in _ids: _keys.update(map(tuple, np.rint(draw_verts(d) * 100).astype(np.int64)))
+    for d in _si:
+        v = np.rint(draw_verts(d) * 100).astype(np.int64); f = np.mean([tuple(x) in _keys for x in v]) if len(v) else 0
+        nm = mesh_file(d['mesh'])[1]['meshes'][0]['name']
+        if f >= STANDIN_SHARED: DRAWS[:] = [x for x in DRAWS if x is not d]; lap(f'{nm}: left out, a copy of other meshes ({f:.1%} of its vertices are theirs)')
+        else: lap(f'{nm}: kept, {f:.1%} of its vertices are other meshes\'')
+
 # ---- textures
 TEXD = LEVEL / 'art' / 'textures'; TEXD.mkdir(parents=True, exist_ok=True)
 TINFO = {}
